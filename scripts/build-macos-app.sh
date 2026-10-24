@@ -14,7 +14,7 @@ CONTENTS="$APP_BUNDLE/Contents"
 RESOURCES="$CONTENTS/Resources"
 DMG_NAME="Mirrai-macOS-arm64"
 
-NODE_VERSION="20.18.1"
+NODE_VERSION="24.14.0"
 NODE_ARCH="arm64"
 NODE_TARBALL="node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.gz"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}"
@@ -191,6 +191,11 @@ cp -R "$PROJECT_DIR/dist" "$APP_DEST/"
 cp -R "$PROJECT_DIR/drizzle" "$APP_DEST/"
 cp "$PROJECT_DIR/package.json" "$APP_DEST/"
 cp "$PROJECT_DIR/drizzle.config.ts" "$APP_DEST/"
+mkdir -p "$APP_DEST/scripts" "$APP_DEST/server/templates"
+cp "$PROJECT_DIR/scripts/migrate.mjs" "$APP_DEST/scripts/"
+cp -R "$PROJECT_DIR/server/templates/builtin" "$APP_DEST/server/templates/"
+cp -R "$PROJECT_DIR/skill-engine" "$APP_DEST/"
+cp "$PROJECT_DIR/LICENSE" "$APP_DEST/"
 
 # Copy node_modules (full — the esbuild bundle uses --packages=external
 # so runtime imports like vite, drizzle-kit etc. must be resolvable)

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { execFileSync } from "node:child_process";
 
 const getAllUserIds = vi.fn();
 const createUser = vi.fn();
@@ -84,9 +85,23 @@ describe("bootstrapAdminAccount", () => {
     const credentialsPath = path.join(dataRoot, "first-run-credentials.txt");
     expect(fs.existsSync(credentialsPath)).toBe(true);
 
-    // The mode has to be 0600 — the file holds a working password.
-    const mode = fs.statSync(credentialsPath).mode & 0o777;
-    expect(mode).toBe(0o600);
+    if (process.platform === "win32") {
+      const permissions = JSON.parse(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+        $ErrorActionPreference = 'Stop'
+        $acl = Get-Acl -LiteralPath $env:INK_AND_KIN_CREDENTIALS_PATH
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+        @{ protected = $acl.AreAccessRulesProtected;
+           ownerMatches = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value;
+           ruleCount = $rules.Count;
+           otherAllowed = @($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -ne $sid.Value }).Count;
+           inherited = @($rules | Where-Object { $_.IsInherited }).Count
+        } | ConvertTo-Json -Compress
+      `], { env: { ...process.env, INK_AND_KIN_CREDENTIALS_PATH: credentialsPath }, encoding: "utf8", windowsHide: true }).trim());
+      expect(permissions).toMatchObject({ protected: true, ownerMatches: true, ruleCount: 1, otherAllowed: 0, inherited: 0 });
+    } else {
+      expect(fs.statSync(credentialsPath).mode & 0o777).toBe(0o600);
+    }
 
     const contents = fs.readFileSync(credentialsPath, "utf-8");
     expect(contents).toContain("admin");
@@ -128,5 +143,28 @@ describe("bootstrapAdminAccount", () => {
 
     expect(result.created).toBe(false);
     expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite an existing credentials file or create an inaccessible account", async () => {
+    const file = path.join(dataRoot, "first-run-credentials.txt");
+    fs.writeFileSync(file, "existing credentials");
+    expect((await bootstrapAdminAccount()).created).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toBe("existing credentials");
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("removes new credentials if account creation fails", async () => {
+    createUser.mockRejectedValueOnce(new Error("write failed"));
+    expect((await bootstrapAdminAccount()).created).toBe(false);
+    expect(fs.existsSync(path.join(dataRoot, "first-run-credentials.txt"))).toBe(false);
+  });
+
+  it("does not print the generated password in application logs", async () => {
+    const logger = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const result = await bootstrapAdminAccount();
+      expect(result.created).toBe(true);
+      expect(logger.mock.calls.flat().join("\n")).not.toContain(result.password!);
+    } finally { logger.mockRestore(); }
   });
 });

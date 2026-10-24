@@ -16,7 +16,7 @@ $BuildDir = Join-Path $ProjectDir "build-windows"
 $AppName = "Mirrai"
 $DistName = "Mirrai-Windows-x64"
 
-$NodeVersion = "20.18.1"
+$NodeVersion = "24.14.0"
 $NodeArch = "x64"
 $NodeZip = "node-v${NodeVersion}-win-${NodeArch}.zip"
 $NodeUrl = "https://nodejs.org/dist/v${NodeVersion}/${NodeZip}"
@@ -148,6 +148,11 @@ Copy-Item -Path (Join-Path $ProjectDir "dist") -Destination $AppDest -Recurse -F
 Copy-Item -Path (Join-Path $ProjectDir "drizzle") -Destination $AppDest -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectDir "package.json") -Destination $AppDest -Force
 Copy-Item -Path (Join-Path $ProjectDir "drizzle.config.ts") -Destination $AppDest -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $AppDest "scripts"), (Join-Path $AppDest "server\templates") | Out-Null
+Copy-Item -LiteralPath (Join-Path $ProjectDir "scripts\migrate.mjs") -Destination (Join-Path $AppDest "scripts\migrate.mjs") -Force
+Copy-Item -LiteralPath (Join-Path $ProjectDir "server\templates\builtin") -Destination (Join-Path $AppDest "server\templates") -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $ProjectDir "skill-engine") -Destination $AppDest -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $ProjectDir "LICENSE") -Destination $AppDest -Force
 
 # The esbuild bundle uses --packages=external, so runtime imports like vite and
 # drizzle-kit must stay resolvable. node_modules was installed with the hoisted

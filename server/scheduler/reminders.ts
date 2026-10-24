@@ -23,7 +23,30 @@ export interface Reminder {
 }
 
 function todayKey(now: Date): string {
-  return now.toISOString().slice(0, 10);
+  const year = String(now.getFullYear()).padStart(4, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** Date-only settings are calendar dates, not midnight UTC instants. */
+function parseStartDate(value: string): { year: number; month: number; day: number } | null {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnly) {
+    const [, yearText, monthText, dayText] = dateOnly;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const monthLengths = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (month < 1 || month > 12 || day < 1 || day > monthLengths[month - 1]) return null;
+    return { year, month, day };
+  }
+
+  // Legacy timestamps still describe instants; interpret them in the runtime's local calendar.
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return { year: parsed.getFullYear(), month: parsed.getMonth() + 1, day: parsed.getDate() };
 }
 
 /**
@@ -63,7 +86,7 @@ export function collectReminders(params: {
   if (!params.persona.remindersEnabled) return reminders;
 
   const dayKey = todayKey(now);
-  const monthDay = now.toISOString().slice(5, 10); // MM-DD
+  const monthDay = dayKey.slice(5, 10); // Local MM-DD, shared by all reminder kinds.
 
   for (const anniversary of params.anniversaries) {
     if (!anniversary.date) continue;
@@ -86,15 +109,11 @@ export function collectReminders(params: {
 
   const from = params.persona.togetherFrom?.trim();
   if (from) {
-    const start = new Date(from);
-    if (!Number.isNaN(start.getTime())) {
-      const years = now.getFullYear() - start.getFullYear();
-      const anniversaryThisYear = new Date(now.getFullYear(), start.getMonth(), start.getDate());
-      const diffDays = Math.round(
-        (now.getTime() - anniversaryThisYear.getTime()) / 86_400_000,
-      );
-      // Only the day itself, not a week of "it's nearly your anniversary".
-      if (diffDays === 0 && years > 0) {
+    const start = parseStartDate(from);
+    if (start) {
+      const years = now.getFullYear() - start.year;
+      // Match the whole local day. February 29 has no implicit replacement in a non-leap year.
+      if (now.getMonth() + 1 === start.month && now.getDate() === start.day && years > 0) {
         reminders.push({
           kind: "together_years",
           personaId: params.persona.id,
@@ -146,7 +165,7 @@ export function extractPhotoDate(
     if (match) return match[0];
   }
   if (!(createdAt instanceof Date) || Number.isNaN(createdAt.getTime())) return null;
-  return createdAt.toISOString().slice(0, 10);
+  return todayKey(createdAt);
 }
 
 /**

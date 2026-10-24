@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeFileName, resolveUploadPath } from "./filename";
+import path from "node:path";
 
 describe("sanitizeFileName", () => {
   it("keeps an ordinary name", () => {
@@ -47,14 +48,14 @@ describe("sanitizeFileName", () => {
 });
 
 describe("resolveUploadPath", () => {
-  const root = "/tmp/mirrai-uploads";
+  const root = path.resolve("test-uploads");
 
   it("resolves a normal key inside the root", () => {
-    expect(resolveUploadPath(root, "personas/1/2/a.png")).toBe(`${root}/personas/1/2/a.png`);
+    expect(resolveUploadPath(root, "personas/1/2/a.png")).toBe(path.join(root, "personas", "1", "2", "a.png"));
   });
 
   it("strips leading slashes", () => {
-    expect(resolveUploadPath(root, "/personas/a.png")).toBe(`${root}/personas/a.png`);
+    expect(resolveUploadPath(root, "/personas/a.png")).toBe(path.join(root, "personas", "a.png"));
   });
 
   it("rejects a key that climbs out of the root", () => {
@@ -71,6 +72,6 @@ describe("resolveUploadPath", () => {
   });
 
   it("allows a path that stays inside", () => {
-    expect(resolveUploadPath(root, "personas/1/../2/a.png")).toBe(`${root}/personas/2/a.png`);
+    expect(resolveUploadPath(root, "personas/1/../2/a.png")).toBe(path.join(root, "personas", "2", "a.png"));
   });
 });

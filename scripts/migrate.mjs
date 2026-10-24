@@ -20,6 +20,7 @@
  *
  * Usage: node scripts/migrate.mjs [--dry-run]
  */
+import "dotenv/config";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,14 +88,20 @@ async function main() {
   await client.connect();
 
   try {
-    await client.query(`
+    if (dryRun) {
+      await client.query("BEGIN READ ONLY");
+    } else {
+      await client.query(`
       CREATE TABLE IF NOT EXISTS "schema_migrations" (
         "version" varchar(64) PRIMARY KEY NOT NULL,
         "appliedAt" timestamp DEFAULT now() NOT NULL
       )
-    `);
-
-    const { rows } = await client.query('SELECT "version" FROM "schema_migrations"');
+      `);
+    }
+    const { rows: tables } = await client.query("SELECT to_regclass('schema_migrations') AS name");
+    const { rows } = tables[0].name
+      ? await client.query('SELECT "version" FROM "schema_migrations"')
+      : { rows: [] };
     const applied = new Set(rows.map((r) => r.version));
 
     for (const file of applicable) {
@@ -126,6 +133,7 @@ async function main() {
     if (dryRun) log("dry run complete — nothing was written");
     else log("all migrations applied");
   } finally {
+    if (dryRun) await client.query("ROLLBACK").catch(() => {});
     await client.end();
   }
 }

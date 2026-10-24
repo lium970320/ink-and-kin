@@ -175,15 +175,13 @@ fi
 # is not shipped with the app.
 log "Synchronizing the database schema..."
 cd "$APP_DIR"
-"$NODE_BIN" ./node_modules/drizzle-kit/bin.cjs push --force 2>&1 | tee -a "$LOGS/migrate.log" || \
-  log "Schema sync note (may be OK)"
+"$NODE_BIN" ./node_modules/drizzle-kit/bin.cjs push --force 2>&1 | tee -a "$LOGS/migrate.log"
 
 # `push` only creates the tables — it does not run the hand-written data
 # migrations (for example mapping the old Chinese intimacy levels onto the new
 # keys). Those are idempotent SQL files, applied in order.
 log "Applying data migrations..."
-"$NODE_BIN" scripts/migrate.mjs 2>&1 | tee -a "$LOGS/migrate.log" || \
-  log "Data migration note (may be OK)"
+"$NODE_BIN" scripts/migrate.mjs 2>&1 | tee -a "$LOGS/migrate.log"
 
 # ─── Create .env template for user ──────────────────────────────────────────
 if [ ! -f "$ENV_FILE" ]; then

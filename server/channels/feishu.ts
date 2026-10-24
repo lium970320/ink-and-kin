@@ -222,7 +222,7 @@ export class FeishuAdapter implements ChannelAdapter {
       });
     };
 
-    const dispatcher = new lark.EventDispatcher().register({
+    const dispatcher = new lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data: any) => {
         // Feishu expects a reply within three seconds. The conversation takes
         // far longer than that, so it is started in the background and the

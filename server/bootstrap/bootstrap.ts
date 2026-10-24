@@ -11,11 +11,12 @@
  * registration through the UI instead.
  */
 import { randomBytes } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync } from "fs";
 import path from "path";
 import { ENV } from "../_core/env";
 import { hashPassword } from "../_core/password";
 import * as db from "../db";
+import { writeCredentialsFile } from "./credentials-file";
 
 const ADMIN_USERNAME = "admin";
 const PASSWORD_LENGTH = 16;
@@ -73,12 +74,6 @@ export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
     const password = generatePassword();
     const passwordHash = await hashPassword(password);
 
-    await db.createUser({
-      username: ADMIN_USERNAME,
-      passwordHash,
-      name: "Administrator",
-    });
-
     const dataRoot = resolveDataRoot();
     if (!existsSync(dataRoot)) mkdirSync(dataRoot, { recursive: true });
     const credentialsPath = path.join(dataRoot, "first-run-credentials.txt");
@@ -94,7 +89,17 @@ export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
       "",
     ].join("\n");
 
-    writeFileSync(credentialsPath, contents, { mode: 0o600 });
+    writeCredentialsFile(credentialsPath, contents);
+    try {
+      await db.createUser({
+        username: ADMIN_USERNAME,
+        passwordHash,
+        name: "Administrator",
+      });
+    } catch (error) {
+      unlinkSync(credentialsPath);
+      throw error;
+    }
 
     console.log("");
     console.log("  ┌──────────────────────────────────────────────┐");
@@ -102,7 +107,6 @@ export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
     console.log("  │  A local administrator account was created    │");
     console.log("  └──────────────────────────────────────────────┘");
     console.log(`     用户名 / Username: ${ADMIN_USERNAME}`);
-    console.log(`     密码   / Password: ${password}`);
     console.log(`     凭据文件 / Credentials file: ${credentialsPath}`);
     console.log("");
 

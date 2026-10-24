@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deflateSync } from "zlib";
 import { existsSync } from "fs";
+import path from "node:path";
 
 import {
   crc32,
@@ -434,13 +435,13 @@ describe("the default icon", () => {
 
   it("is looked for in the working directory as well", () => {
     const candidates = defaultIconCandidates({ moduleDir: "/nowhere", cwd: "/somewhere" });
-    expect(candidates).toContain("/somewhere/client/public/icons/icon-512.png");
+    expect(candidates).toContain(path.resolve("/somewhere", "client", "public", "icons", "icon-512.png"));
   });
 
   it("is looked for in the packaged layout as well", () => {
     const candidates = defaultIconCandidates({ moduleDir: "/nowhere", cwd: "/somewhere" });
-    expect(candidates).toContain("/nowhere/public/icons/icon-512.png");
-    expect(candidates).toContain("/somewhere/dist/public/icons/icon-512.png");
+    expect(candidates).toContain(path.resolve("/nowhere", "public", "icons", "icon-512.png"));
+    expect(candidates).toContain(path.resolve("/somewhere", "dist", "public", "icons", "icon-512.png"));
   });
 
   it("is null when it is nowhere to be found", () => {

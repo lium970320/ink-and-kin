@@ -12,6 +12,8 @@ done
 
 echo "[Mirrai] Applying database schema..."
 pnpm db:push
+echo "[Ink & Kin] Applying data migrations..."
+node scripts/migrate.mjs
 
 echo "[Mirrai] Starting server..."
 exec node dist/index.js

@@ -70,6 +70,12 @@ vi.mock("../llm", () => ({
   llmService: { invoke: (...a: unknown[]) => invoke(...a) },
 }));
 
+// 明确模拟动态导入失败，避免依赖是否安装改变本用例或启动真实 SDK。
+const missingFeishuSdk = vi.hoisted(() => vi.fn(() => {
+  throw Object.assign(new Error("模拟飞书 SDK 未安装"), { code: "ERR_MODULE_NOT_FOUND" });
+}));
+vi.mock("@larksuiteoapi/node-sdk", () => missingFeishuSdk());
+
 import type { ChannelAdapter } from "./types";
 import { wechatAdapter } from "./wechat";
 import { feishuAdapter } from "./feishu";
@@ -321,6 +327,7 @@ describe("feishu adapter", () => {
     decryptSecret.mockResolvedValue(JSON.stringify({ appId: "cli_x", appSecret: "secret" }));
 
     await expect(feishuAdapter.start(1)).rejects.toThrow(/pnpm install/);
+    expect(missingFeishuSdk).toHaveBeenCalledTimes(1);
 
     // The channel never claims to be connected after the failure.
     expect(upsertChannelState).not.toHaveBeenCalled();

@@ -44,7 +44,14 @@ declare module "@larksuiteoapi/node-sdk" {
     im: FeishuClient["im"];
   }
 
+  // SDK 1.76.0 要求传入选项对象；这里只声明本适配器可能使用的基础选项。
+  export interface FeishuEventDispatcherOptions {
+    verificationToken?: string;
+    encryptKey?: string;
+  }
+
   export class EventDispatcher {
+    constructor(options: FeishuEventDispatcherOptions);
     register(handlers: Record<string, (data: any) => unknown>): FeishuEventDispatcher;
   }
 

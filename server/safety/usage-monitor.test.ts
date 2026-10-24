@@ -201,7 +201,7 @@ describe("isQuietHour", () => {
 });
 
 describe("collectReminders", () => {
-  const now = new Date("2025-06-15T10:00:00");
+  const now = new Date(2025, 5, 15, 15, 30);
 
   it("fires on an anniversary", () => {
     const reminders = collectReminders({
@@ -260,8 +260,10 @@ describe("collectReminders", () => {
     const second = collectReminders({
       persona: { id: 1, name: "小A", togetherFrom: null, remindersEnabled: true },
       anniversaries: [{ id: 1, title: "第一次见面", date: "06-15" }],
-      now: new Date("2025-06-16T10:00:00"),
+      now: new Date(2026, 5, 15, 0, 15),
     });
-    expect(first[0].dedupeKey).not.toBe(second[0]?.dedupeKey);
+    expect(first[0].dedupeKey).toBe("anniversary:1:2025-06-15");
+    expect(second[0].dedupeKey).toBe("anniversary:1:2026-06-15");
+    expect(first[0].dedupeKey).not.toBe(second[0].dedupeKey);
   });
 });

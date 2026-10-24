@@ -205,10 +205,10 @@ listen_addresses = 'localhost'
     try {
         & $NodeBin ".\node_modules\drizzle-kit\bin.cjs" push --force 2>&1 |
             Tee-Object -FilePath (Join-Path $Logs "migrate.log")
-    } catch {
-        Log "Schema sync note: $($_.Exception.Message)"
+        if ($LASTEXITCODE -ne 0) { throw "Database schema synchronization failed. See migrate.log." }
+    } finally {
+        Pop-Location
     }
-    Pop-Location
 
     # `push` only creates the tables — it does not run the hand-written data
     # migrations (for example mapping the old Chinese intimacy levels onto the
@@ -217,11 +217,11 @@ listen_addresses = 'localhost'
     Push-Location $AppDir
     try {
         & $NodeBin "scripts\migrate.mjs" 2>&1 |
-            Tee-Object -FilePath (Join-Path $Logs "migrate.log")
-    } catch {
-        Log "Data migration note: $($_.Exception.Message)"
+            Tee-Object -FilePath (Join-Path $Logs "migrate.log") -Append
+        if ($LASTEXITCODE -ne 0) { throw "Data migration failed. See migrate.log." }
+    } finally {
+        Pop-Location
     }
-    Pop-Location
 
     # ─── Create .env template for user ──────────────────────────────────────
     if (-not (Test-Path $EnvFile)) {
