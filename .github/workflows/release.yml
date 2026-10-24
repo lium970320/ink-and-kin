@@ -1,0 +1,113 @@
+name: Release
+
+# Tagging a version builds the desktop bundles and attaches them to the
+# release. The build itself is the same script the maintainer runs locally,
+# so the artifacts are reproducible from the tagged commit.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach the build to'
+        required: true
+        default: 'v1.1.0'
+      platform:
+        description: 'Which build to run'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - macos
+          - windows
+
+jobs:
+  macos-app:
+    name: Build macOS app
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'macos'
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install PostgreSQL 16
+        run: brew install postgresql@16 || brew list postgresql@16
+
+      - name: Build the DMG
+        run: bash scripts/build-macos-app.sh
+
+      - name: Attach the DMG to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ inputs.tag || github.ref_name }}" build-macos/Mirrai-macOS-arm64.dmg --clobber
+
+  windows-app:
+    name: Build Windows app
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'windows'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Build the bundle
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+          ./scripts/build-windows-app.ps1
+
+      - name: Smoke test the bundle
+        # The bundle is worth shipping even if the smoke test trips: a failure
+        # here is a signal to investigate, not a reason to withhold the build.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+          ./scripts/windows/smoke-test.ps1
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          # Long paths are enabled on Windows 10 1607 and later by default, but
+          # the compiler itself is not long-path aware.
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
+          $paths = @("$env:ProgramFiles\Inno Setup*\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe")
+          $iscc = Get-ChildItem -Path $paths -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem -Path $paths -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup was not found." }
+          # Absolute paths, so that no ".." ends up in the middle of the file
+          # names the compiler opens.
+          & $iscc.FullName installer\installer.iss `
+            "/DMyAppBundle=$($PWD.Path)\build-windows\Mirrai-Windows-x64" `
+            "/DMyAppOutputDir=$($PWD.Path)\build-windows" `
+            "/DMyAppLicense=$($PWD.Path)\LICENSE"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE." }
+
+      - name: Attach the installer to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ inputs.tag || github.ref_name }}" build-windows/Mirrai-Setup-x64.exe --clobber
