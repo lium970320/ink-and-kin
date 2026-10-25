@@ -1,3 +1,4 @@
+import { eligibleRealityMemories } from "../memory-review";
 /**
  * Memory retrieval.
  *
@@ -256,7 +257,7 @@ export async function retrieveMemories(params: {
   topK?: number;
   now?: number;
 }): Promise<ScoredMemory[]> {
-  const rows = await db.getMemoriesByPersonaId(params.personaId, params.userId);
+  const rows = await eligibleRealityMemories(await db.getMemoriesByPersonaId(params.personaId, params.userId), params.userId, params.personaId);
   const candidates: MemoryCandidate[] = rows.map((row) => ({
     id: row.id,
     title: row.title,

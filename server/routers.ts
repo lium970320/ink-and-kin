@@ -1,3 +1,8 @@
+import { memoryRouter } from "./memory-review/memory-router";
+import { memoryReviewRouter } from "./memory-review/router";
+import { sourceLibraryRouter } from "./source-library/router";
+import { contextProcedures } from './chat/context-router';
+import { changeContext } from './chat/context-state';
 import { llmProbeInput, testUserLlmConnection, listUserLlmModels } from "./llm-probes";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -201,6 +206,8 @@ function assertKnownProvider(providerName: string): void {
 }
 
 export const appRouter = router({
+  sourceLibrary: sourceLibraryRouter,
+  memoryReview: memoryReviewRouter,
   system: systemRouter,
 
   /** Public probe used by the first-run wizard. */
@@ -663,6 +670,7 @@ export const appRouter = router({
   }),
 
   chat: router({
+    ...contextProcedures,
     getHistory: protectedProcedure
       .input(z.object({ personaId: z.number(), limit: z.number().min(1).max(200).default(50) }))
       .query(async ({ ctx, input }) => {
@@ -809,7 +817,7 @@ export const appRouter = router({
     clear: protectedProcedure
       .input(z.object({ personaId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        await clearMessagesByPersonaId(input.personaId, ctx.user.id);
+        await changeContext(ctx.user.id, input.personaId, 'clear');
         return { success: true };
       }),
 
@@ -1707,82 +1715,7 @@ export const appRouter = router({
       }),
   }),
 
-  memory: router({
-    list: protectedProcedure
-      .input(z.object({ personaId: z.number() }))
-      .query(async ({ ctx, input }) => {
-        const persona = await getPersonaById(input.personaId, ctx.user.id);
-        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        return getMemoriesByPersonaId(input.personaId, ctx.user.id);
-      }),
-
-    create: protectedProcedure
-      .input(z.object({
-        personaId: z.number(),
-        title: z.string().min(1).max(200),
-        description: z.string().max(2000).optional(),
-        category: z.enum(["milestone", "memory", "anniversary", "anchor"]).default("memory"),
-        date: z.string().max(50).optional(),
-        /** A structured fact key for anchor memories, e.g. "birthday". */
-        factKey: z.string().max(120).optional(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        const persona = await getPersonaById(input.personaId, ctx.user.id);
-        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        const id = await createMemory({ ...input, userId: ctx.user.id });
-        return { id };
-      }),
-
-    delete: protectedProcedure
-      .input(z.object({ id: z.number() }))
-      .mutation(async ({ ctx, input }) => {
-        await deleteMemory(input.id, ctx.user.id);
-        return { success: true };
-      }),
-
-    autoExtract: protectedProcedure.use(rateLimit(RATE_LIMITS.llmHeavy))
-      .input(z.object({ personaId: z.number() }))
-      .mutation(async ({ ctx, input }) => {
-        const persona = await getPersonaById(input.personaId, ctx.user.id);
-        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        const history = await getMessagesByPersonaId(input.personaId, ctx.user.id, 50);
-        if (history.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "没有聊天记录可供提取" });
-
-        const chatText = history.map(m => `${m.role === "user" ? "用户" : persona.name}: ${m.content}`).join("\n");
-        const response = await llmService.invoke({
-          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "memory.autoExtract", purpose: "memory_extract" } },
-          messages: [
-            { role: "system", content: "你是记忆提取助手。请从对话中提取重要的记忆节点。只返回JSON数组，每个元素包含 title, description, category(milestone/memory/anniversary/anchor), date(如果能推断)。最多提取5条。\n\ncategory 的含义：\n- milestone：重要时刻（第一次见面、分手那天）\n- memory：普通回忆\n- anniversary：每年重复的纪念日\n- anchor：具体的事实型记忆（例如「TA 的生日是 3 月 14 日」「TA 在 XX 大学读书」）。这类记忆是对话中不可违背的事实，如果对话里出现了明确的具体日期、地点、称呼、身份信息，就标记为 anchor。" },
-            { role: "user", content: chatText },
-          ],
-        });
-
-        const extracted: Array<{ title: string; description?: string; category?: string; date?: string }> = [];
-        try {
-          const arr = extractJsonArray(response);
-          if (arr) {
-            for (const raw of arr.slice(0, 5)) {
-              const item = (raw ?? {}) as {
-                title?: string;
-                description?: string;
-                category?: string;
-                date?: string;
-              };
-              const id = await createMemory({
-                personaId: input.personaId, userId: ctx.user.id,
-                title: item.title || "记忆",
-                description: item.description,
-                category: (["milestone", "memory", "anniversary", "anchor"].includes(item.category as string) ? item.category : "memory") as any,
-                date: item.date,
-              });
-              extracted.push({ ...item, title: item.title || "记忆" });
-            }
-          }
-        } catch (e) { console.error("[autoExtract] parse error:", e); }
-
-        return { extracted };
-      }),
-  }),
+  memory: memoryRouter,
 
   emotion: router({
     getReport: protectedProcedure

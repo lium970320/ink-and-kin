@@ -10,6 +10,9 @@ vi.mock("../db", () => ({
   touchMemoryRecalled: (...a: unknown[]) => touchMemoryRecalled(...a),
 }));
 
+// 排名和文件摘要测试接收已通过资格检查的数据；审阅隔离另行检验。
+vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
+
 import {
   tokenize,
   keywordCoverage,

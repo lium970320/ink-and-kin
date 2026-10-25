@@ -54,6 +54,19 @@ vi.mock("../db", () => ({
   getDailyChatCounts: (...a: unknown[]) => getDailyChatCounts(...a),
 }));
 
+// 上下文锁、来源证据与审阅隔离由独立集成测试负责。
+// 本组继续使用原有内存历史和写入探针。
+vi.mock("./context-state", () => ({
+  getContextState: async (userId: number, personaId: number) => ({ userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} }),
+  getContextHistory: async (userId: number, personaId: number, limit: number) => ({
+    state: { userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} },
+    history: await getMessagesByPersonaId(personaId, userId, limit),
+  }),
+  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: () => Promise<unknown>) => work(),
+}));
+vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
+vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
+
 const invoke = vi.fn();
 const invokeWithProvider = vi.fn();
 const streamWithProvider = vi.fn();
@@ -366,7 +379,7 @@ describe("runConversation", () => {
   });
 
   it("assesses the emotional trajectory and lets it suggest graduation earlier", async () => {
-    getMessagesSince.mockResolvedValue(
+    getMessagesByPersonaId.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({
         id: i + 1,
         role: "user",
@@ -407,6 +420,7 @@ describe("runConversation", () => {
       userId: 1,
       message: "在吗",
       mode: "once",
+      now: new Date("2026-01-15T12:00:00Z"),
     })) {
       events.push(event);
     }

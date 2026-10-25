@@ -29,6 +29,18 @@ vi.mock("../db", () => ({
   touchMemoryRecalled: (...a: unknown[]) => touchMemoryRecalled(...a),
 }));
 
+// 真实上下文锁和来源筛选由独立集成测试负责，此处只检验摘要行为。
+vi.mock("./context-state", () => ({
+  getContextState: async (userId: number, personaId: number) => ({ userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} }),
+  getContextHistory: async (userId: number, personaId: number, limit: number) => ({
+    state: { userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} },
+    history: await getMessagesByPersonaId(personaId, userId, limit),
+  }),
+  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: () => Promise<unknown>) => work(),
+}));
+vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
+vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
+
 const invoke = vi.fn();
 const invokeWithProvider = vi.fn();
 const streamWithProvider = vi.fn();

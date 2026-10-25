@@ -310,7 +310,7 @@ export default function ChatHistoryManager({
               <Trash2 className="w-5 h-5 text-destructive" />
               <div>
                 <h3 className="font-semibold text-foreground">删除 {deleteIds.length} 条消息</h3>
-                <p className="text-xs text-muted-foreground">删除前会自动保存本地备份</p>
+                <p className="text-xs text-muted-foreground">删除前会在当前账户的数据库中保存备份</p>
               </div>
             </div>
             <div className="px-5 py-4 space-y-3">
@@ -332,13 +332,14 @@ export default function ChatHistoryManager({
                 <input
                   type="checkbox"
                   checked={resetRuntimeCaches}
+                  disabled
                   onChange={event => setResetRuntimeCaches(event.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
-                  <span className="block text-sm text-foreground">清除人物临时理解缓存</span>
+                  <span className="block text-sm text-foreground">使旧对话摘要失效</span>
                   <span className="block text-xs text-muted-foreground">
-                    清除隐藏心理、诊断和主动消息缓存，保留人物卡与场景模式
+                    删除或排除消息后会自动重建适用的摘要
                   </span>
                 </span>
               </label>

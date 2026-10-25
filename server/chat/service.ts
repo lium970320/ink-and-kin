@@ -1,3 +1,5 @@
+import { sourceLibraryService } from "../source-library";
+import { getContextHistory, getContextState, withContextRevision } from './context-state';
 /**
  * The conversation pipeline.
  *
@@ -82,6 +84,7 @@ async function maybeCompactHistory(params: {
   userId: number;
   history: Array<{ id: number; role: string; content: string; createdAt: Date }>;
   keepCount: number;
+  contextRevision: number;
   providerName?: string;
   now: Date;
   signal?: AbortSignal;
@@ -130,13 +133,13 @@ async function maybeCompactHistory(params: {
     const trimmed = (summary || "").trim();
     if (!trimmed) return "";
 
-    await db.createChatSummary({
+    await withContextRevision(params.userId, params.persona.id, params.contextRevision, async () => db.createChatSummary({
       personaId: params.persona.id,
       userId: params.userId,
       summary: trimmed,
       fromMessageId: evicted[0]?.id ?? null,
       toMessageId: evicted[evicted.length - 1]?.id ?? null,
-    });
+    }));
 
     return trimmed;
   } catch (e) {
@@ -187,7 +190,7 @@ export async function composeMessages(params: {
 }): Promise<LLMMessage[]> {
   const now = params.now ?? new Date();
   const contextLimit = Math.max(4, params.contextLimit);
-  const history = await db.getMessagesByPersonaId(params.persona.id, params.userId, 200);
+  const { history, state } = await getContextHistory(params.userId, params.persona.id, 200);
 
   const scene = params.persona.activeSceneId
     ? await db.getSceneById(params.persona.activeSceneId, params.userId)
@@ -208,6 +211,7 @@ export async function composeMessages(params: {
     userId: params.userId,
     history: history as any,
     keepCount: contextLimit - 1,
+    contextRevision: state.revision,
     providerName: params.providerName,
     signal: params.signal,
     now,
@@ -225,7 +229,14 @@ export async function composeMessages(params: {
 
   const recent = history.slice(-(contextLimit - 1)).map((m) => toLLMMessage(m));
 
-  return [{ role: "system", content: systemPrompt }, ...recent];
+  const sourceContext = await sourceLibraryService.context(params.userId, params.persona.id, params.userMessage,
+    history.filter(m => m.role === "user").slice(0, -1).map(m => m.content));
+  if (sourceContext) {
+    const evidence: LLMMessage = { role: "user", content: sourceContext.evidence };
+    recent.splice(Math.max(0, recent.length - 1), 0, evidence);
+  }
+  await withContextRevision(params.userId, params.persona.id, state.revision, async () => undefined);
+  return [{ role: "system", content: systemPrompt + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
 }
 
 /**
@@ -242,6 +253,7 @@ export async function* runConversation(
   const { persona, userId, message } = options;
   const now = options.now ?? new Date();
   const locale = options.locale ?? "zh";
+  const generationRevision = (await getContextState(userId, persona.id)).revision;
 
   const defaultConfig = await db.getDefaultLlmConfig(userId);
   const extraConfig = (defaultConfig?.extraConfig as any) ?? {};
@@ -254,7 +266,7 @@ export async function* runConversation(
 
   // The user's turn is stored first so the history and any summarisation see it.
   if (!options.alreadyPersisted) {
-    await db.createMessage({
+    await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
       personaId: persona.id,
       userId,
       role: "user",
@@ -263,21 +275,21 @@ export async function* runConversation(
       channel: options.channel ?? "web",
       messageType: options.media?.type ?? "text",
       mediaUrl: options.media?.url ?? null,
-    });
+    }));
   }
 
   // Crisis handling short-circuits the model entirely.
   const crisis = detectCrisis(message);
   if (crisis.crisis) {
     const replyText = buildCrisisResponse(persona.name, locale);
-    const messageId = await db.createMessage({
+    const messageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
       personaId: persona.id,
       userId,
       role: "assistant",
       content: replyText,
       emotionalState: persona.emotionalState,
       channel: options.channel ?? "web",
-    });
+    }));
     await db.createSafetyEvent({
       userId,
       personaId: persona.id,
@@ -314,6 +326,8 @@ export async function* runConversation(
     signal: options.signal,
   });
   options.signal?.throwIfAborted();
+
+  await withContextRevision(userId, persona.id, generationRevision, async () => undefined);
 
   const provider = await resolveProviderForUser({
     userId,
@@ -355,6 +369,7 @@ export async function* runConversation(
           usageContext: { userId, personaId: persona.id, route: options.channel ?? "web", purpose: "chat" },
         },
       });
+      await withContextRevision(userId, persona.id, generationRevision, async () => undefined);
       replyText = replyText || "（沉默）";
       yield { type: "delta", text: replyText };
     }
@@ -367,6 +382,7 @@ export async function* runConversation(
   }
 
   if (options.signal?.aborted) return;
+  await withContextRevision(userId, persona.id, generationRevision, async () => undefined);
 
   // The care note is decided before the reply is stored, so it can be part
   // of what the persona actually says — the plan asks for the persona itself
@@ -393,14 +409,14 @@ export async function* runConversation(
   const appended = [gentleCheckIn, careNote?.text].filter((part): part is string => !!part);
   const finalText = appended.length > 0 ? `${baseText}\n\n${appended.join("\n\n")}` : baseText;
 
-  const messageId = await db.createMessage({
+  const messageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
     personaId: persona.id,
     userId,
     role: "assistant",
     content: finalText,
     emotionalState: persona.emotionalState,
     channel: options.channel ?? "web",
-  });
+  }));
 
   const emotion = failed ? { state: persona.emotionalState, source: "heuristic" as const, reason: undefined } : await inferEmotionalState({
     userMessage: message,
@@ -417,8 +433,7 @@ export async function* runConversation(
   });
   if (options.signal?.aborted) return;
   const newEmotionalState = emotion.state;
-  yield { type: "emotion", state: newEmotionalState, reason: emotion.reason };
-
+  const intimacy = await withContextRevision(userId, persona.id, generationRevision, async () => {
   await db.updatePersona(persona.id, userId, {
     chatCount: (persona.chatCount || 0) + 1,
     lastChatAt: new Date(),
@@ -438,13 +453,17 @@ export async function* runConversation(
   }
 
   const intimacyData = await db.getIntimacyData(persona.id, userId);
-  const intimacy = computeIntimacy(intimacyData);
-  await db.updateIntimacy(persona.id, userId, intimacy.score, intimacy.level);
+  const value = computeIntimacy(intimacyData);
+  await db.updateIntimacy(persona.id, userId, value.score, value.level);
+  return value;
+  });
+  yield { type: "emotion", state: newEmotionalState, reason: emotion.reason };
 
   // The trajectory has to be assessed before the graduation check, which
   // reads the stored assessment — otherwise the early-graduation branch never
   // sees a trajectory at all.
   if (!failed) await maybeAssessTrajectory({
+    contextRevision: generationRevision,
     personaId: persona.id,
     userId,
     providerName: options.providerName,
@@ -453,12 +472,12 @@ export async function* runConversation(
     now,
   });
 
-  const graduationSuggested = await evaluateGraduation({
+  const graduationSuggested = await withContextRevision(userId, persona.id, generationRevision, async () => evaluateGraduation({
     persona,
     userId,
     intimacyLevel: intimacy.level,
     chatCount: (persona.chatCount || 0) + 1,
-  });
+  }));
 
   // The streaming path already emitted the reply text; the check-in and the
   // care note have to be pushed as well so the user sees the same thing
@@ -489,6 +508,7 @@ export async function* runConversation(
  * trajectory.
  */
 async function maybeAssessTrajectory(params: {
+  contextRevision: number;
   personaId: number;
   userId: number;
   providerName?: string;
@@ -504,6 +524,8 @@ async function maybeAssessTrajectory(params: {
     }
 
     await assessTrajectory({
+      history: (await getContextHistory(params.userId, params.personaId, 200)).history,
+      store: write => withContextRevision(params.userId, params.personaId, params.contextRevision, write),
       userId: params.userId,
       personaId: params.personaId,
       provider: params.providerName,

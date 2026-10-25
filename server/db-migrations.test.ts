@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "fs";
 import path from "path";
+import { is } from 'drizzle-orm';
+import { PgTable, getTableConfig } from 'drizzle-orm/pg-core';
+import * as schemaExports from '../drizzle/schema';
 
 const ROOT = path.resolve(__dirname, "..");
 const MIGRATIONS_DIR = path.join(ROOT, "drizzle");
@@ -119,7 +122,10 @@ describe("the SQL migration set", () => {
 
 describe("schema.ts and the migrations agree", () => {
   const schema = readFileSync(path.join(MIGRATIONS_DIR, "schema.ts"), "utf-8");
-  const declared = declaredTables(schema);
+  const declared: Record<string, Set<string>> = Object.fromEntries(Object.values(schemaExports).filter(value => is(value, PgTable)).map(table => {
+    const config = getTableConfig(table as PgTable);
+    return [config.name, new Set(config.columns.map(column => column.name))];
+  }));
 
   it("declares every table the migrations create", () => {
     // A table that exists only in the SQL would be dropped by
@@ -127,7 +133,7 @@ describe("schema.ts and the migrations agree", () => {
     // start — taking the data with it.
     const created = new Set<string>();
     for (const { sql } of markedSql()) {
-      for (const match of Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS "([a-z_]+)"/g))) {
+      for (const match of Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS "?([a-z_]+)"?/g))) {
         created.add(match[1]);
       }
     }

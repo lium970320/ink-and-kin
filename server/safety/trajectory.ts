@@ -59,6 +59,8 @@ const GRATITUDE_PATTERNS = [
  * than interrupting the conversation.
  */
 export async function assessTrajectory(params: {
+  history?: Array<{role:string;content:string;createdAt:Date}>;
+  store?: (write:()=>Promise<void>)=>Promise<void>;
   userId: number;
   personaId: number;
   provider?: string;
@@ -76,7 +78,7 @@ export async function assessTrajectory(params: {
   const since = new Date(now);
   since.setDate(since.getDate() - 28);
 
-  const rows = await db.getMessagesSince(params.personaId, params.userId, since);
+  const rows = params.history ? params.history.filter(row=>new Date(row.createdAt)>=since) : await db.getMessagesSince(params.personaId, params.userId, since);
   const userMessages = rows.filter((m) => m.role === "user").map((m) => m.content);
   if (userMessages.length < 8) return null;
 
@@ -119,7 +121,7 @@ export async function assessTrajectory(params: {
   }
 
   params.signal?.throwIfAborted();
-  await db.createGraduationAssessment({
+  const write = async () => { await db.createGraduationAssessment({
     userId: params.userId,
     personaId: params.personaId,
     windowStart: since,
@@ -128,7 +130,8 @@ export async function assessTrajectory(params: {
     regretRatio,
     gratitudeRatio,
     assessment: note ? { note } : null,
-  }).catch((e) => console.warn("[Safety] Failed to store trajectory assessment:", e));
+  }); };
+  await (params.store ? params.store(write) : write()).catch((e) => console.warn("[Safety] Failed to store trajectory assessment:", e));
 
   return { trajectory, regretRatio, gratitudeRatio, note };
 }

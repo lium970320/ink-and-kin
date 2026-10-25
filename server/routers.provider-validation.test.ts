@@ -2,32 +2,36 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 /**
- * A provider name that does not exist is a mistake, and it has to be caught
- * where the mistake is made.
- *
- * Silently storing it would mean every later conversation quietly falls back
- * to a different model — the user would be talking to a model they never
- * chose, and nothing would say so.
- *
- * A custom endpoint is expressed by pointing a registered provider
- * (OpenAI, for instance) at a different `baseUrl`.
+ * 已注册提供商及明确配置的自定义提供商均受支持。
+ * 自定义提供商必须具备当前用户自有的密钥和完整端点，才能写入配置或设为默认。
+ * 配置不完整时应明确拒绝，并确保没有数据库写入。
  */
 
 const upsertLlmConfig = vi.fn();
 const setDefaultLlmConfig = vi.fn();
 const getLlmConfigsByUserId = vi.fn();
+const getLlmRelaysByUserId = vi.fn();
 const getDefaultLlmConfig = vi.fn();
 const updatePersona = vi.fn();
 const getPersonaById = vi.fn();
 const invalidateUserProviderCache = vi.fn();
 
 vi.mock("./db", () => ({
+  normalizeLlmProviderName: (value: string) => value.trim(),
   upsertLlmConfig: (...a: unknown[]) => upsertLlmConfig(...a),
   setDefaultLlmConfig: (...a: unknown[]) => setDefaultLlmConfig(...a),
   getLlmConfigsByUserId: (...a: unknown[]) => getLlmConfigsByUserId(...a),
+  getLlmRelaysByUserId: (...a: unknown[]) => getLlmRelaysByUserId(...a),
   getDefaultLlmConfig: (...a: unknown[]) => getDefaultLlmConfig(...a),
   updatePersona: (...a: unknown[]) => updatePersona(...a),
   getPersonaById: (...a: unknown[]) => getPersonaById(...a),
+}));
+
+// 本组检验路由参数校验，凭据加密与宿主密钥配置由各自测试负责。
+vi.mock("./_core/crypto", () => ({
+  encryptSecret: async () => "v1:test-only-ciphertext",
+  decryptSecret: async () => null,
+  decryptIfEncrypted: async () => null,
 }));
 
 vi.mock("./llm/user-provider", () => ({
@@ -64,6 +68,7 @@ describe("provider names", () => {
       upsertLlmConfig,
       setDefaultLlmConfig,
       getLlmConfigsByUserId,
+      getLlmRelaysByUserId,
       getDefaultLlmConfig,
       updatePersona,
       getPersonaById,
@@ -72,6 +77,8 @@ describe("provider names", () => {
       fn.mockReset();
     }
     upsertLlmConfig.mockResolvedValue(1);
+    getLlmConfigsByUserId.mockResolvedValue([]);
+    getLlmRelaysByUserId.mockResolvedValue([]);
     setDefaultLlmConfig.mockResolvedValue(undefined);
     updatePersona.mockResolvedValue(undefined);
     getPersonaById.mockResolvedValue({
@@ -85,18 +92,18 @@ describe("provider names", () => {
     caller = appRouter.createCaller(ctxFor(1));
   });
 
-  it("refuses to store a configuration for a provider that does not exist", async () => {
+  it("refuses to store a custom provider without its own endpoint", async () => {
     await expect(
       caller.llmConfig.upsert({ providerName: "NotAProvider", apiKey: "sk-test" }),
-    ).rejects.toThrow(/未知的 LLM 提供商/);
+    ).rejects.toThrow(/自定义提供商须使用你自己的密钥和完整 API 地址/);
 
     expect(upsertLlmConfig).not.toHaveBeenCalled();
   });
 
-  it("refuses to make an unknown provider the default", async () => {
+  it("refuses to make an unconfigured custom provider the default", async () => {
     await expect(
       caller.llmConfig.setDefault({ providerName: "NotAProvider" }),
-    ).rejects.toThrow(/未知的 LLM 提供商/);
+    ).rejects.toThrow(/自定义提供商须先配置你自己的密钥和完整 API 地址/);
 
     expect(setDefaultLlmConfig).not.toHaveBeenCalled();
   });

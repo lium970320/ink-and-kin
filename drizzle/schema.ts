@@ -275,6 +275,13 @@ export const memories = pgTable("memories", {
   messageId: integer("messageId"),
   /** Retrieval weight — higher means the memory surfaces more readily. */
   importance: integer("importance").default(1).notNull(),
+  source: varchar("source", { length: 24 }).default("manual").notNull(),
+  memoryType: varchar("memoryType", { length: 40 }).default("relationship_event").notNull(),
+  confidence: integer("confidence").default(3).notNull(),
+  keywords: jsonb("keywords").$type<string[]>().default([]).notNull(),
+  emotion: varchar("emotion", { length: 120 }),
+  status: varchar("status", { length: 16 }).default("active").notNull(),
+  revision: integer("revision").default(1).notNull(),
   /** Pinned memories are always injected into the prompt. */
   isPinned: boolean("isPinned").default(false).notNull(),
   /** When the memory was last surfaced, used to damp repeats. */
@@ -659,3 +666,7 @@ export const graduationAssessments = pgTable("graduation_assessments", {
 
 export type GraduationAssessment = typeof graduationAssessments.$inferSelect;
 export type InsertGraduationAssessment = typeof graduationAssessments.$inferInsert;
+
+export * from "./source-library-schema";
+export * from './memory-review-schema';
+export * from './chat-context-schema';

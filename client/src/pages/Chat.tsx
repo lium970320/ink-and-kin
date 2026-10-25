@@ -20,6 +20,7 @@ import PersonaStatePanel from "@/components/PersonaStatePanel";
 import ChatHistoryManager from "@/components/ChatHistoryManager";
 import SceneChatHistoryManager from "@/components/SceneChatHistoryManager";
 import SceneContextPanel from "@/components/SceneContextPanel";
+import MemoryReviewCandidates from "@/components/MemoryReviewCandidates";
 
 interface Message {
   id: number | string;
@@ -2034,7 +2035,7 @@ const MEMORY_STATUSES = Object.entries(MEMORY_STATUS_LABELS);
 type MemoryFormState = {
   title: string;
   description: string;
-  category: "memory" | "milestone" | "anniversary";
+  category: "memory" | "anchor" | "milestone" | "anniversary";
   date: string;
   source: string;
   memoryType: string;
@@ -2043,6 +2044,7 @@ type MemoryFormState = {
   keywords: string;
   emotion: string;
   status: "active" | "archived" | "contradicted";
+  revision?: number;
 };
 
 function keywordText(value: unknown): string {
@@ -2083,6 +2085,7 @@ function memoryToForm(memory: any): MemoryFormState {
     keywords: keywordText(memory.keywords),
     emotion: memory.emotion || "",
     status: memory.status || "active",
+    revision: memory.revision,
   };
 }
 
@@ -2109,11 +2112,15 @@ function memoryPayload(form: MemoryFormState) {
     confidence: Number(form.confidence),
     keywords: splitKeywords(form.keywords),
     emotion: form.emotion.trim() || undefined,
+    status: form.status,
   };
 }
 
 function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: () => void }) {
-  const { data: memories, refetch } = trpc.memory.list.useQuery({ personaId });
+  const utils = trpc.useUtils();
+  const extractOperation = useRef<{ personaId: number; id: string } | null>(null);
+  const extractInFlight = useRef(false);
+  const { data: memories, refetch, isFetching: memoriesFetching } = trpc.memory.list.useQuery({ personaId });
   const createMutation = trpc.memory.create.useMutation({
     onSuccess: () => {
       refetch();
@@ -2129,17 +2136,38 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
       setEditingId(null);
       toast.success("记忆已更新");
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: any, input) => {
+      if (e.data?.code === "CONFLICT") {
+        void refetch();
+        if (input.id === editingId) setFormConflict(true);
+        toast.error("记忆已有新版本，当前编辑已保留，请重新审阅");
+      } else {
+        toast.error(e.message);
+      }
+    },
   });
   const deleteMutation = trpc.memory.delete.useMutation({ onSuccess: () => { refetch(); toast.success("记忆已删除"); } });
   const extractMutation = trpc.memory.autoExtract.useMutation({
-    onSuccess: (data) => { refetch(); toast.success(`已自动提取 ${data.extracted.length} 条新记忆`); },
-    onError: (e: any) => toast.error(e.message),
+    onSuccess: (data) => {
+      extractOperation.current = null;
+      void utils.memoryReview.list.invalidate({ personaId, status: "pending" });
+      toast.success(`生成${data.extracted.length}条待审阅候选，尚未应用`);
+    },
+    onError: (e: any) => {
+      if (e.data?.code === "CONFLICT") {
+        void utils.memoryReview.list.invalidate({ personaId, status: "pending" });
+        toast.error("提取请求发生冲突，请刷新候选后重新审阅");
+      } else {
+        toast.error(e.message);
+      }
+    },
+    onSettled: () => { extractInFlight.current = false; },
   });
 
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<MemoryFormState>(emptyMemoryForm());
+  const [formConflict, setFormConflict] = useState(false);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"active" | "all" | "high_importance" | "low_confidence" | "archived" | "contradicted">("active");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -2183,35 +2211,50 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
   }, [memories, query, activeTab, typeFilter, sourceFilter]);
 
   const startAdd = () => {
+    setFormConflict(false);
     setEditingId(null);
     setForm(emptyMemoryForm());
     setShowAdd(true);
   };
 
   const startEdit = (memory: any) => {
+    setFormConflict(false);
     setShowAdd(false);
     setEditingId(memory.id);
     setForm(memoryToForm(memory));
   };
 
   const cancelForm = () => {
+    setFormConflict(false);
     setShowAdd(false);
     setEditingId(null);
     setForm(emptyMemoryForm());
   };
 
   const saveForm = () => {
-    if (!form.title.trim()) return;
+    if (!form.title.trim() || formConflict) return;
     if (editingId) {
-      updateMutation.mutate({ id: editingId, ...memoryPayload(form), status: form.status });
+      if (!Number.isSafeInteger(form.revision)) {
+        toast.error("缺少记忆版本，请刷新并重新打开编辑");
+        void refetch();
+        return;
+      }
+      updateMutation.mutate({ id: editingId, ...memoryPayload(form), expectedRevision: form.revision });
     } else {
       createMutation.mutate({ personaId, ...memoryPayload(form) });
     }
   };
 
   const updateStatus = (memory: any, status: "active" | "archived" | "contradicted") => {
+    if (updateMutation.isPending) return;
+    if (!Number.isSafeInteger(memory.revision)) {
+      toast.error("缺少记忆版本，请刷新后重试");
+      void refetch();
+      return;
+    }
     updateMutation.mutate({
       id: memory.id,
+      expectedRevision: memory.revision,
       status,
       confidence: status === "contradicted" ? 1 : memory.confidence ?? 3,
     });
@@ -2255,12 +2298,19 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
 
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => extractMutation.mutate({ personaId })}
+              onClick={() => {
+                if (extractInFlight.current) return;
+                if (extractOperation.current?.personaId !== personaId) {
+                  extractOperation.current = { personaId, id: crypto.randomUUID() };
+                }
+                extractInFlight.current = true;
+                extractMutation.mutate({ personaId, operationId: extractOperation.current.id });
+              }}
               disabled={extractMutation.isPending}
               className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 bg-gradient-to-r from-primary/15 to-chart-3/15 text-primary hover:from-primary/25 hover:to-chart-3/25 border border-primary/25 rounded-xl transition-all shadow-2xs disabled:opacity-50"
             >
               <Sparkles className={`w-3.5 h-3.5 ${extractMutation.isPending ? "animate-spin" : ""}`} />
-              {extractMutation.isPending ? "AI 提取中..." : "AI 提取记忆"}
+              {extractMutation.isPending ? "AI 提取中..." : "AI 提取候选"}
             </button>
             <button
               onClick={startAdd}
@@ -2392,6 +2442,7 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
 
         {/* Content Stream */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4 panel-scrollbar">
+          <MemoryReviewCandidates key={personaId} personaId={personaId} />
           {showingForm && (
             <div className="p-5 bg-card border-2 border-primary/25 rounded-3xl space-y-4 shadow-lg animate-scale-in">
               <div className="flex items-center justify-between pb-2 border-b border-border/40">
@@ -2439,6 +2490,7 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
                       className="w-full h-9 px-2.5 bg-background border border-border/80 rounded-xl text-xs text-foreground"
                     >
                       <option value="memory">🌸 记忆</option>
+                      <option value="anchor">📌 事实锚点</option>
                       <option value="milestone">👑 里程碑</option>
                       <option value="anniversary">💖 纪念日</option>
                     </select>
@@ -2541,6 +2593,12 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
                 )}
               </div>
 
+              {formConflict && (
+                <div role="alert" className="space-y-2 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  <p>记忆版本已变化。当前编辑已保留，请重新核对最新版本后保存。</p>
+                  <button disabled={memoriesFetching || !selectedMemory || (selectedMemory as any).revision === form.revision} className="underline disabled:opacity-50" onClick={() => selectedMemory && startEdit(selectedMemory)}>载入最新版本（放弃当前编辑）</button>
+                </div>
+              )}
               <div className="flex gap-2.5 justify-end pt-2 border-t border-border/40">
                 <button
                   onClick={cancelForm}
@@ -2550,7 +2608,7 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
                 </button>
                 <button
                   onClick={saveForm}
-                  disabled={!form.title.trim() || createMutation.isPending || updateMutation.isPending}
+                  disabled={!form.title.trim() || formConflict || createMutation.isPending || updateMutation.isPending}
                   className="inline-flex items-center gap-1.5 text-xs font-semibold px-5 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl disabled:opacity-50 transition-all shadow-xs"
                 >
                   <Save className="w-3.5 h-3.5" />
@@ -2567,7 +2625,7 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">暂无记忆档案</p>
-                <p className="text-xs text-muted-foreground mt-1">开始与 TA 聊天，或点击上方 “AI 提取记忆” 沉淀重要时刻</p>
+                <p className="text-xs text-muted-foreground mt-1">开始与 TA 聊天，或点击上方 “AI 提取候选” 后逐条审阅</p>
               </div>
             </div>
           )}
@@ -2583,7 +2641,9 @@ function MemoryTimeline({ personaId, onClose }: { personaId: number; onClose: ()
 
           <div className="space-y-3.5">
             {filteredMemories.map((m: any) => {
-              const cat = CATEGORY_LABELS[m.category] || CATEGORY_LABELS.memory;
+              const cat = m.category === "anchor"
+                ? { ...CATEGORY_LABELS.memory, label: "事实锚点", emoji: "📌" }
+                : CATEGORY_LABELS[m.category] || CATEGORY_LABELS.memory;
               const status = MEMORY_STATUS_LABELS[m.status || "active"] || MEMORY_STATUS_LABELS.active;
               const typeLabel = MEMORY_TYPE_LABELS[m.memoryType || "relationship_event"] || m.memoryType || "记忆";
               const sourceLabel = MEMORY_SOURCE_LABELS[m.source || "manual"] || m.source || "未知";
@@ -2920,7 +2980,7 @@ function SourceLibraryPanel({ personaId, onClose }: { personaId: number; onClose
 
               {results.length === 0 ? (
                 <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-3.5 text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
-                  ⚠️ 资料库中未找到足够置信度的原著切片。触发此情况时，角色会自动识别并承认“记不准”，杜绝虚构幻觉。
+                  资料库中未找到匹配的原文片段。对话会提示角色说明证据不足；可换用作品中的关键词再次检索。
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -2936,7 +2996,7 @@ function SourceLibraryPanel({ personaId, onClose }: { personaId: number; onClose
                           </span>
                         </div>
                         <span className="text-[10.5px] font-mono text-muted-foreground">
-                          相关度分数: {chunk.score}
+                          词法匹配分数: {chunk.score}
                         </span>
                       </div>
                       <p className="text-xs text-foreground/90 leading-relaxed bg-background/80 p-3 rounded-xl border border-border/40">
@@ -2986,7 +3046,7 @@ function SourceLibraryPanel({ personaId, onClose }: { personaId: number; onClose
                 </div>
                 <div className="rounded-xl bg-muted/30 p-2.5 text-center">
                   <p className="text-sm font-bold text-foreground">{formatCount(source.tokenEstimate)}</p>
-                  <p className="text-[10px] text-muted-foreground">Tokens 规模</p>
+                  <p className="text-[10px] text-muted-foreground">估算令牌规模</p>
                 </div>
               </div>
 
@@ -3024,7 +3084,7 @@ function SourceLibraryPanel({ personaId, onClose }: { personaId: number; onClose
         {/* Footer */}
         <div className="px-6 py-3 border-t border-border/60 bg-muted/10 shrink-0">
           <p className="text-[11px] text-muted-foreground text-center">
-            原著资料库与知识切片处于只读检索保护状态 · 随时支持对话实时语义召回
+            按关键词及相邻片段检索 · 普通角色对话可引用原文 · 上传页管理资料
           </p>
         </div>
       </div>
