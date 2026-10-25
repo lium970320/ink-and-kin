@@ -1,3 +1,5 @@
+> **界面阶段快照分支（2026-10-25）**：当前仅完成界面迁移，业务后端未接通。使用合成数据预览请先阅读 [快照说明与启动方法](UI-SNAPSHOT.md)。本分支尚不作为可部署版本。
+
 # 书中人
 
 书中人基于 **Ch1rpy（GitHub：Ch1rpy2613）的 [Mirrai](https://github.com/Ch1rpy2613/Mirrai)** 开发。本基础版取自上游提交 [`162019895b70509f495b406b86e1cd61c08147a5`](https://github.com/Ch1rpy2613/Mirrai/commit/162019895b70509f495b406b86e1cd61c08147a5)。

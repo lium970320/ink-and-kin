@@ -17,3 +17,6 @@ live-wechat-qr.png
 live-wechat-qr-url.txt
 __pycache__/
 *.py[cod]
+
+# 界面阶段预览构建产物
+/ui-preview-dist/

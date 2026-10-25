@@ -31,7 +31,9 @@
     "test": "vitest run",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node scripts/migrate.mjs"
+    "db:migrate": "node scripts/migrate.mjs",
+    "preview:ui:build": "vite build --config vite.preview.config.mjs",
+    "preview:ui": "node preview/server.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
