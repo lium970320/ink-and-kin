@@ -3,132 +3,76 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Mirrai Design System v4 · 「夜灯 / 晨纸」
-   深色 Nocturne：暖墨蓝底、琥珀金作唯一强调色。
-   浅色 Vellum：奶油纸底、墨青作主色、砖橘作强调色。
-   两套主题共用同一组变量名，跟随系统切换。
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-/* ─── 自托管字体：MiSans ───────────────────────────────────────────────────
-   子集由 scripts/subset-misans.py 依据源码字面量生成：只裁字符集，字形轮廓
-   未作任何改动，wght 轴与全部 OpenType feature 均完整保留。
-   MiSans 由小米发布，可免费商用与嵌入（不可单独售卖字体文件本身）。 */
-@font-face {
-  font-family: "MiSans";
-  font-style: normal;
-  font-weight: 150 700;
-  font-display: swap;
-  src: url("/fonts/MiSans-subset.woff2") format("woff2");
+@property --border-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
 }
 
-@theme {
-  /* ── Palette · 晨纸 Vellum（light） ── */
-  --color-background: oklch(0.965 0.010 85);
-  --color-foreground: oklch(0.28 0.020 240);
-  --color-card: oklch(0.99 0.005 85);
-  --color-card-foreground: oklch(0.28 0.020 240);
-  --color-elevated: oklch(0.995 0.003 85);
-  --color-elevated-foreground: oklch(0.28 0.020 240);
-  --color-popover: oklch(0.99 0.005 85);
-  --color-popover-foreground: oklch(0.28 0.020 240);
-  --color-primary: oklch(0.30 0.040 240);
-  --color-primary-foreground: oklch(0.98 0.006 85);
-  --color-secondary: oklch(0.945 0.008 85);
-  --color-secondary-foreground: oklch(0.30 0.020 240);
-  --color-muted: oklch(0.945 0.008 85);
-  --color-muted-foreground: oklch(0.50 0.020 240);
-  --color-accent: oklch(0.60 0.140 42);
-  --color-accent-foreground: oklch(0.99 0.005 85);
-  --color-destructive: oklch(0.54 0.180 27);
-  --color-destructive-foreground: oklch(0.98 0.006 85);
-  --color-border: oklch(0.88 0.010 85);
-  --color-input: oklch(0.87 0.010 85);
-  --color-ring: oklch(0.60 0.140 42);
+/* ─── Design Tokens — Calm Product Palette ────────────────────────────────── */
+@theme inline {
+  --color-background: oklch(0.982 0.006 118);
+  --color-foreground: oklch(0.20 0.018 236);
+  --color-card: oklch(0.998 0.002 118);
+  --color-card-foreground: oklch(0.20 0.018 236);
+  --color-popover: oklch(0.998 0.002 118);
+  --color-popover-foreground: oklch(0.20 0.018 236);
+  --color-primary: oklch(0.54 0.12 164);
+  --color-primary-foreground: oklch(0.99 0.004 120);
+  --color-secondary: oklch(0.94 0.012 112);
+  --color-secondary-foreground: oklch(0.26 0.02 236);
+  --color-muted: oklch(0.93 0.008 118);
+  --color-muted-foreground: oklch(0.38 0.015 236);
+  --color-accent: oklch(0.92 0.025 164);
+  --color-accent-foreground: oklch(0.24 0.04 164);
+  --color-destructive: oklch(0.58 0.18 25);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-border: oklch(0.88 0.009 118);
+  --color-input: oklch(0.89 0.009 118);
+  --color-ring: oklch(0.58 0.13 164);
+  --color-chart-1: oklch(0.56 0.12 164);
+  --color-chart-2: oklch(0.62 0.14 35);
+  --color-chart-3: oklch(0.55 0.12 265);
+  --color-chart-4: oklch(0.60 0.12 90);
+  --color-chart-5: oklch(0.58 0.12 325);
 
-  /* ── 强调色别名（砖橘）· 取代旧的 cinnabar ── */
-  --color-cinnabar: oklch(0.60 0.140 42);
-
-  /* ── Chart · 纸墨系 ── */
-  --color-chart-1: oklch(0.60 0.140 42);
-  --color-chart-2: oklch(0.34 0.045 240);
-  --color-chart-3: oklch(0.50 0.075 150);
-  --color-chart-4: oklch(0.58 0.090 70);
-  --color-chart-5: oklch(0.48 0.045 300);
-
-  /* ── Mood · 六种情感状态 ── */
-  --color-mood-warm: oklch(0.52 0.115 45);
-  --color-mood-playful: oklch(0.55 0.120 80);
-  --color-mood-nostalgic: oklch(0.47 0.060 250);
-  --color-mood-melancholy: oklch(0.46 0.065 300);
-  --color-mood-happy: oklch(0.50 0.100 150);
-  --color-mood-distant: oklch(0.50 0.010 90);
-
-  /* ── Radius · 方角偏柔 ── */
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.625rem;
-  --radius-xl: 0.875rem;
+  --radius-xl: 0.75rem;
 
-  /* ── Typography · 全站 MiSans ── */
-  --font-sans: "MiSans", -apple-system, BlinkMacSystemFont, "PingFang SC",
-    "Microsoft YaHei", system-ui, sans-serif;
-  /* 标题与正文同族，靠字重与字号拉开层级 */
-  --font-display: "MiSans", -apple-system, BlinkMacSystemFont, "PingFang SC",
-    "Microsoft YaHei", system-ui, sans-serif;
-  /* MiSans 没有等宽变体，代码块仍需系统等宽字体保持对齐 */
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    monospace;
-
-  /* ─── Shadows · 浅色几乎不用，靠发丝线 ── */
-  --shadow-lift: 0 1px 2px oklch(0.28 0.02 240 / 0.05);
-  --shadow-pop: 0 8px 28px -8px oklch(0.28 0.02 240 / 0.18);
+  --font-sans: 'Noto Sans SC', system-ui, sans-serif;
 }
 
-/* ─── Palette · 夜灯 Nocturne（dark） ────────────────────────────────────── */
+/* ─── Dark Mode Overrides ──────────────────────────────────────────────────── */
 html.dark {
-  --color-background: oklch(0.16 0.012 265);
-  --color-foreground: oklch(0.93 0.008 90);
-  --color-card: oklch(0.20 0.012 265);
-  --color-card-foreground: oklch(0.93 0.008 90);
-  --color-elevated: oklch(0.24 0.014 265);
-  --color-elevated-foreground: oklch(0.93 0.008 90);
-  --color-popover: oklch(0.22 0.013 265);
-  --color-popover-foreground: oklch(0.93 0.008 90);
-  --color-primary: oklch(0.93 0.008 90);
-  --color-primary-foreground: oklch(0.18 0.012 265);
-  --color-secondary: oklch(0.25 0.013 265);
-  --color-secondary-foreground: oklch(0.90 0.008 90);
-  --color-muted: oklch(0.24 0.012 265);
-  --color-muted-foreground: oklch(0.62 0.012 265);
-  --color-accent: oklch(0.76 0.130 75);
-  --color-accent-foreground: oklch(0.18 0.020 265);
-  --color-destructive: oklch(0.65 0.190 25);
-  --color-destructive-foreground: oklch(0.16 0.012 265);
-  --color-border: oklch(0.28 0.014 265);
-  --color-input: oklch(0.30 0.014 265);
-  --color-ring: oklch(0.76 0.130 75);
-
-  --color-cinnabar: oklch(0.76 0.130 75);
-
-  --color-chart-1: oklch(0.76 0.130 75);
-  --color-chart-2: oklch(0.66 0.055 250);
-  --color-chart-3: oklch(0.72 0.085 150);
-  --color-chart-4: oklch(0.78 0.100 70);
-  --color-chart-5: oklch(0.64 0.055 300);
-
-  --color-mood-warm: oklch(0.78 0.100 55);
-  --color-mood-playful: oklch(0.80 0.105 85);
-  --color-mood-nostalgic: oklch(0.72 0.055 250);
-  --color-mood-melancholy: oklch(0.70 0.060 300);
-  --color-mood-happy: oklch(0.74 0.095 150);
-  --color-mood-distant: oklch(0.66 0.012 90);
-
-  --shadow-lift: 0 1px 0 oklch(1 0 0 / 0.05);
-  --shadow-pop: 0 12px 36px -12px oklch(0 0 0 / 0.6);
+  --color-background: oklch(0.24 0.014 236);
+  --color-foreground: oklch(0.96 0.006 118);
+  --color-card: oklch(0.30 0.014 236);
+  --color-card-foreground: oklch(0.96 0.006 118);
+  --color-popover: oklch(0.31 0.014 236);
+  --color-popover-foreground: oklch(0.96 0.006 118);
+  --color-primary: oklch(0.70 0.13 164);
+  --color-primary-foreground: oklch(0.14 0.014 236);
+  --color-secondary: oklch(0.35 0.014 236);
+  --color-secondary-foreground: oklch(0.92 0.008 118);
+  --color-muted: oklch(0.36 0.012 236);
+  --color-muted-foreground: oklch(0.85 0.006 118);
+  --color-accent: oklch(0.38 0.035 164);
+  --color-accent-foreground: oklch(0.95 0.008 118);
+  --color-destructive: oklch(0.66 0.16 25);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-border: oklch(0.46 0.014 236);
+  --color-input: oklch(0.39 0.012 236);
+  --color-ring: oklch(0.70 0.13 164);
+  --color-chart-1: oklch(0.70 0.13 164);
+  --color-chart-2: oklch(0.72 0.14 42);
+  --color-chart-3: oklch(0.72 0.12 285);
+  --color-chart-4: oklch(0.76 0.12 92);
+  --color-chart-5: oklch(0.72 0.12 325);
 }
 
-/* ─── Base ────────────────────────────────────────────────────────────────── */
+/* ─── Base ──────────────────────────────────────────────────────────────────── */
 @layer base {
   * {
     @apply border-border;
@@ -136,19 +80,25 @@ html.dark {
   html {
     background: var(--color-background);
     text-rendering: optimizeLegibility;
-    color-scheme: light;
-    -webkit-tap-highlight-color: transparent;
-  }
-  html.dark {
-    color-scheme: dark;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     min-height: 100vh;
-    min-height: 100dvh;
-    /* MiSans: 等宽数字，统计、时间、日期里的数字才能对齐 */
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum" 1;
+    background:
+      radial-gradient(1000px 560px at 6% -8%, color-mix(in oklab, var(--color-primary) 22%, transparent), transparent 62%),
+      radial-gradient(860px 500px at 98% -4%, color-mix(in oklab, var(--color-chart-2) 18%, transparent), transparent 58%),
+      radial-gradient(700px 420px at 88% 82%, color-mix(in oklab, var(--color-chart-3) 10%, transparent), transparent 60%),
+      radial-gradient(620px 380px at 4% 92%, color-mix(in oklab, var(--color-chart-5) 9%, transparent), transparent 58%),
+      var(--color-background);
+    background-attachment: fixed;
+  }
+  html.dark body {
+    background:
+      radial-gradient(1000px 560px at 6% -8%, oklch(0.36 0.06 168 / 0.35), transparent 62%),
+      radial-gradient(860px 500px at 98% -4%, oklch(0.38 0.05 50 / 0.22), transparent 58%),
+      radial-gradient(1100px 640px at 50% 118%, oklch(0.34 0.05 265 / 0.25), transparent 62%),
+      var(--color-background);
+    background-attachment: fixed;
   }
   button,
   input,
@@ -167,228 +117,331 @@ html.dark {
     min-height: 0;
   }
   .container {
-    @apply mx-auto px-4 sm:px-6;
+    @apply mx-auto px-4;
     max-width: 1120px;
   }
   ::selection {
-    background: color-mix(in oklab, var(--color-accent) 24%, transparent);
-  }
-  /* 全局焦点环：所有可交互元素统一 */
-  :focus-visible {
-    outline: 2px solid var(--color-ring);
-    outline-offset: 2px;
-    border-radius: var(--radius-sm);
+    background: color-mix(in oklab, var(--color-primary) 25%, transparent);
   }
 }
 
-/* ─── Scrollbar ───────────────────────────────────────────────────────────── */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+/* ─── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in oklab, var(--color-muted-foreground) 28%, transparent);
-  border-radius: 3px;
+  background: color-mix(in oklab, var(--color-foreground) 18%, transparent);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in oklab, var(--color-muted-foreground) 45%, transparent);
+  background: color-mix(in oklab, var(--color-foreground) 35%, transparent);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--color-foreground) 22%, transparent);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--color-foreground) 45%, transparent);
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Typography scale
-   display  衬线 2rem/600    页面唯一大标题
-   title    衬线 1.25rem/600 区块标题
-   label    无衬线 0.75rem/500 标签、kicker、统计标签
-   body     无衬线 0.875rem/400
-   numeric  无衬线 tabular 1.5rem/600 统计数字
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-.page-title {
-  font-family: var(--font-display);
-  font-size: 2rem;
-  line-height: 1.2;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-foreground);
+/* Panel Scrollbar: Enhanced draggable 10px width */
+.panel-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-foreground) 25%, transparent) transparent;
 }
-@media (min-width: 640px) {
-  .page-title {
-    font-size: 2.25rem;
+.panel-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
+.panel-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.panel-scrollbar::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--color-foreground) 24%, transparent);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.panel-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--color-primary) 65%, transparent);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ─── Animations ────────────────────────────────────────────────────────────── */
+@keyframes modalPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
   }
 }
-
-.section-title {
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  line-height: 1.35;
-  font-weight: 600;
-  color: var(--color-foreground);
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
 }
 
-.card-title {
-  font-family: var(--font-display);
-  font-size: 1.0625rem;
-  line-height: 1.4;
-  font-weight: 600;
-  color: var(--color-foreground);
+.animate-scale-in { animation: modalPop 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-modal-pop { animation: modalPop 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-fade-in-up { animation: fadeInUp 0.4s ease-out forwards; }
+.animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+.animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+.animate-slide-in-right { animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+/* ─── Cards ────────────────────────────────────────────────────────────────── */
+.warm-card {
+  position: relative;
+  background: color-mix(in oklab, var(--color-card) 94%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in oklab, var(--color-border) 90%, transparent);
+  border-radius: 1rem;
+  box-shadow:
+    0 1px 2px color-mix(in oklab, var(--color-foreground) 4%, transparent),
+    0 14px 36px -18px color-mix(in oklab, var(--color-primary) 22%, transparent),
+    0 8px 20px -14px color-mix(in oklab, var(--color-foreground) 10%, transparent);
+  transition: border-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+              transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.warm-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  border-radius: 1rem 1rem 0 0;
+  background: linear-gradient(90deg,
+    transparent 8%,
+    color-mix(in oklab, var(--color-primary) 45%, transparent) 50%,
+    transparent 92%);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.warm-card:nth-child(2) { animation-delay: 60ms; }
+.warm-card:nth-child(3) { animation-delay: 120ms; }
+.warm-card:nth-child(4) { animation-delay: 180ms; }
+.warm-card:nth-child(5) { animation-delay: 240ms; }
+.warm-card:nth-child(6) { animation-delay: 300ms; }
+.warm-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in oklab, var(--color-primary) 55%, var(--color-border));
+  box-shadow:
+    0 10px 32px -8px color-mix(in oklab, var(--color-primary) 22%, transparent),
+    0 2px 6px -1px color-mix(in oklab, var(--color-foreground) 6%, transparent);
+}
+html.dark .warm-card {
+  background: color-mix(in oklab, var(--color-card) 92%, transparent);
+  box-shadow:
+    0 1px 2px oklch(0.05 0.01 240 / 0.4),
+    0 16px 40px -18px oklch(0.05 0.01 240 / 0.55);
+}
+html.dark .warm-card:hover {
+  box-shadow:
+    0 12px 30px -4px color-mix(in oklab, var(--color-primary) 18%, transparent),
+    0 4px 10px -2px color-mix(in oklab, black 40%, transparent);
 }
 
-.stat-value {
-  font-family: var(--font-sans);
-  font-size: 1.5rem;
-  line-height: 1.1;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-  color: var(--color-foreground);
-  /* SS04 汉字等高数字：数字和汉字一样高，统计行才不显得跳 */
-  font-feature-settings: "tnum" 1, "ss04" 1;
+/* ─── Section Chip (彩色图标徽章) ──────────────────────────────────────────── */
+/* ─── Provider Cards（设置页供应商卡片：比 warm-card 紧凑，沿用同一套动效语言） ── */
+.provider-card {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--color-card) 92%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-border) 85%, transparent);
+  border-radius: 1rem;
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--color-foreground) 4%, transparent);
+  transition: border-color 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+              transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1),
+              opacity 0.28s ease;
+  animation: fadeInUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.provider-card:hover {
+  border-color: color-mix(in oklab, var(--color-primary) 45%, var(--color-border));
+  box-shadow: 0 10px 28px -12px color-mix(in oklab, var(--color-primary) 22%, transparent);
+}
+.provider-card--expanded {
+  border-color: color-mix(in oklab, var(--color-primary) 40%, var(--color-border));
+  box-shadow: 0 14px 34px -16px color-mix(in oklab, var(--color-primary) 26%, transparent);
+}
+.provider-card--unconfigured { opacity: 0.7; border-style: dashed; }
+.provider-card--unconfigured:hover { opacity: 1; }
+
+/* 展开/收起：grid-template-rows 0fr→1fr 做真实高度过渡，不猜 max-height。
+   收起后额外用 visibility 收走键盘焦点（transition 里给 visibility 一个延迟，
+   否则收起动画会被瞬间掐断）。 */
+.collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.24s ease,
+              visibility 0s linear 0.34s;
+}
+.collapse-grid[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition: grid-template-rows 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.24s ease,
+              visibility 0s;
+}
+.collapse-grid > * { min-height: 0; overflow: hidden; }
+/* 已配置状态点：一圈柔和光晕 */
+.status-dot-live {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 16%, transparent);
 }
 
-.stat-label {
-  font-size: 0.75rem;
-  line-height: 1.4;
-  font-weight: 500;
-  color: var(--color-muted-foreground);
+/* 中转站卡片：进入动画 + 悬停微抬 */
+.relay-card {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: border-color 0.25s ease, background-color 0.25s ease,
+              transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.relay-card:hover {
+  border-color: color-mix(in oklab, var(--color-primary) 35%, var(--color-border));
 }
 
-/* 页面里的引文 / 书信口吻正文
-   正文一律用无衬线：这些内容来自用户（分身名、日记、告别信、消息），
-   字体是子集化的，用户输入的字可能不在子集里。 */
-.letter-prose {
-  font-family: var(--font-sans);
-  font-size: 0.9375rem;
-  line-height: 1.85;
-  letter-spacing: 0.01em;
-  max-width: 62ch;
-  color: var(--color-foreground);
+.ai-provider-overview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
 }
-.letter-prose p + p {
-  margin-top: 1.1em;
+.ai-overview-chip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in oklab, var(--color-border) 65%, transparent); border-radius: 0.625rem; background: color-mix(in oklab, var(--color-primary) 3%, var(--color-card)); font-size: 0.75rem; }
+.ai-count-badge { display: inline-flex; align-items: center; gap: 0.5rem; border-radius: 999px; background: color-mix(in oklab, var(--color-primary) 8%, transparent); padding: 0.375rem 0.625rem; font-size: 0.6875rem; color: var(--color-primary); font-variant-numeric: tabular-nums; }
+.ai-provider-section > .collapse-grid[data-open="false"] { margin-block: 0; }
+.relay-editor { container-type: inline-size; }
+.relay-field-grid, .relay-model-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; align-items: end; }
+.relay-model-grid [role="group"] { height: 2.25rem; align-items: center; }
+.relay-priority-levels { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.125rem; padding: 0.125rem; border: 1px solid color-mix(in oklab, var(--color-border) 50%, transparent); border-radius: 0.5rem; background: color-mix(in oklab, var(--color-muted) 50%, transparent); }
+.relay-priority-levels button { height: 1.875rem; min-width: 0; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--color-muted-foreground); transition: color 180ms ease, background-color 180ms ease, box-shadow 180ms ease; }
+.relay-priority-levels button:hover { background-color: color-mix(in oklab, var(--color-background) 65%, transparent); color: var(--color-primary); }
+.relay-priority-levels button[aria-pressed="true"] { background: var(--color-background); color: var(--color-primary); box-shadow: 0 1px 4px #0000000a; font-weight: 600; }
+.relay-priority-levels button:focus-visible { outline: 2px solid var(--color-ring); outline-offset: -2px; }
+@container (min-width: 480px) {
+  .relay-field-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .relay-model-grid { grid-template-columns: minmax(0, 1fr) auto; }
+  .relay-priority-levels { grid-template-columns: repeat(10, minmax(0, 1fr)); }
 }
-.letter-prose strong {
-  font-weight: 600;
-}
-
-/* 聊天气泡里的正文：气泡本身已经限宽，不再套一层 62ch 的行长限制 */
-.letter-prose--chat {
-  font-size: 0.9375rem;
-  line-height: 1.7;
-  max-width: none;
-}
-.letter-prose--chat p + p {
-  margin-top: 0.8em;
-}
-
-/* ─── MiSans OpenType features ───────────────────────────────────────────
-   字体子集保留了全部 26 个 GSUB feature 与 kern，按需开启：
-
-   tnum  等宽数字 —— 全局开启，统计、日期、时间里的数字才能对齐
-   ss04  汉字等高数字 —— 数字和汉字一样高，统计行才不显得跳
-   ss01  数字专用标点 —— 数字周边的标点换成专用形态
-   ss02  单位小上标 / ss03 单位小下标
-   ss07  西文式标点 / ss08 拨号盘符号 / ss09 小字面数字
-   frac  分数（1/2 → ½）—— 用于成就进度一类的比值
-   sups  数字上标（1 → ¹）· case 大写形态数字 · vert 竖排标点
-   ------------------------------------------------------------------ */
-.num-frac {
-  font-feature-settings: "tnum" 1, "frac" 1;
-}
-.num-sups {
-  font-feature-settings: "sups" 1;
-}
-.num-case {
-  font-feature-settings: "case" 1;
-}
-.num-unit-sup {
-  font-feature-settings: "ss02" 1;
-}
-.num-unit-sub {
-  font-feature-settings: "ss03" 1;
-}
-.num-western-punct {
-  font-feature-settings: "ss07" 1;
-}
-.num-dial {
-  font-feature-settings: "ss08" 1;
-}
-.num-small-cap {
-  font-feature-settings: "ss09" 1;
-}
-.text-vert {
-  writing-mode: vertical-rl;
-  font-feature-settings: "vert" 1, "vrt2" 1;
+.ai-provider-filters { display: inline-flex; gap: 0.125rem; padding: 0.25rem; background: var(--color-muted); border-radius: 0.75rem; }
+.ai-provider-filters button { padding: 0.375rem 0.625rem; border-radius: 0.5rem; font-size: 0.75rem; color: var(--color-muted-foreground); transition: color 180ms ease, background-color 180ms ease, box-shadow 180ms ease; }
+.ai-provider-filters button[aria-pressed="true"] { background: var(--color-card); color: var(--color-primary); box-shadow: 0 1px 4px #0000000a; font-weight: 600; }
+.ai-provider-filters button:hover { color: var(--color-foreground); }
+.provider-summary { display: flex; align-items: center; }
+.provider-default-action { margin-right: 0.75rem; }
+.provider-monogram { display: grid; place-items: center; flex-shrink: 0; width: 2.25rem; height: 2.25rem; border-radius: 0.75rem; background: var(--color-muted); color: var(--color-muted-foreground); font-size: 0.75rem; font-weight: 600; }
+.provider-monogram--default { background: color-mix(in oklab, var(--color-primary) 12%, transparent); color: var(--color-primary); }
+.ai-role-badge { border-radius: 999px; padding: 0.125rem 0.5rem; font-size: 0.625rem; font-weight: 500; }
+.ai-disclosure-trigger { transition: background-color 180ms ease; }
+.ai-disclosure-trigger:hover { background-color: color-mix(in oklab, var(--color-muted) 40%, transparent); }
+.ai-disclosure-trigger:focus-visible, .ai-provider-filters button:focus-visible { outline: 2px solid var(--color-ring); outline-offset: -3px; }
+.ai-disclosure-chevron { transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1); }
+@media (max-width: 480px) {
+  .provider-monogram { display: none; }
+  .provider-default-action { margin-right: 0.5rem; }
+  .ai-provider-filters button { padding-left: 0.5rem; padding-right: 0.5rem; }
 }
 
-/* Kicker · 小注（无衬线，全大写语义靠字距不靠大小写） */
-.kicker {
-  font-size: 0.75rem;
-  line-height: 1.4;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--color-muted-foreground);
+@media (prefers-reduced-motion: reduce) {
+  .provider-card, .relay-card, .collapse-grid, .ai-disclosure-chevron {
+    animation: none !important;
+    transition: none !important;
+  }
 }
-.kicker-accent {
-  color: var(--color-accent);
-}
-
-/* 发丝线 */
-.rule {
-  height: 1px;
-  border: 0;
-  background: var(--color-border);
-}
-
-/* 强调印记 */
-.seal-dot {
-  display: inline-block;
-  width: 0.375rem;
-  height: 0.375rem;
-  border-radius: 1px;
-  background: var(--color-accent);
+.section-chip {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  color: var(--chip-color, var(--color-primary));
+  background: linear-gradient(135deg,
+    color-mix(in oklab, var(--chip-color, var(--color-primary)) 20%, var(--color-card)),
+    color-mix(in oklab, var(--chip-color, var(--color-primary)) 8%, var(--color-card)));
+  border: 1px solid color-mix(in oklab, var(--chip-color, var(--color-primary)) 26%, transparent);
+  box-shadow: 0 3px 10px -3px color-mix(in oklab, var(--chip-color, var(--color-primary)) 45%, transparent);
 }
 
-/* ─── Surface · 卡片 ──────────────────────────────────────────────────────── */
-.surface {
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+/* ─── Stat Tile (统计瓷砖) ─────────────────────────────────────────────────── */
+.stat-tile {
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in oklab, var(--color-border) 55%, transparent);
+  background: linear-gradient(160deg,
+    color-mix(in oklab, var(--color-primary) 5%, var(--color-card)),
+    var(--color-card) 70%);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
-.surface-interactive {
-  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+.stat-tile:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--color-primary) 40%, var(--color-border));
+  box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--color-primary) 35%, transparent);
 }
-.surface-interactive:hover {
-  border-color: color-mix(in oklab, var(--color-foreground) 26%, var(--color-border));
-  transform: translateY(-1px);
-}
-.surface-interactive:active {
-  transform: translateY(0);
-}
-/* 深色下用上边缘亮线模拟材质厚度，不用投影 */
-html.dark .surface {
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.045);
-}
-html.dark .surface-interactive:hover {
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.07);
+.stat-tile-number {
+  background: linear-gradient(135deg, var(--color-primary), color-mix(in oklab, var(--color-primary) 55%, var(--color-chart-3)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
-/* ─── Header / Composer ────────────────────────────────────────────────────── */
-.glass,
+/* ─── Header ───────────────────────────────────────────────────────────────── */
 .app-header {
-  background: var(--color-background);
-  border-bottom: 1px solid var(--color-border);
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--color-card) 92%, transparent),
+      color-mix(in oklab, var(--color-background) 82%, transparent)
+    );
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-border) 50%, transparent);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--color-foreground) 3%, transparent);
 }
-.chat-composer {
-  background: var(--color-background);
-  border-top: 1px solid var(--color-border);
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+html.dark .app-header {
+  background:
+    linear-gradient(180deg,
+      oklch(0.32 0.016 236 / 0.92),
+      oklch(0.27 0.014 236 / 0.90)
+    );
+  border-bottom-color: oklch(0.52 0.018 220 / 0.45);
+  box-shadow:
+    0 1px 0 oklch(0.78 0.010 220 / 0.10) inset,
+    0 4px 24px oklch(0.08 0.008 240 / 0.22);
 }
 
-/* ─── App Nav · 只留返回、品牌、动作 ─────────────────────────────────────── */
 .app-nav {
   min-height: 3.5rem;
   display: flex;
@@ -403,24 +456,42 @@ html.dark .surface-interactive:hover {
   gap: 0.5rem;
 }
 .app-nav-mark {
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-lg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  color: var(--color-foreground);
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-primary) 14%, var(--color-card)),
+    color-mix(in oklab, var(--color-primary) 8%, var(--color-card))
+  );
+  border: 1px solid color-mix(in oklab, var(--color-primary) 16%, var(--color-border));
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--color-primary) 6%, transparent);
 }
-/* 顶栏里的名字是上下文（分身名），不是页面标题 —— 压低视觉重量 */
+html.dark .app-nav-mark {
+  background: linear-gradient(135deg, oklch(0.36 0.04 168 / 0.50), oklch(0.30 0.035 168 / 0.40));
+  border-color: oklch(0.58 0.07 168 / 0.24);
+  color: oklch(0.80 0.10 164);
+  box-shadow: 0 1px 3px oklch(0.04 0.01 240 / 0.30);
+}
 .app-nav-title {
   color: var(--color-foreground);
-  font-size: 0.9375rem;
   font-weight: 600;
+  font-size: 0.9375rem;
   line-height: 1.2;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
 }
 .app-nav-subtitle {
   color: var(--color-muted-foreground);
   font-size: 0.6875rem;
   line-height: 1.2;
+  letter-spacing: 0;
+}
+html.dark .app-nav-subtitle {
+  color: oklch(0.82 0.010 200 / 0.86);
 }
 .app-nav-spacer {
   flex: 1;
@@ -428,232 +499,213 @@ html.dark .surface-interactive:hover {
 .app-nav-actions {
   display: flex;
   align-items: center;
-  gap: 0.125rem;
+  gap: 0.25rem;
 }
-.app-nav-icon,
+.app-nav-icon {
+  width: 2.125rem;
+  height: 2.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
 .app-nav-back {
-  height: 2rem;
-  min-width: 2rem;
+  height: 2.125rem;
   padding: 0 0.5rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   border: 1px solid transparent;
   background: transparent;
   color: var(--color-muted-foreground);
-  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-.app-nav-icon {
-  padding: 0;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .app-nav-icon:hover,
 .app-nav-back:hover {
   color: var(--color-foreground);
-  background: var(--color-muted);
+  background: color-mix(in oklab, var(--color-muted) 60%, transparent);
+  border-color: color-mix(in oklab, var(--color-border) 50%, transparent);
+  transform: scale(1.04);
 }
-.app-nav-icon:focus-visible,
-.app-nav-back:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
+.app-nav-icon:active,
+.app-nav-back:active {
+  transform: scale(0.95);
+  transition-duration: 0.1s;
+}
+html.dark .app-nav-icon,
+html.dark .app-nav-back {
+  color: oklch(0.82 0.01 200 / 0.82);
+}
+html.dark .app-nav-icon:hover,
+html.dark .app-nav-back:hover {
+  color: oklch(0.98 0.006 200);
+  background: oklch(0.42 0.014 220 / 0.70);
+  border-color: oklch(0.58 0.016 220 / 0.35);
 }
 .app-nav-icon-active {
-  color: var(--color-foreground) !important;
-  background: var(--color-muted);
+  color: var(--color-primary) !important;
+  background: color-mix(in oklab, var(--color-primary) 10%, transparent);
+  border-color: color-mix(in oklab, var(--color-primary) 14%, transparent);
+}
+html.dark .app-nav-icon-active {
+  color: oklch(0.78 0.12 164) !important;
+  background: oklch(0.36 0.05 164 / 0.30);
+  border-color: oklch(0.60 0.08 164 / 0.18);
 }
 .app-nav-divider {
   width: 1px;
-  height: 1rem;
-  background: var(--color-border);
-  margin: 0 0.25rem;
+  height: 1.125rem;
+  background: color-mix(in oklab, var(--color-border) 60%, transparent);
+  margin: 0 0.125rem;
+}
+html.dark .app-nav-divider {
+  background: oklch(0.44 0.02 220 / 0.36);
+}
+.chat-composer {
+  background: var(--color-card) !important;
+  border: 1px solid var(--color-border) !important;
+  border-radius: var(--radius-xl);
+  box-shadow: 0 4px 16px -2px color-mix(in oklab, var(--color-foreground) 6%, transparent) !important;
+  transition: all 0.2s ease;
+}
+html.dark .chat-composer {
+  background: var(--color-card) !important;
+  border-color: var(--color-border) !important;
+  box-shadow: 0 4px 20px -2px oklch(0.08 0.008 240 / 0.3) !important;
 }
 @media (max-width: 640px) {
   .app-nav {
-    min-height: 3.125rem;
+    min-height: 3.25rem;
+  }
+  .app-nav-mark {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+  .app-nav-icon {
+    width: 2rem;
+    height: 2rem;
+  }
+  .app-nav-back {
+    height: 2rem;
+    padding: 0 0.375rem;
+  }
+  .app-nav-actions {
+    gap: 0.125rem;
+  }
+  .app-nav-title {
+    font-size: 0.875rem;
   }
 }
 
-/* ─── Layout ──────────────────────────────────────────────────────────────── */
-.page-main {
-  width: 100%;
-  margin-inline: auto;
-  padding-block: 1.75rem 3rem;
-}
-@media (min-width: 640px) {
-  .page-main {
-    padding-block: 2rem 3.5rem;
+/* ─── Emotional State Colors ──────────────────────────────────────────────── */
+.state-warm { color: oklch(0.68 0.16 45); }
+.state-playful { color: oklch(0.70 0.16 75); }
+.state-nostalgic { color: oklch(0.62 0.14 250); }
+.state-melancholy { color: oklch(0.58 0.12 280); }
+.state-happy { color: oklch(0.60 0.16 150); }
+.state-distant { color: oklch(0.60 0.04 60); }
+
+.state-bg-warm { background: oklch(0.68 0.16 45 / 0.12); border-color: oklch(0.68 0.16 45 / 0.30); }
+.state-bg-playful { background: oklch(0.70 0.16 75 / 0.12); border-color: oklch(0.70 0.16 75 / 0.30); }
+.state-bg-nostalgic { background: oklch(0.62 0.14 250 / 0.12); border-color: oklch(0.62 0.14 250 / 0.30); }
+.state-bg-melancholy { background: oklch(0.58 0.12 280 / 0.12); border-color: oklch(0.58 0.12 280 / 0.30); }
+.state-bg-happy { background: oklch(0.60 0.16 150 / 0.12); border-color: oklch(0.60 0.16 150 / 0.30); }
+.state-bg-distant { background: oklch(0.60 0.04 60 / 0.12); border-color: oklch(0.60 0.04 60 / 0.30); }
+
+/* ─── Chat Bubbles (Modern Refined Style) ──────────────────────────────────────────── */
+@keyframes messageSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
-/* 两栏：主内容 + 侧栏。窄屏自动塌成一栏。 */
-.page-grid {
-  display: grid;
-  gap: 1.5rem;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-}
-@media (min-width: 1024px) {
-  .page-grid {
-    grid-template-columns: minmax(0, 1fr) 320px;
-    gap: 2rem;
-  }
-  .page-grid--single {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-.page-grid > * {
-  min-width: 0;
+.bubble-enter {
+  animation: messageSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* ─── Stat block · 全站统一 ──────────────────────────────────────────────── */
-.stat-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding-block: 0.875rem;
-}
-.stat-block + .stat-block {
-  border-left: 1px solid var(--color-border);
-  padding-left: 1.25rem;
-}
-@media (max-width: 639px) {
-  .stat-block:nth-child(odd) {
-    border-left: 0;
-    padding-left: 0;
-  }
-  .stat-block:nth-child(even) {
-    border-left: 1px solid var(--color-border);
-    padding-left: 1rem;
-  }
-  .stat-block:nth-child(n + 3) {
-    border-top: 1px solid var(--color-border);
-  }
-}
-
-/* 网格化的统计块：1px 间隙由底色透出，列数交给 Tailwind 的 grid-cols-* */
-.stat-grid {
-  display: grid;
-  gap: 1px;
-  background: var(--color-border);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-.stat-grid > .stat-block {
-  background: var(--color-card);
-  padding: 0.875rem 1rem;
-  border-left: 0;
-  padding-left: 1rem;
-}
-.stat-grid > .stat-block + .stat-block {
-  border-left: 0;
-}
-
-/* ─── Empty state ─────────────────────────────────────────────────────────── */
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  min-height: 220px;
-  padding: 2rem 1.5rem;
-  text-align: center;
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--color-card) 45%, transparent);
-}
-.empty-state-title {
-  font-family: var(--font-display);
-  font-size: 1.0625rem;
-  font-weight: 600;
-  color: var(--color-foreground);
-}
-.empty-state-hint {
-  font-size: 0.8125rem;
-  color: var(--color-muted-foreground);
-}
-
-/* ─── Chat Bubbles · 书信体 ───────────────────────────────────────────────── */
 .bubble-user {
-  background: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-primary), color-mix(in oklab, var(--color-primary) 80%, var(--color-chart-3)));
   color: var(--color-primary-foreground);
-  border-radius: 0.75rem 0.25rem 0.75rem 0.75rem;
+  border-radius: 1.35rem 1.35rem 0.35rem 1.35rem;
+  box-shadow: 0 3px 12px -2px color-mix(in oklab, var(--color-primary) 32%, transparent);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
+.bubble-user:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -2px color-mix(in oklab, var(--color-primary) 45%, transparent);
+}
+html.dark .bubble-user {
+  background: linear-gradient(135deg, var(--color-primary), color-mix(in oklab, var(--color-primary) 78%, var(--color-chart-3)));
+  box-shadow: 0 3px 14px -2px color-mix(in oklab, var(--color-primary) 40%, transparent);
+}
+html.dark .bubble-user:hover {
+  box-shadow: 0 7px 22px -2px color-mix(in oklab, var(--color-primary) 55%, transparent);
+}
+
 .bubble-ai {
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  color: var(--color-foreground);
-  border-radius: 0.25rem 0.75rem 0.75rem 0.75rem;
+  background: color-mix(in oklab, var(--color-card) 98%, transparent) !important;
+  border: 1px solid color-mix(in oklab, var(--color-border) 80%, transparent) !important;
+  color: var(--color-foreground) !important;
+  border-radius: 1.35rem 1.35rem 1.35rem 0.35rem;
+  box-shadow: 0 2px 10px -2px color-mix(in oklab, var(--color-foreground) 4%, transparent), 0 1px 3px 0 color-mix(in oklab, var(--color-foreground) 2%, transparent);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease;
+}
+.bubble-ai:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px -4px color-mix(in oklab, var(--color-foreground) 8%, transparent), 0 2px 6px -1px color-mix(in oklab, var(--color-foreground) 3%, transparent);
+  border-color: color-mix(in oklab, var(--color-primary) 40%, var(--color-border)) !important;
+}
+html.dark .bubble-ai {
+  background: color-mix(in oklab, var(--color-card) 92%, transparent) !important;
+  border-color: color-mix(in oklab, var(--color-border) 60%, transparent) !important;
+  color: oklch(0.96 0.006 118) !important;
+  box-shadow: 0 3px 14px -3px rgba(0, 0, 0, 0.45);
+}
+html.dark .bubble-ai:hover {
+  border-color: color-mix(in oklab, var(--color-primary) 50%, var(--color-border)) !important;
+  box-shadow: 0 6px 22px -4px rgba(0, 0, 0, 0.6);
 }
 
-/* ─── Mood Ring · 情绪头像圈 ─────────────────────────────────────────────── */
-.mood-ring {
-  padding: 2px;
-  border-radius: var(--radius-lg);
-  border: 1.5px solid var(--mood-color, var(--color-border));
-  display: inline-flex;
-}
-.mood-ring-sm {
-  padding: 2px;
-  border-radius: 50%;
-  border: 1.5px solid var(--mood-color, var(--color-border));
-  display: inline-flex;
+/* ─── Accent Text ──────────────────────────────────────────────────────────── */
+.gradient-text {
+  color: var(--color-primary);
 }
 
-/* ─── Typing Dots ─────────────────────────────────────────────────────────── */
-.typing-dot {
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--color-muted-foreground);
-  animation: typingBounce 1.4s infinite;
-}
-.typing-dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-.typing-dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-/* ─── Breathing Dot ───────────────────────────────────────────────────────── */
-.breathing-dot {
-  animation: breathe 2.5s ease-in-out infinite;
-}
-
-/* ─── Shimmer ─────────────────────────────────────────────────────────────── */
+/* ─── Shimmer Loading ───────────────────────────────────────────────────────── */
 .shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--color-muted) 25%,
-    color-mix(in oklab, var(--color-muted-foreground) 14%, var(--color-muted)) 50%,
-    var(--color-muted) 75%
-  );
+  background: linear-gradient(90deg, oklch(0.94 0.004 80) 25%, oklch(0.90 0.005 80) 50%, oklch(0.94 0.004 80) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
 
-/* ─── Progress Bar ────────────────────────────────────────────────────────── */
+/* ─── Progress Bar ──────────────────────────────────────────────────────────── */
 .progress-bar {
-  background: var(--color-accent);
+  background: linear-gradient(90deg, var(--color-primary), var(--color-chart-2));
   border-radius: 999px;
   transition: width 0.5s ease;
 }
 
-/* ─── Heatmap / Calendar ──────────────────────────────────────────────────── */
-.heatmap-cell {
-  border-radius: 2px;
-  transition: transform 0.15s ease;
-}
-.heatmap-cell:hover {
-  transform: scale(1.08);
-}
-.cal-cell {
-  transition: background 0.15s ease;
+/* ─── Shimmer Text ─────────────────────────────────────────────────────────── */
+.shimmer-text {
+  background: linear-gradient(90deg, oklch(0.50 0.02 260) 25%, oklch(0.55 0.18 255) 50%, oklch(0.50 0.02 260) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2s infinite;
 }
 
-/* ─── Scrollbar Hide ──────────────────────────────────────────────────────── */
+/* ─── Scrollbar Hide ───────────────────────────────────────────────────────── */
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -662,98 +714,1012 @@ html.dark .surface-interactive:hover {
   display: none;
 }
 
-/* ─── Animations ──────────────────────────────────────────────────────────── */
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* ─── Lobby Hero Banner ────────────────────────────────────────────────────── */
+.lobby-hero {
+  background: linear-gradient(135deg,
+    color-mix(in oklab, var(--color-primary) 7%, var(--color-card)),
+    var(--color-card) 45%,
+    color-mix(in oklab, var(--color-chart-2) 6%, var(--color-card))) !important;
+  border: 1px solid color-mix(in oklab, var(--color-primary) 16%, var(--color-border)) !important;
+  position: relative;
+  box-shadow:
+    0 1px 2px color-mix(in oklab, var(--color-foreground) 4%, transparent),
+    0 18px 44px -20px color-mix(in oklab, var(--color-primary) 30%, transparent);
 }
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.lobby-hero-dots {
+  display: none !important;
 }
-@keyframes pulse-soft {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
-  }
+.hero-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(46px);
+  pointer-events: none;
+  animation: float 7s ease-in-out infinite;
 }
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
+.hero-orb-1 {
+  width: 230px; height: 230px;
+  right: -70px; top: -90px;
+  background: color-mix(in oklab, var(--color-primary) 30%, transparent);
 }
-@keyframes slideInRight {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
+.hero-orb-2 {
+  width: 170px; height: 170px;
+  right: 130px; bottom: -100px;
+  background: color-mix(in oklab, var(--color-chart-2) 24%, transparent);
+  animation-delay: 1.6s;
 }
+.hero-orb-3 {
+  width: 120px; height: 120px;
+  left: -50px; bottom: -60px;
+  background: color-mix(in oklab, var(--color-chart-3) 18%, transparent);
+  animation-delay: 3s;
+}
+
+/* ─── Mood Ring (avatar border glow) ───────────────────────────────────────── */
+.mood-ring {
+  padding: 1px;
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--color-border) 80%, transparent);
+  display: inline-flex;
+  border: 1px solid var(--mood-color, var(--color-border));
+}
+.mood-ring img {
+  border: 1px solid var(--color-card);
+}
+.mood-ring-sm {
+  padding: 1px;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--color-border) 80%, transparent);
+  display: inline-flex;
+  border: 1px solid var(--mood-color, var(--color-border));
+}
+.mood-ring-sm img {
+  border: 1px solid var(--color-card);
+}
+
+/* ─── Line Clamp ───────────────────────────────────────────────────────────── */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ─── Floating Particles ───────────────────────────────────────────────────── */
+@keyframes particleFloat {
+  0% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateY(-20vh) rotate(360deg); opacity: 0; }
+}
+.lobby-particles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+.lobby-particle {
+  position: absolute;
+  bottom: -20px;
+  animation: particleFloat linear infinite;
+}
+
+/* ─── Breathing Dot (online indicator) ─────────────────────────────────────── */
 @keyframes breathe {
-  0%,
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.60 0.16 150 / 0.8), 0 1px 2px rgba(0,0,0,0.15); }
+  50% { box-shadow: 0 0 0 5px oklch(0.60 0.16 150 / 0), 0 1px 2px rgba(0,0,0,0.15); }
+}
+.breathing-dot {
+  animation: breathe 2.5s ease-in-out infinite;
+}
+
+/* ─── Gradient Mesh Background ────────────────────────────────────────────── */
+@keyframes meshMove {
+  0% { background-position: 0% 0%, 100% 100%; }
+  50% { background-position: 50% 100%, 100% 0%; }
+  100% { background-position: 0% 0%, 100% 100%; }
+}
+.gradient-mesh-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background:
+    radial-gradient(at 0% 0%, color-mix(in oklab, var(--color-primary) 4%, transparent) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, color-mix(in oklab, var(--color-chart-3) 3%, transparent) 0px, transparent 50%),
+    repeating-linear-gradient(0deg, color-mix(in oklab, var(--color-foreground) 1.5%, transparent) 0 1px, transparent 1px 30px);
+  background-size: 100% 100%;
+  opacity: 0.5;
+}
+html.dark .gradient-mesh-bg {
+  opacity: 0.25;
+}
+
+/* 自定义 Range Slider 滑块 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  background: color-mix(in oklab, var(--color-muted) 85%, var(--color-foreground) 10%);
+  height: 5px;
+  border-radius: 999px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5.5px;
+  background-color: var(--color-primary);
+  height: 16px;
+  width: 16px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px color-mix(in oklab, var(--color-primary) 30%, transparent);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  background-color: color-mix(in oklab, var(--color-primary) 85%, var(--color-foreground));
+}
+
+/* ─── Activity Heatmap ────────────────────────────────────────────────────── */
+.heatmap-cell {
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+.heatmap-cell:hover {
+  transform: scale(1.3);
+  box-shadow: 0 0 6px oklch(0.55 0.18 255 / 0.3);
+}
+
+/* ─── Typing Dots ─────────────────────────────────────────────────────────── */
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+.typing-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: oklch(0.55 0.18 255 / 0.5);
+  animation: typingBounce 1.4s infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ─── Animated Counter ────────────────────────────────────────────────────── */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.count-up {
+  animation: countUp 0.5s ease-out forwards;
+}
+
+/* ─── Recommendation Glow ─────────────────────────────────────────────────── */
+@keyframes recommendGlow {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.55 0.18 255 / 0.15); }
+  50% { box-shadow: 0 0 20px 4px oklch(0.55 0.18 255 / 0.1); }
+}
+.recommend-glow {
+  animation: recommendGlow 3s ease-in-out infinite;
+}
+
+/* ─── Constellation ───────────────────────────────────────────────────────── */
+@keyframes constellationPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+.constellation-line {
+  animation: constellationPulse 3s ease-in-out infinite;
+}
+@keyframes orbitFloat {
+  0% { transform: rotate(0deg) translateX(var(--orbit-r, 60px)) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(var(--orbit-r, 60px)) rotate(-360deg); }
+}
+.orbit-node {
+  animation: orbitFloat var(--orbit-dur, 12s) linear infinite;
+}
+
+/* ─── Achievement Badge ───────────────────────────────────────────────────── */
+@keyframes badgeUnlock {
+  0% { transform: scale(0) rotate(-180deg); opacity: 0; }
+  60% { transform: scale(1.2) rotate(10deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+.badge-unlock {
+  animation: badgeUnlock 0.6s ease-out forwards;
+}
+
+/* ─── Gradient Border ─────────────────────────────────────────────────────── */
+@keyframes gradientBorderSpin {
+  0% { --border-angle: 0deg; }
+  100% { --border-angle: 360deg; }
+}
+.gradient-border-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--color-border) 75%, transparent) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+.gradient-border-card:hover {
+  border-color: var(--color-primary) !important;
+}
+
+/* ─── Depth Ring ──────────────────────────────────────────────────────────── */
+.depth-ring {
+  transform: rotate(-90deg);
+}
+.depth-ring-track {
+  fill: none;
+  stroke: oklch(0.94 0.004 80);
+  stroke-width: 3;
+}
+.depth-ring-fill {
+  fill: none;
+  stroke: oklch(0.55 0.18 255);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s ease;
+}
+
+/* ─── FAB ─────────────────────────────────────────────────────────────────── */
+@keyframes fabPop {
+  from { transform: scale(0) translateY(20px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
+}
+.fab-item {
+  animation: fabPop 0.2s ease-out forwards;
+}
+
+/* ─── Streak Fire ─────────────────────────────────────────────────────────── */
+@keyframes fireFlicker {
+  0%, 100% { transform: scaleY(1) scaleX(1); }
+  25% { transform: scaleY(1.1) scaleX(0.95); }
+  50% { transform: scaleY(0.95) scaleX(1.05); }
+  75% { transform: scaleY(1.05) scaleX(0.98); }
+}
+.fire-flicker {
+  animation: fireFlicker 0.8s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+
+/* ─── Calendar Cell ───────────────────────────────────────────────────────── */
+.cal-cell {
+  transition: all 0.15s ease;
+}
+.cal-cell:hover {
+  transform: scale(1.15);
+}
+
+/* ─── Landing Page ─────────────────────────────────────────────────────────── */
+.landing-section {
+  padding: 6rem 0;
+}
+.landing-hero-glow {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--color-background) 18%, transparent), var(--color-background));
+  pointer-events: none;
+  z-index: 0;
+}
+@media (max-width: 640px) {
+  .landing-section { padding: 4rem 0; }
+  .landing-hero-glow { opacity: 0.9; }
+}
+
+.landing-hero-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.landing-hero-scene::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, var(--color-background) 0%, color-mix(in oklab, var(--color-background) 70%, transparent) 25%, transparent 55%, var(--color-background) 100%),
+    linear-gradient(180deg, var(--color-background) 0%, transparent 20%, var(--color-background) 96%);
+  z-index: 2;
+}
+.landing-chat-column {
+  position: absolute;
+  top: 4rem;
+  width: min(22rem, 38vw);
+  display: grid;
+  gap: 0.75rem;
+  opacity: 0.72;
+}
+.landing-chat-column.left { left: max(1rem, 7vw); }
+.landing-chat-column.right { right: max(1rem, 7vw); top: 7rem; }
+.landing-chat-card {
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
+  background: color-mix(in oklab, var(--color-card) 72%, transparent);
+  border-radius: var(--radius-xl);
+  padding: 0.85rem;
+  box-shadow: 0 18px 40px color-mix(in oklab, var(--color-foreground) 8%, transparent);
+  backdrop-filter: blur(14px);
+}
+.landing-chat-card.small { width: 72%; }
+.landing-chat-card.offset { margin-left: auto; }
+.landing-chat-line {
+  height: 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-muted-foreground) 22%, transparent);
+}
+.landing-chat-line + .landing-chat-line { margin-top: 0.5rem; }
+.landing-chat-line.short { width: 55%; }
+.landing-chat-line.primary { background: color-mix(in oklab, var(--color-primary) 52%, transparent); }
+@media (max-width: 760px) {
+  .landing-chat-column {
+    width: 16rem;
+    opacity: 0.44;
+  }
+  .landing-chat-column.left {
+    left: -7rem;
+  }
+  .landing-chat-column.right {
+    right: -8rem;
+  }
+}
+
+/* ─── Landing Story ─── */
+.landing-story-quote {
+  position: relative;
+  padding: 2rem 2.5rem;
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklab, var(--color-primary) 6%, var(--color-background));
+  border: 1px solid color-mix(in oklab, var(--color-primary) 15%, transparent);
+}
+.landing-story-quote-mark {
+  position: absolute;
+  top: -0.25rem;
+  left: 1.25rem;
+  font-size: 4rem;
+  line-height: 1;
+  font-family: Georgia, serif;
+  color: var(--color-primary);
+  opacity: 0.2;
+  pointer-events: none;
+}
+
+/* ─── Login Page Animations ────────────────────────────────────────────────── */
+.login-orbs {
+  display: none;
+}
+.login-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.4;
+}
+.login-orb-1 {
+  width: 400px; height: 400px;
+  background: oklch(0.55 0.18 255 / 0.45);
+  top: -10%; left: -5%;
+  animation: login-drift-1 20s ease-in-out infinite;
+}
+.login-orb-2 {
+  width: 300px; height: 300px;
+  background: oklch(0.55 0.14 80 / 0.35);
+  bottom: -5%; right: -5%;
+  animation: login-drift-2 25s ease-in-out infinite;
+}
+.login-orb-3 {
+  width: 250px; height: 250px;
+  background: oklch(0.50 0.15 260 / 0.30);
+  top: 40%; right: 10%;
+  animation: login-drift-3 18s ease-in-out infinite;
+}
+.login-orb-4 {
+  width: 200px; height: 200px;
+  background: oklch(0.55 0.12 320 / 0.25);
+  bottom: 20%; left: 15%;
+  animation: login-drift-4 22s ease-in-out infinite;
+}
+@keyframes login-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(60px, 40px) scale(1.1); }
+  66% { transform: translate(-30px, 80px) scale(0.95); }
+}
+@keyframes login-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-50px, -60px) scale(1.05); }
+  66% { transform: translate(40px, -30px) scale(0.9); }
+}
+@keyframes login-drift-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-70px, 50px) scale(1.15); }
+}
+@keyframes login-drift-4 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(50px, -40px) scale(1.1); }
+}
+.login-form-enter {
+  animation: login-form-rise 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes login-form-rise {
+  from { opacity: 0; transform: translateY(30px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.login-icon-breathe {
+  animation: login-breathe 3s ease-in-out infinite;
+}
+@keyframes login-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.55 0.18 255 / 0.3); }
+  50% { box-shadow: 0 0 30px 12px oklch(0.55 0.18 255 / 0.15); }
+}
+.login-card-glow {
+  position: relative;
+}
+
+/* ─── Lobby Custom Tabs & Cards ─────────────────────────────────────────── */
+.lobby-tab-list {
+  background: color-mix(in oklab, var(--color-card) 40%, transparent) !important;
+  border: 1px solid color-mix(in oklab, var(--color-border) 40%, transparent) !important;
+  backdrop-filter: blur(12px);
+  position: relative;
+}
+
+.lobby-tab-trigger {
+  position: relative;
+  background: transparent !important;
+  color: var(--color-muted-foreground) !important;
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+.lobby-tab-trigger::after {
+  content: "";
+  position: absolute;
+  bottom: 0px;
+  left: 50%;
+  transform: translateX(-50%) scaleX(0);
+  width: 40%;
+  height: 2.5px;
+  background: linear-gradient(90deg, var(--color-primary), oklch(0.65 0.15 190));
+  border-radius: 9999px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s;
+  opacity: 0;
+  box-shadow: 0 0 8px var(--color-primary);
+}
+
+.lobby-tab-trigger[data-state=active] {
+  color: var(--color-foreground) !important;
+  background: color-mix(in oklab, var(--color-primary) 6%, transparent) !important;
+  font-weight: 600 !important;
+}
+
+.lobby-tab-trigger[data-state=active]::after {
+  transform: translateX(-50%) scaleX(1);
+  opacity: 1;
+}
+
+/* 今日推荐流光左边框与磨砂优化 */
+.recommend-glow {
+  border-left: 3px solid var(--color-primary) !important;
+  background: var(--color-card) !important;
+  border: 1px solid var(--color-border) !important;
+  border-left-width: 3px !important;
+}
+
+/* 想对你说消息流卡片样式 */
+.daily-message-item {
+  background: var(--color-card) !important;
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent) !important;
+  box-shadow: 0 1px 3px color-mix(in oklab, var(--color-foreground) 2%, transparent) !important;
+  transition: all 0.2s ease !important;
+}
+.daily-message-item:hover {
+  border-color: var(--color-primary) !important;
+  background: var(--color-card) !important;
+}
+
+/* ─── Settings AI Provider Cards ────────────────────────────────────────── */
+.provider-card-unconfigured {
+  border: 1px dashed color-mix(in oklab, var(--color-border) 70%, transparent) !important;
+  background: color-mix(in oklab, var(--color-muted) 20%, transparent) !important;
+  transition: all 0.3s ease !important;
+}
+.provider-card-unconfigured:hover {
+  border-color: color-mix(in oklab, var(--color-primary) 30%, var(--color-border)) !important;
+  background: color-mix(in oklab, var(--color-card) 40%, transparent) !important;
+}
+
+.provider-card-configured {
+  position: relative;
+  background: color-mix(in oklab, var(--color-card) 90%, transparent) !important;
+  border: 1px solid color-mix(in oklab, var(--color-primary) 25%, var(--color-border)) !important;
+  box-shadow: 0 4px 15px -3px color-mix(in oklab, var(--color-primary) 5%, transparent) !important;
+  transition: all 0.3s ease !important;
+}
+.provider-card-configured:hover {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 8px 24px -3px color-mix(in oklab, var(--color-primary) 12%, transparent) !important;
+}
+
+
+/* ═══ Tech Motion Layer (科技动效层) ═══════════════════════════════════════ */
+
+/* ─── Route Transition ─── */
+/* 注意：路由过渡只允许动画 opacity——任何 transform/filter 会把全页 fixed 元素
+   的定位基准从视口劫持为该包装层（Chrome 对带 fill 的动画持续保持 containing block），
+   曾导致抽屉面板被拉伸成文档高度而显示为白板。 */
+.route-transition {
+  animation: routeFade 0.28s ease-out;
+}
+@keyframes routeFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ─── Aurora Drift (极光漂移背景) ─── */
+.gradient-mesh-bg::before,
+.gradient-mesh-bg::after {
+  content: "";
+  position: absolute;
+  width: 46vw;
+  height: 46vw;
+  min-width: 420px;
+  min-height: 420px;
+  border-radius: 50%;
+  filter: blur(70px);
+  will-change: transform;
+  pointer-events: none;
+}
+.gradient-mesh-bg::before {
+  top: -12%;
+  left: -8%;
+  background: radial-gradient(circle at 35% 35%,
+    color-mix(in oklab, var(--color-primary) 16%, transparent),
+    transparent 65%);
+  animation: auroraDriftA 28s ease-in-out infinite alternate;
+}
+.gradient-mesh-bg::after {
+  bottom: -16%;
+  right: -10%;
+  background: radial-gradient(circle at 60% 60%,
+    color-mix(in oklab, var(--color-chart-3) 13%, transparent),
+    transparent 65%);
+  animation: auroraDriftB 36s ease-in-out infinite alternate;
+}
+@keyframes auroraDriftA {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(9vw, 7vh, 0) scale(1.12); }
+  100% { transform: translate3d(2vw, 13vh, 0) scale(0.96); }
+}
+@keyframes auroraDriftB {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-8vw, -6vh, 0) scale(1.1); }
+  100% { transform: translate3d(-2vw, -12vh, 0) scale(0.94); }
+}
+html.dark .gradient-mesh-bg::before { opacity: 0.8; }
+html.dark .gradient-mesh-bg::after { opacity: 0.8; }
+
+/* ─── Header Scanline (顶栏流动光线) ─── */
+.app-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--color-primary) 65%, transparent) 35%,
+    color-mix(in oklab, var(--color-chart-3) 55%, transparent) 55%,
+    transparent 100%);
+  background-size: 220% 100%;
+  animation: scanSlide 7s linear infinite;
+  opacity: 0.75;
+  pointer-events: none;
+}
+@keyframes scanSlide {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* ─── Animated Gradient Border (旋转流光描边) ─── */
+.glow-border {
+  position: relative;
+}
+.glow-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--border-angle),
+    transparent 0deg,
+    color-mix(in oklab, var(--color-primary) 75%, transparent) 80deg,
+    color-mix(in oklab, var(--color-chart-3) 60%, transparent) 140deg,
+    transparent 220deg);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: gradientBorderSpin 7s linear infinite;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* ─── Stat Tile Sheen (瓷砖高光扫过) ─── */
+.stat-tile {
+  position: relative;
+  overflow: hidden;
+}
+.stat-tile::after {
+  content: "";
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  width: 45%;
+  left: -90%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in oklab, var(--color-primary) 14%, white 60%) 50%,
+    transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+.stat-tile:hover::after {
+  animation: sheenSweep 0.7s ease-out;
+}
+@keyframes sheenSweep {
+  0% { left: -90%; opacity: 0.9; }
+  100% { left: 140%; opacity: 0; }
+}
+
+/* ─── Card Stagger Entrance (卡片交错入场) ─── */
+.card-stagger > * {
+  opacity: 0;
+  animation: fadeInUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.card-stagger > *:nth-child(1) { animation-delay: 0.03s; }
+.card-stagger > *:nth-child(2) { animation-delay: 0.09s; }
+.card-stagger > *:nth-child(3) { animation-delay: 0.15s; }
+.card-stagger > *:nth-child(4) { animation-delay: 0.21s; }
+.card-stagger > *:nth-child(5) { animation-delay: 0.27s; }
+.card-stagger > *:nth-child(6) { animation-delay: 0.33s; }
+.card-stagger > *:nth-child(7) { animation-delay: 0.39s; }
+.card-stagger > *:nth-child(n+8) { animation-delay: 0.45s; }
+
+/* ─── Status Pulse Dot (状态呼吸灯) ─── */
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 4px;
+  animation: pulseDot 2.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent); }
+  50% { opacity: 0.65; box-shadow: 0 0 0 4px transparent; }
+}
+
+/* ─── Reduced Motion (无障碍降级) ─── */
+@media (prefers-reduced-motion: reduce) {
+  .route-transition,
+  .card-stagger > *,
+  .gradient-mesh-bg::before,
+  .gradient-mesh-bg::after,
+  .app-header::after,
+  .glow-border::before,
+  .stat-tile:hover::after,
+  .pulse-dot {
+    animation: none !important;
+  }
+  .card-stagger > * { opacity: 1; }
+}
+
+/* ═══ Tech Motion Layer 2 (科技动效增强) ═══════════════════════════════════ */
+
+/* ─── Particle Field (粒子星场，双层视差) ─── */
+.tech-particles {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tech-particles::before,
+.tech-particles::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 200%;
+  will-change: transform;
+}
+.tech-particles::before {
+  background-image:
+    radial-gradient(2px 2px at 8% 15%, color-mix(in oklab, var(--color-primary) 55%, transparent) 50%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 28% 45%, color-mix(in oklab, var(--color-chart-3) 50%, transparent) 50%, transparent 100%),
+    radial-gradient(2px 2px at 52% 25%, color-mix(in oklab, var(--color-primary) 45%, transparent) 50%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 73% 60%, color-mix(in oklab, var(--color-chart-2) 45%, transparent) 50%, transparent 100%),
+    radial-gradient(2px 2px at 91% 35%, color-mix(in oklab, var(--color-chart-3) 50%, transparent) 50%, transparent 100%);
+  background-size: 100% 50%;
+  background-repeat: repeat-y;
+  animation: particleRise 38s linear infinite;
+  opacity: 0.7;
+}
+.tech-particles::after {
+  background-image:
+    radial-gradient(1px 1px at 15% 30%, color-mix(in oklab, var(--color-foreground) 35%, transparent) 50%, transparent 100%),
+    radial-gradient(1px 1px at 38% 70%, color-mix(in oklab, var(--color-primary) 40%, transparent) 50%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 62% 40%, color-mix(in oklab, var(--color-chart-3) 35%, transparent) 50%, transparent 100%),
+    radial-gradient(1px 1px at 84% 75%, color-mix(in oklab, var(--color-foreground) 30%, transparent) 50%, transparent 100%);
+  background-size: 100% 50%;
+  background-repeat: repeat-y;
+  animation: particleRise 60s linear infinite;
+  opacity: 0.55;
+}
+@keyframes particleRise {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(0, -50%, 0); }
+}
+html.dark .tech-particles::before { opacity: 0.9; }
+html.dark .tech-particles::after { opacity: 0.7; }
+
+
+/* ─── HUD Corners (HUD 四角准星装饰) ─── */
+.hud-corners {
+  position: relative;
+}
+.hud-corners::before,
+.hud-corners::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-color: color-mix(in oklab, var(--color-primary) 55%, transparent);
+  border-style: solid;
+  pointer-events: none;
+  transition: border-color 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+.hud-corners::before {
+  top: 5px;
+  left: 5px;
+  border-width: 1.5px 0 0 1.5px;
+  border-top-left-radius: 4px;
+}
+.hud-corners::after {
+  bottom: 5px;
+  right: 5px;
+  border-width: 0 1.5px 1.5px 0;
+  border-bottom-right-radius: 4px;
+}
+.hud-corners:hover::before,
+.hud-corners:hover::after {
+  border-color: var(--color-primary);
+  width: 14px;
+  height: 14px;
+}
+
+/* ─── Card Top Light (卡片顶部光边) ─── */
+.warm-card {
+  position: relative;
+}
+.warm-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in oklab, var(--color-primary) 35%, transparent) 50%,
+    transparent);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+/* ─── Icon Chip Hover (图标徽章悬停微动) ─── */
+.section-chip {
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+}
+.warm-card:hover .section-chip,
+section:hover > div > .section-chip {
+  transform: scale(1.08) rotate(-5deg);
+  box-shadow: 0 4px 16px -3px color-mix(in oklab, var(--chip-color, var(--color-primary)) 65%, transparent);
+}
+
+
+
+/* ─── Primary Button Sheen (主按钮流光) ─── */
+@keyframes btnSheen {
+  from { transform: translateX(-130%) skewX(-18deg); }
+  to { transform: translateX(240%) skewX(-18deg); }
+}
+.btn-sheen {
+  position: relative;
+  overflow: hidden;
+}
+.btn-sheen::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  left: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  transform: translateX(-130%) skewX(-18deg);
+  pointer-events: none;
+}
+.btn-sheen:hover::after {
+  animation: btnSheen 0.6s ease-out;
+}
+
+/* ─── Gradient Scrollbar (渐变滚动条) ─── */
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--color-primary) 45%, oklch(0.80 0.005 80)),
+    color-mix(in oklab, var(--color-chart-3) 35%, oklch(0.80 0.005 80)));
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--color-primary) 50%, oklch(0.32 0.005 260)),
+    color-mix(in oklab, var(--color-chart-3) 40%, oklch(0.32 0.005 260)));
+}
+
+/* ─── Message Entrance (聊天气泡入场) ─── */
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+.bubble-enter {
+  animation: bubbleIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ─── Aurora 强化（提高第一层可见度） ─── */
+.gradient-mesh-bg::before {
+  background: radial-gradient(circle at 35% 35%,
+    color-mix(in oklab, var(--color-primary) 24%, transparent),
+    transparent 65%);
+}
+.gradient-mesh-bg::after {
+  background: radial-gradient(circle at 60% 60%,
+    color-mix(in oklab, var(--color-chart-3) 19%, transparent),
+    transparent 65%);
+}
+.app-header::after {
+  height: 2px;
+  opacity: 0.95;
+}
+
+/* ─── Reduced Motion 扩展 ─── */
+@media (prefers-reduced-motion: reduce) {
+  .tech-particles::before,
+  .tech-particles::after,
+  .btn-sheen::after,
+  .bubble-enter {
+    animation: none !important;
+  }
+  .tilt-card {
+    transform: none !important;
+  }
+}
+
+/* ═══ Micro Interactions (交互巧思) ═══════════════════════════════════════ */
+
+/* ─── 3D Tilt Card (卡片倾斜跟随鼠标) ─── */
+.tilt-card {
+  transform: perspective(900px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transition: transform 0.18s ease-out;
+  will-change: transform;
+}
+
+/* ─── Click Ripple (按钮点击涟漪) ─── */
+.ripple-ink {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+  transform: scale(0);
+  animation: rippleInk 0.55s ease-out forwards;
+  pointer-events: none;
+}
+@keyframes rippleInk {
+  to { transform: scale(2.6); opacity: 0; }
+}
+
+/* ─── Typewriter Caret (打字机光标) ─── */
+.typewriter-caret::after {
+  content: "▍";
+  margin-left: 2px;
+  color: var(--color-primary);
+  animation: caretBlink 0.9s steps(2) infinite;
+}
+@keyframes caretBlink {
+  50% { opacity: 0; }
+}
+
+/* ─── Scene & Theater Studio Enhancements ─── */
+.scene-glow-border {
+  position: relative;
+}
+.scene-glow-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, color-mix(in oklab, var(--color-primary) 60%, transparent), transparent 70%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+@keyframes fadeInScale {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
   100% {
-    transform: scale(1);
     opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-scale-in {
+  animation: fadeInScale 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px -3px color-mix(in oklab, var(--color-primary) 25%, transparent);
   }
   50% {
-    transform: scale(1.4);
-    opacity: 0.6;
-  }
-}
-@keyframes typingBounce {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0);
-  }
-  30% {
-    transform: translateY(-3px);
+    box-shadow: 0 0 25px 2px color-mix(in oklab, var(--color-primary) 45%, transparent);
   }
 }
 
-.animate-fade-in-up {
-  animation: fadeInUp 0.32s ease-out both;
-}
-.animate-fade-in {
-  animation: fadeIn 0.24s ease-out both;
-}
-.animate-pulse-soft {
-  animation: pulse-soft 2s ease-in-out infinite;
-}
-.animate-slide-in-right {
-  animation: slideInRight 0.24s ease-out both;
+.breathing-glow {
+  animation: pulseGlow 2.8s ease-in-out infinite;
 }
 
-/* ─── Reduced motion ──────────────────────────────────────────────────────── */
+/* ─── Mobile Responsiveness & Touch Optimization ─── */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 1rem));
+}
+
+.pt-safe {
+  padding-top: max(0.5rem, env(safe-area-inset-top, 0.5rem));
+}
+
+@media (hover: none) and (pointer: coarse) {
+  button, a, input, select, textarea {
+    touch-action: manipulation;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-    scroll-behavior: auto !important;
-  }
-  .surface-interactive:hover {
-    transform: none;
-  }
+  .ripple-ink, .typewriter-caret::after, .animate-scale-in, .breathing-glow { animation: none !important; }
 }
