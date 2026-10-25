@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
-import { X } from "lucide-react";
+import { X, GraduationCap, Heart, Sunrise } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { useLocale } from "@/contexts/LocaleContext";
 
 interface Props {
   personaId: number;
@@ -13,7 +12,6 @@ interface Props {
 }
 
 export default function GraduationModal({ personaId, personaName, open, onClose }: Props) {
-  const { t } = useLocale();
   const [phase, setPhase] = useState<"suggest" | "letter">("suggest");
   const [letter, setLetter] = useState("");
 
@@ -26,7 +24,7 @@ export default function GraduationModal({ personaId, personaName, open, onClose 
   });
 
   const declineMutation = trpc.persona.declineGraduation.useMutation({
-    onSuccess: () => { toast.success(t("graduation.keepCompanionship")); onClose(); },
+    onSuccess: () => { toast.success("继续故事"); onClose(); },
   });
 
   if (!open) return null;
@@ -34,59 +32,59 @@ export default function GraduationModal({ personaId, personaName, open, onClose 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("graduation.moment")}
-        className="relative bg-card border border-border rounded-lg w-full max-w-md max-h-[85vh] overflow-y-auto animate-fade-in"
-      >
-        <div className="flex items-center justify-between p-5 border-b border-border">
-          <h3 className="card-title">{t("graduation.moment")}</h3>
-          <button onClick={onClose} className="app-nav-icon" aria-label={t("common.close")}>
-            <X className="w-4 h-4" />
+      <div className="relative bg-card border border-border rounded-2xl shadow-xl w-full max-w-md max-h-[85vh] overflow-y-auto animate-fade-in">
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-primary" />
+            <h3 className="font-medium text-foreground">故事归档</h3>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="p-6">
           {phase === "suggest" && (
-            <div className="space-y-5">
+            <div className="text-center space-y-4">
+              <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+                <Sunrise className="w-8 h-8 text-primary" />
+              </div>
               <div>
-                <p className="font-sans text-base font-semibold text-foreground mb-2.5">
-                  {t("graduation.soulmate", { name: personaName })}
+                <p className="text-foreground font-medium mb-2">
+                  你与 {personaName} 已完成这一阶段的故事
                 </p>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  {t("graduation.farewellIntro")}
-                  {t("graduation.farewellBody", { name: personaName })}
+                <p className="text-sm text-muted-foreground">
+                  也许是时候带着美好的回忆，温柔地说再见了。
+                  {personaName} 会为你写一封告别信，作为这段旅程的纪念。
                 </p>
               </div>
-              <hr className="rule" />
-              <div className="flex gap-3">
-                <Button variant="outline" className="flex-1 rounded-md bg-transparent" onClick={() => declineMutation.mutate({ id: personaId })}
+              <div className="flex gap-3 pt-2">
+                <Button variant="outline" className="flex-1" onClick={() => declineMutation.mutate({ id: personaId })}
                   disabled={declineMutation.isPending}>
-                  {t("graduation.keepCompanionship")}
+                  <Heart className="w-4 h-4 mr-1.5" />继续故事
                 </Button>
-                <Button className="flex-1 rounded-md" onClick={() => graduateMutation.mutate({ id: personaId })}
+                <Button className="flex-1" onClick={() => graduateMutation.mutate({ id: personaId })}
                   disabled={graduateMutation.isPending}>
-                  {graduateMutation.isPending ? t("graduation.writing") : t("graduation.begin")}
+                  {graduateMutation.isPending ? "正在写告别信..." : "生成归档信"}
                 </Button>
               </div>
             </div>
           )}
 
           {phase === "letter" && (
-            <div className="space-y-5">
-              <div>
-                <p className="kicker">{t("graduation.letterKicker", { name: personaName })}</p>
+            <div className="space-y-4">
+              <div className="text-center mb-2">
+                <p className="text-sm text-muted-foreground">{personaName} 的告别信</p>
               </div>
-              <div className="surface p-6">
-                <p className="letter-prose text-foreground/90 text-[0.9375rem] whitespace-pre-wrap">{letter}</p>
-                <p className="text-right text-muted-foreground text-xs mt-5">—— {personaName}</p>
+              <div className="bg-muted/30 border border-border rounded-xl p-5">
+                <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap">{letter}</p>
+                <p className="text-right text-muted-foreground text-xs mt-4">—— {personaName}</p>
               </div>
-              <p className="text-xs text-muted-foreground text-center leading-relaxed">
-                {t("graduation.letterSaved", { name: personaName })}
+              <p className="text-xs text-muted-foreground text-center">
+                告别信已保存。你可以随时在角色大厅查看，也可以唤醒 {personaName}。
               </p>
-              <Button className="w-full rounded-md" onClick={onClose}>
-                {t("graduation.goodbye")}
+              <Button className="w-full" onClick={onClose}>
+                好的，再见
               </Button>
             </div>
           )}
