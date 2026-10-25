@@ -1,17 +1,19 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 const getLlmConfigsByUserId = vi.fn();
 
 vi.mock("../db", () => ({
   getLlmConfigsByUserId: (...a: unknown[]) => getLlmConfigsByUserId(...a),
+  getLlmRelaysByUserId: async () => [],
 }));
 
 import { resolveProviderForUser, invalidateUserProviderCache } from "./user-provider";
 import { registry } from "./index";
 import { OpenAIProvider } from "./providers/openai";
 
-// A stand-in for the encrypted credential.
-const ENCRYPTED = "v1:aaaa:bbbb:cccc";
+// Legacy plaintext remains readable; encryption writes are covered by configuration tests.
+const OWN_KEY = "own-user-key";
+afterEach(() => vi.unstubAllGlobals());
 
 describe("resolveProviderForUser", () => {
   beforeEach(() => {
@@ -51,7 +53,7 @@ describe("resolveProviderForUser", () => {
         userId: 1,
         providerName: "OpenAI",
         isDefault: true,
-        apiKey: ENCRYPTED,
+        apiKey: OWN_KEY,
         apiKeyHint: "abcd",
         baseUrl: "https://user.example",
         model: "user-model",
@@ -61,11 +63,14 @@ describe("resolveProviderForUser", () => {
       },
     ]);
 
-    // The encrypted value cannot be decrypted without the real key, so the
-    // resolver falls back to the environment for the key while still
-    // applying the user's base URL and model.
+    const fetcher = vi.fn(async () => Response.json({ choices: [{ message: { content: "答复" } }] }));
+    vi.stubGlobal("fetch", fetcher);
     const provider = await resolveProviderForUser({ userId: 1, providerName: "OpenAI" });
     expect(provider).toBeDefined();
+    await provider!.invoke([{ role: "user", content: "资料请求" }]);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://user.example/chat/completions");
+    expect((vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe("Bearer own-user-key");
+    expect(provider!.getModel?.()).toBe("user-model");
 
     if (original) {
       registry.registerFactory(

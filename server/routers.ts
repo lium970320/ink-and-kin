@@ -1,3 +1,4 @@
+import { llmProbeInput, testUserLlmConnection, listUserLlmModels } from "./llm-probes";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -7,7 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { llmService, registry } from "./llm";
 import type { InvokeParams, InvokeResult } from "./llm/types";
 import { getTextContent } from "./llm/types";
-import { invalidateUserProviderCache, resolveProviderForUser } from "./llm/user-provider";
+import { resolveProviderForUser } from "./llm/user-provider";
 import { storagePut } from "./storage";
 import {
   createPersona, getPersonasByUserId, getPersonaById, updatePersona, deletePersona,
@@ -15,7 +16,7 @@ import {
   createPersonaFile, getFilesByPersonaId,
   createMessage, getMessagesByPersonaId, clearMessagesByPersonaId, searchMessages,
   createWechatBinding, getWechatBindingsByUserId, deleteWechatBinding, setWechatBindingPersona,
-  getSkillJobById, updateSkillJob, getLlmConfigsByUserId, upsertLlmConfig, setDefaultLlmConfig, getDefaultLlmConfig,
+  getSkillJobById, updateSkillJob, getLlmConfigsByUserId,
   getResearchProfilesByPersonaId,
   updateUserProfile, updateUserPassword, deleteUserAccount, getAccountStats, exportUserData,
   getUserById, bumpUserTokenVersion,
@@ -44,7 +45,6 @@ import { inferEmotionalState } from "./_core/emotion";
 import { hashPassword, verifyPassword } from "./_core/password";
 import { extractJsonArray, extractJsonObject } from "./_core/json";
 import { runConversation } from "./chat/service";
-import { encryptSecret } from "./_core/crypto";
 import { RATE_LIMITS } from "./_core/rate-limit";
 import { sanitizeFileName, checkFileExtension } from "./_core/filename";
 import { getSetupStatus } from "./bootstrap/setup-status";
@@ -70,6 +70,7 @@ import {
   listCollectorJobs,
 } from "./collectors";
 import { listPersistedCollectorJobs } from "./collectors/db-store";
+import { listUserLlmProviders, sanitizeLlmConfigForClient, getUserDefaultLlmConfig, saveUserLlmConfig, saveUserLlmRelay, deleteUserLlmRelay, setUserDefaultLlmProvider, updateUserDefaultLlmExtra, setUserFallbackLlmProvider } from "./llm-management";
 
 /**
  * Resolves a persona's picture to PNG bytes for the character-card export.
@@ -464,6 +465,7 @@ export const appRouter = router({
         }
 
         const result = await applyPersonaCorrection({
+          userId: ctx.user.id, personaId: persona.id,
           name: persona.name,
           characterFamily: "relationship",
           personaData: persona.personaData as any,
@@ -589,6 +591,7 @@ export const appRouter = router({
         if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
         const systemPrompt = buildSystemPrompt(persona);
         const response = await llmService.invoke({
+          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "persona.graduate", purpose: "graduation" } },
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `我们已经走过了很长的路，现在是时候说再见了。请用${persona.name}的口吻，写一封温暖的告别信。回顾我们的美好时光，表达祝福和不舍。信的长度在200-400字之间。只返回信的内容，不要有其他文字。` },
@@ -778,6 +781,7 @@ export const appRouter = router({
         const { url } = await storagePut(fileKey, buffer, "audio/webm");
 
         const transcription = await llmService.invoke({
+          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "chat.voice_transcription", purpose: "utility" } },
           messages: [{ role: "user", content: `请将以下语音消息转写为文字。如果无法转写，请根据上下文猜测可能的内容。语音时长：${input.duration}秒` }],
         }) || "（语音消息）";
 
@@ -1632,60 +1636,44 @@ export const appRouter = router({
      */
     list: protectedProcedure.query(async ({ ctx }) => {
       const configs = await getLlmConfigsByUserId(ctx.user.id);
-      return configs.map((config) => ({
-        id: config.id,
-        providerName: config.providerName,
-        isDefault: config.isDefault,
-        baseUrl: config.baseUrl,
-        model: config.model,
-        systemMessage: config.systemMessage,
-        extraConfig: config.extraConfig,
-        hasKey: !!config.apiKey,
-        apiKeyHint: config.apiKeyHint ?? null,
-        createdAt: config.createdAt,
-      }));
+      return configs.map(sanitizeLlmConfigForClient);
     }),
 
     getDefault: protectedProcedure.query(async ({ ctx }) => {
-      const config = await getDefaultLlmConfig(ctx.user.id);
-      if (!config) return null;
-      return {
-        id: config.id,
-        providerName: config.providerName,
-        isDefault: config.isDefault,
-        baseUrl: config.baseUrl,
-        model: config.model,
-        extraConfig: config.extraConfig,
-        hasKey: !!config.apiKey,
-        apiKeyHint: config.apiKeyHint ?? null,
-      };
+      return getUserDefaultLlmConfig(ctx.user.id);
     }),
 
-    listProviders: protectedProcedure.query(() => registry.list()),
+    listProviders: protectedProcedure.query(({ ctx }) => listUserLlmProviders(ctx.user.id)),
+
+    testConnection: protectedProcedure.input(llmProbeInput)
+      .mutation(({ ctx, input }) => testUserLlmConnection(ctx.user.id, input)),
+    listModels: protectedProcedure.input(llmProbeInput)
+      .mutation(({ ctx, input }) => listUserLlmModels(ctx.user.id, input)),
 
     upsert: protectedProcedure
       .input(z.object({
-        providerName: z.string().min(1),
+        providerName: z.string().trim().min(1).max(64),
         apiKey: z.string().max(512).optional(),
         baseUrl: z.string().max(512).optional(),
         model: z.string().max(128).optional(),
+        reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
+        deepseekDynamicRouting: z.boolean().optional(),
         extraConfig: z.record(z.string(), z.any()).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        assertKnownProvider(input.providerName);
-        const { apiKey, ...rest } = input;
-        const payload: Parameters<typeof upsertLlmConfig>[1] = { ...rest };
 
-        if (apiKey) {
-          // The key is stored encrypted; only a hint is kept in the clear.
-          payload.apiKey = await encryptSecret(apiKey);
-          payload.apiKeyHint = apiKey.slice(-4);
-        }
-
-        const id = await upsertLlmConfig(ctx.user.id, payload);
-        invalidateUserProviderCache(ctx.user.id);
-        return { id };
+        return saveUserLlmConfig(ctx.user.id, input);
       }),
+
+    saveRelay: protectedProcedure.input(z.object({
+      id: z.number().int().positive().optional(), providerName: z.string().trim().min(1).max(64), relayName: z.string().trim().min(1).max(128),
+      priority: z.number().int().min(-10000).max(10000), enabled: z.boolean().default(true),
+      apiKey: z.string().max(512).optional(), baseUrl: z.string().max(512).optional(), model: z.string().max(128).optional(),
+      reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
+    })).mutation(({ ctx, input }) => {  return saveUserLlmRelay(ctx.user.id, input); }),
+
+    deleteRelay: protectedProcedure.input(z.object({ id: z.number().int().positive() }))
+      .mutation(({ ctx, input }) => deleteUserLlmRelay(ctx.user.id, input.id)),
 
     /**
      * Replaces only the API key, leaving the rest of the configuration alone.
@@ -1698,35 +1686,24 @@ export const appRouter = router({
         apiKey: z.string().min(1).max(512),
       }))
       .mutation(async ({ ctx, input }) => {
-        assertKnownProvider(input.providerName);
-        const encrypted = await encryptSecret(input.apiKey);
-        const id = await upsertLlmConfig(ctx.user.id, {
-          providerName: input.providerName,
-          apiKey: encrypted,
-          apiKeyHint: input.apiKey.slice(-4),
-        });
-        invalidateUserProviderCache(ctx.user.id);
-        return { id };
+
+        return saveUserLlmConfig(ctx.user.id, input);
       }),
 
     updateExtraConfig: protectedProcedure
       .input(z.object({ extraConfig: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        const config = await getDefaultLlmConfig(ctx.user.id);
-        if (!config) throw new TRPCError({ code: "NOT_FOUND", message: "请先配置默认 LLM 提供商" });
-        const merged = { ...((config.extraConfig as any) || {}), ...input.extraConfig };
-        await upsertLlmConfig(ctx.user.id, { providerName: config.providerName, extraConfig: merged });
-        invalidateUserProviderCache(ctx.user.id);
-        return { success: true };
+        return updateUserDefaultLlmExtra(ctx.user.id, input.extraConfig);
       }),
+
+    setFallback: protectedProcedure.input(z.object({ providerName: z.string().trim().min(1).max(64) }))
+      .mutation(({ ctx, input }) => {  return setUserFallbackLlmProvider(ctx.user.id, input.providerName); }),
 
     setDefault: protectedProcedure
       .input(z.object({ providerName: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {
-        assertKnownProvider(input.providerName);
-        await setDefaultLlmConfig(ctx.user.id, input.providerName);
-        invalidateUserProviderCache(ctx.user.id);
-        return { success: true };
+
+        return setUserDefaultLlmProvider(ctx.user.id, input.providerName);
       }),
   }),
 
@@ -1773,6 +1750,7 @@ export const appRouter = router({
 
         const chatText = history.map(m => `${m.role === "user" ? "用户" : persona.name}: ${m.content}`).join("\n");
         const response = await llmService.invoke({
+          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "memory.autoExtract", purpose: "memory_extract" } },
           messages: [
             { role: "system", content: "你是记忆提取助手。请从对话中提取重要的记忆节点。只返回JSON数组，每个元素包含 title, description, category(milestone/memory/anniversary/anchor), date(如果能推断)。最多提取5条。\n\ncategory 的含义：\n- milestone：重要时刻（第一次见面、分手那天）\n- memory：普通回忆\n- anniversary：每年重复的纪念日\n- anchor：具体的事实型记忆（例如「TA 的生日是 3 月 14 日」「TA 在 XX 大学读书」）。这类记忆是对话中不可违背的事实，如果对话里出现了明确的具体日期、地点、称呼、身份信息，就标记为 anchor。" },
             { role: "user", content: chatText },
@@ -1859,6 +1837,7 @@ export const appRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "该日期的聊天记录内容为空" });
         }
         const response = await llmService.invoke({
+          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "diary.generate", purpose: "diary" } },
           messages: [
             { role: "system", content: '你是日记助手。请根据对话记录生成一篇温暖的日记。只返回JSON：{"summary":"2-3句概述","highlights":["亮点1","亮点2"],"emotionalArc":{"start":"开始情绪","end":"结束情绪","dominant":"主导情绪"},"quotes":["原话1","原话2"],"reflection":"温暖的反思1-2句"}' },
             { role: "user", content: chatText.slice(0, 6000) },

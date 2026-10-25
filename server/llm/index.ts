@@ -1,3 +1,8 @@
+import { getLlmRequestContext, resolveUsageContext, scopeProvider } from "./usage-context";
+import { UsageMeter, recordLlmUsage, safeRecordUsage, isCancelled, type UsageSink, type LlmUsageRecord } from "./usage";
+import { mayRetryLLM, safeLLMError, LLMRequestError } from "./errors";
+import { readReasoningConfig } from "./reasoning";
+import { createUserConfiguredLlmProvider } from "./user-provider-factory";
 import { ENV } from "../_core/env";
 import type { LLMMessage, LLMOptions, LLMProvider, LLMStreamChunk, InvokeParams } from "./types";
 import { ProviderRegistry } from "./provider-registry";
@@ -23,6 +28,8 @@ registry.registerFactory(
       cfg.baseUrl ?? "https://api.openai.com/v1",
       cfg.model ?? "gpt-4o",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.openaiApiKey,
@@ -42,6 +49,7 @@ registry.registerFactory(
       cfg.model ?? "google/gemini-3-flash-preview",
       cfg.systemMessage,
       1,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.atlasApiKey,
@@ -59,6 +67,8 @@ registry.registerFactory(
       cfg.baseUrl ?? "https://api.cheaperinference.com/v1",
       cfg.model ?? "gpt-5.4-mini",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.cheaperInferenceApiKey,
@@ -76,6 +86,8 @@ registry.registerFactory(
       cfg.baseUrl ?? "https://api.moonshot.cn/v1",
       cfg.model ?? "moonshot-v1-8k",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.kimiApiKey,
@@ -90,9 +102,11 @@ registry.registerFactory(
     new OpenAIProvider(
       "Qwen",
       cfg.apiKey ?? "",
-      cfg.baseUrl ?? (ENV.tongyiUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+      cfg.baseUrl ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
       cfg.model ?? "qwen-turbo",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.tongyiApiKey,
@@ -110,6 +124,8 @@ registry.registerFactory(
       cfg.baseUrl ?? "https://api.deepseek.com/v1",
       cfg.model ?? "deepseek-chat",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.deepseekApiKey,
@@ -124,9 +140,11 @@ registry.registerFactory(
     new OpenAIProvider(
       "Doubao",
       cfg.apiKey ?? "",
-      cfg.baseUrl ?? ENV.doubaoBaseUrl,
-      cfg.model ?? ENV.doubaoModel,
+      cfg.baseUrl ?? "https://ark.cn-beijing.volces.com/api/v3",
+      cfg.model ?? "",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.doubaoApiKey,
@@ -144,6 +162,8 @@ registry.registerFactory(
       cfg.baseUrl ?? "https://api.302.ai/v1",
       cfg.model ?? "",
       cfg.systemMessage,
+      3,
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV._302aiApiKey,
@@ -158,6 +178,7 @@ registry.registerFactory(
       cfg.apiKey ?? "",
       cfg.model ?? "claude-sonnet-4-6",
       cfg.baseUrl ?? "https://api.anthropic.com",
+      readReasoningConfig(cfg.extra),
     ),
   {
     apiKey: ENV.claudeApiKey,
@@ -203,111 +224,84 @@ registry.registerFactory(
 
 registry.setDefault(ENV.defaultLlmProvider);
 
-function isTransientError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message.toLowerCase();
-  return /econnreset|etimedout|socket hang up|5\d{2}|rate.?limit|too many requests/.test(msg);
+for (const [name, baseUrl] of [["Grok", "https://api.x.ai/v1"], ["Gemini", "https://generativelanguage.googleapis.com/v1beta/openai"], ["DeepSeek-Flash", "https://api.deepseek.com/v1"], ["DeepSeek-Pro", "https://api.deepseek.com/v1"]]) {
+  registry.registerFactory(name, cfg => createUserConfiguredLlmProvider({ providerName: name, apiKey: cfg.apiKey || "", baseUrl: cfg.baseUrl || baseUrl, model: cfg.model, extraConfig: cfg.extra }) ?? new OpenAIProvider(name, "", baseUrl, "", undefined, 3, undefined, name === "DeepSeek-Flash" ? { thinking: "disabled" } : {}), name.startsWith("DeepSeek-") ? { apiKey: ENV.deepseekApiKey, baseUrl: ENV.deepseekBaseUrl } : {});
 }
-
-function isVersionError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message.toLowerCase();
-  return /version|deprecated|unsupported.*model|model.*not found|invalid.*api/.test(msg);
-}
-
+export type UserInvokeParams = InvokeParams & { userId: number; personaId?: number; route?: string; purpose?: string; provider?: LLMProvider };
 export class LLMService {
-  constructor(private providerRegistry = registry) {}
-
+  constructor(private providerRegistry = registry, private usageSink: UsageSink = recordLlmUsage, private userProviderResolver?: (params: { userId: number; providerName?: string }) => Promise<LLMProvider | undefined>) {}
   async invoke(params: InvokeParams): Promise<string> {
+    const ambient = getLlmRequestContext();
+    const context = { ...ambient, ...params.options?.usageContext, userId: params.options?.usageContext?.userId ?? ambient?.userId };
+    if (context.userId !== undefined) return this.invokeForUser({ ...params, userId: context.userId, personaId: context.personaId, route: context.route, purpose: context.purpose });
     const provider = this.providerRegistry.get(params.options?.provider);
-    if (!provider) {
-      throw new Error(
-        `No LLM provider available${params.options?.provider ? ` (requested: ${params.options.provider})` : ""}. Configure at least one provider in .env`,
-      );
-    }
+    if (!provider) throw new Error("No LLM provider available. Configure a provider first.");
     return this.invokeWithProvider(provider, params);
   }
-
-  /**
-   * Runs a request against a specific provider instance.
-   *
-   * Per-user providers are built outside the registry, so they are invoked
-   * through here to keep the retry policy in one place.
-   */
-  async invokeWithProvider(provider: LLMProvider, params: InvokeParams): Promise<string> {
-    if (!provider.isConfigured()) {
-      throw new Error(`LLM provider "${provider.name}" is not configured. Check your .env file.`);
-    }
-
-    let lastError: unknown;
-    const maxAttempts = provider.maxAttempts ?? 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        return await provider.invoke(params.messages, params.options);
-      } catch (err) {
-        lastError = err;
-        if (isVersionError(err)) {
-          console.warn(`[LLM] Provider "${provider.name}" returned a version/compatibility error:`, (err as Error).message);
-          break;
-        }
-        if (isTransientError(err) && attempt < maxAttempts - 1) {
-          const delay = 200 * Math.pow(2, attempt);
-          console.warn(`[LLM] Transient error from "${provider.name}", retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        break;
-      }
-    }
-    throw lastError;
+  private checkAbort(signal?: AbortSignal) { if (signal?.aborted) throw new LLMRequestError("cancelled"); }
+  private waitRetry(delay: number, signal?: AbortSignal) {
+    this.checkAbort(signal);
+    return new Promise<void>((resolve, reject) => { const cleanup = () => signal?.removeEventListener("abort", abort); const timer = setTimeout(() => { cleanup(); resolve(); }, delay); const abort = () => { clearTimeout(timer); cleanup(); reject(new LLMRequestError("cancelled")); }; signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort(); });
   }
-
-  /**
-   * Streams a response from a specific provider.
-   *
-   * A retry is only attempted while nothing has been emitted yet — once the
-   * caller has seen part of the answer, replaying it would duplicate text.
-   */
-  async *streamWithProvider(
-    provider: LLMProvider,
-    params: InvokeParams,
-  ): AsyncGenerator<LLMStreamChunk> {
-    if (!provider.isConfigured()) {
-      throw new Error(`LLM provider "${provider.name}" is not configured. Check your .env file.`);
+  private async invokeUntracked(provider: LLMProvider, params: InvokeParams): Promise<string> {
+    if (!provider.isConfigured()) throw new LLMRequestError("invalid_request");
+    const attempts = Math.min(3, Math.max(1, Math.floor(provider.maxAttempts ?? 3)));
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try { this.checkAbort(params.options?.signal); if (!provider.reportsAttempts) params.options?.onAttempt?.(); const text = await provider.invoke(params.messages, params.options); this.checkAbort(params.options?.signal); return text; }
+      catch (error) { if (attempt + 1 >= attempts || !mayRetryLLM(error, params.options?.signal)) throw error; await this.waitRetry(200 * 2 ** attempt, params.options?.signal); }
     }
-    if (!provider.stream) {
-      const text = await this.invokeWithProvider(provider, params);
-      if (text) yield { text };
-      return;
-    }
-
-    const maxAttempts = provider.maxAttempts ?? 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    throw new LLMRequestError("unknown");
+  }
+  private async *streamUntracked(provider: LLMProvider, params: InvokeParams): AsyncGenerator<LLMStreamChunk> {
+    if (!provider.isConfigured()) throw new LLMRequestError("invalid_request");
+    if (!provider.stream) { const text = await this.invokeUntracked(provider, params); if (text) yield { text }; return; }
+    const attempts = Math.min(3, Math.max(1, Math.floor(provider.maxAttempts ?? 3)));
+    for (let attempt = 0; attempt < attempts; attempt++) {
       let emitted = false;
-      try {
-        for await (const chunk of provider.stream(params.messages, params.options)) {
-          emitted = true;
-          yield chunk;
-        }
-        return;
-      } catch (err) {
-        if (emitted) throw err;
-        if (attempt < maxAttempts - 1 && isTransientError(err)) {
-          const delay = 200 * Math.pow(2, attempt);
-          console.warn(`[LLM] Transient streaming error from "${provider.name}", retrying in ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        throw err;
-      }
+      try { this.checkAbort(params.options?.signal); if (!provider.reportsAttempts) params.options?.onAttempt?.(); for await (const chunk of provider.stream(params.messages, params.options)) { this.checkAbort(params.options?.signal); if (chunk.text) emitted = true; yield chunk; } this.checkAbort(params.options?.signal); return; }
+      catch (error) { if (emitted || attempt + 1 >= attempts || !mayRetryLLM(error, params.options?.signal)) throw error; await this.waitRetry(200 * 2 ** attempt, params.options?.signal); }
     }
   }
-
-  getRegistry() {
-    return this.providerRegistry;
+  private meteredParams(provider: LLMProvider, params: InvokeParams, streaming: boolean) {
+    const context = resolveUsageContext(provider, params.options?.usageContext);
+    const options = { ...params.options, usageContext: { ...context, purpose: params.options?.purpose ?? context.purpose }, purpose: params.options?.purpose ?? context.purpose as LLMOptions["purpose"] };
+    const summary = provider.getConfigSummary?.(options);
+    const meter = new UsageMeter(options.usageContext, params.messages, provider.getProviderName?.(options) ?? provider.name, summary?.model ?? provider.getModel?.(options), streaming, params.options?.provider, summary?.reasoningEffort, provider.getRelayId?.());
+    return { meter, params: { ...params, options: { ...options,
+      onRoute: route => { meter.observeRoute(route); params.options?.onRoute?.(route); },
+      onAttempt: () => { meter.startAttempt(); params.options?.onAttempt?.(); },
+      onUsage: usage => { meter.observeUsage(usage); params.options?.onUsage?.(usage); },
+      onModel: model => { meter.observeModel(model); params.options?.onModel?.(model); },
+    } } as InvokeParams };
   }
+  async invokeWithProvider(provider: LLMProvider, params: InvokeParams): Promise<string> {
+    const observed = this.meteredParams(provider, params, false); let status: LlmUsageRecord["status"] = "failed"; let errorKind: LlmUsageRecord["error"] = "provider_error";
+    try { const text = await this.invokeUntracked(provider, observed.params); observed.meter.observeText(text); status = "success"; errorKind = undefined; return text; }
+    catch (error) { if (isCancelled(error, params.options?.signal)) { status = "cancelled"; errorKind = "cancelled"; } throw safeLLMError(error, params.options?.signal); }
+    finally { await safeRecordUsage(this.usageSink, observed.meter.finish(status, errorKind)); }
+  }
+  async *streamWithProvider(provider: LLMProvider, params: InvokeParams): AsyncGenerator<LLMStreamChunk> {
+    const observed = this.meteredParams(provider, params, true); let status: LlmUsageRecord["status"] = "cancelled"; let errorKind: LlmUsageRecord["error"] = "consumer_closed";
+    try { for await (const chunk of this.streamUntracked(provider, observed.params)) { observed.meter.observeText(chunk.text); yield chunk; } this.checkAbort(params.options?.signal); status = "success"; errorKind = undefined; }
+    catch (error) { status = isCancelled(error, params.options?.signal) ? "cancelled" : "failed"; errorKind = status === "cancelled" ? "cancelled" : "provider_error"; throw safeLLMError(error, params.options?.signal); }
+    finally { await safeRecordUsage(this.usageSink, observed.meter.finish(status, errorKind)); }
+  }
+  private async providerForUser(params: UserInvokeParams) {
+    const resolve = this.userProviderResolver ?? (async (input: { userId: number; providerName?: string }) => (await import("./user-provider")).resolveProviderForUser(input));
+    const provider = params.provider ?? await resolve({ userId: params.userId, providerName: params.options?.provider });
+    if (!provider) throw new LLMRequestError("invalid_request");
+    return scopeProvider(provider, { userId: params.userId });
+  }
+  async invokeForUser(params: UserInvokeParams) {
+    const provider = await this.providerForUser(params);
+    return this.invokeWithProvider(provider, { ...params, options: { ...params.options, usageContext: { ...getLlmRequestContext(), ...params.options?.usageContext, userId: params.userId, ...(params.personaId !== undefined ? { personaId: params.personaId } : {}), ...(params.route !== undefined ? { route: params.route } : {}), ...(params.purpose !== undefined ? { purpose: params.purpose } : {}) } } });
+  }
+  async *streamForUser(params: UserInvokeParams): AsyncGenerator<LLMStreamChunk> {
+    const provider = await this.providerForUser(params);
+    yield* this.streamWithProvider(provider, { ...params, options: { ...params.options, usageContext: { ...getLlmRequestContext(), ...params.options?.usageContext, userId: params.userId, ...(params.personaId !== undefined ? { personaId: params.personaId } : {}), ...(params.route !== undefined ? { route: params.route } : {}), ...(params.purpose !== undefined ? { purpose: params.purpose } : {}) } } });
+  }
+  getRegistry() { return this.providerRegistry; }
 }
-
 export const llmService = new LLMService();
 export { registry };
 export type { LLMMessage, LLMOptions, InvokeParams, LLMProvider, LLMStreamChunk };

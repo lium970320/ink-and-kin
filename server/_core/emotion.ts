@@ -85,8 +85,11 @@ export async function inferEmotionalState(params: {
   currentState: string;
   provider?: string;
   providerInstance?: LLMProvider;
+  signal?: AbortSignal;
+  usageContext?: { userId?: number; personaId?: number; route?: string; purpose?: string };
   locale?: "zh" | "en";
 }): Promise<EmotionInferenceResult> {
+  params.signal?.throwIfAborted();
   const locale = params.locale ?? "zh";
   const useHeuristic = (): EmotionInferenceResult => ({
     state: computeEmotionalState(
@@ -118,11 +121,11 @@ export async function inferEmotionalState(params: {
     const response = params.providerInstance
       ? await llmService.invokeWithProvider(params.providerInstance, {
           messages,
-          options: { provider: params.provider, temperature: 0, maxTokens: 200 },
+          options: { provider: params.provider, temperature: 0, maxTokens: 200, signal: params.signal, usageContext: params.usageContext },
         })
       : await llmService.invoke({
           messages,
-          options: { provider: params.provider, temperature: 0, maxTokens: 200 },
+          options: { provider: params.provider, temperature: 0, maxTokens: 200, signal: params.signal, usageContext: params.usageContext },
         });
 
     const parsed = extractJsonObject(response);
@@ -134,6 +137,7 @@ export async function inferEmotionalState(params: {
     const reason = typeof parsed?.reason === "string" ? parsed.reason.slice(0, 60) : undefined;
     return { state, source: "llm", reason };
   } catch (e) {
+    params.signal?.throwIfAborted();
     console.warn("[Emotion] LLM inference failed, using heuristic:", (e as Error).message);
     return useHeuristic();
   }

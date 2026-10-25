@@ -1,3 +1,5 @@
+import { LLMRequestError, mayRetryLLM } from "../llm/errors";
+import { withLlmRequestContext } from "../llm/usage-context";
 /**
  * Persona distillation pipeline.
  *
@@ -133,6 +135,7 @@ async function describeImages(
     });
     return response?.trim() || "";
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Image analysis failed (non-critical):", e);
     return "";
   }
@@ -391,6 +394,7 @@ async function runIntakeStage(input: {
     });
     return (response || "").trim();
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Intake stage failed:", e);
     return "";
   }
@@ -446,6 +450,7 @@ async function runWorkDimension(input: {
 
     return { analysis: analysis || "", document: document || "" };
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Work dimension failed (non-critical):", e);
     return null;
   }
@@ -484,6 +489,7 @@ async function runMerger(input: {
     });
     return (merged || "").trim();
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Merge stage failed (non-critical):", e);
     return "";
   }
@@ -515,6 +521,9 @@ export const pipelineRetryPolicy: {
  * kept on the job so the UI can show that a run had to be repeated.
  */
 export async function runSkillPipeline(input: PipelineInput): Promise<void> {
+  return withLlmRequestContext({ userId: input.userId, personaId: input.personaId, route: "persona.pipeline", purpose: "skill_pipeline" }, () => runSkillPipelineScoped(input));
+}
+async function runSkillPipelineScoped(input: PipelineInput): Promise<void> {
   const maxAttempts = pipelineRetryPolicy.maxAttempts;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -526,7 +535,7 @@ export async function runSkillPipeline(input: PipelineInput): Promise<void> {
         `[SkillEngine] Pipeline attempt ${attempt}/${maxAttempts} failed:`,
         error,
       );
-      if (attempt >= maxAttempts) return;
+      if (attempt >= maxAttempts || !mayRetryLLM(error)) return;
 
       // A short pause before the next attempt — an immediate retry would
       // hit the same rate limit.
@@ -629,6 +638,7 @@ async function runSkillPipelineOnce(
           },
         });
       } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
         // The research is evidence, not a precondition: without it the persona
         // stages still run, they just have less material.
         console.warn("[SkillEngine] Celebrity research failed (non-critical):", e);
@@ -900,7 +910,7 @@ async function runSkillPipelineOnce(
       .updateSkillJob(jobId, userId, { retryCount: Math.max(0, attempt - 1) })
       .catch(() => undefined);
 
-    if (attempt < maxAttempts) {
+    if (attempt < maxAttempts && mayRetryLLM(error)) {
       // The run is going to be repeated, so the job stays in a retryable
       // state rather than being marked as failed.
       await setJobStage(

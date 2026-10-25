@@ -277,8 +277,9 @@ function RelayConfigEditor({
     relayId: relay?.id,
     providerName: provider.name,
     apiKey: apiKey || undefined,
-    baseUrl: baseUrl || undefined,
-    model: model || undefined,
+    baseUrl,
+    model,
+    reasoningEffort,
   });
   const modelOptions = model && !models.some(item => item.id === model)
     ? [{ id: model }, ...models]

@@ -241,6 +241,7 @@ async function handleGraduationCommand(params: {
   }
 
   const response = await llmService.invoke({
+    options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: params.userId, personaId: persona.id, route: "channel.graduate", purpose: "graduation" } },
     messages: [
       { role: "system", content: "你是一个正在道别的角色，语气要克制、温柔、不说教。" },
       {

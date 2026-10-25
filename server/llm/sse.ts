@@ -19,11 +19,12 @@ export async function* parseSSEData(response: Response): AsyncGenerator<string> 
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) { completed = true; break; }
       buffer += decoder.decode(value, { stream: true });
 
       // Frames are separated by a blank line.
@@ -45,6 +46,7 @@ export async function* parseSSEData(response: Response): AsyncGenerator<string> 
       yield tail.slice(5).trim();
     }
   } finally {
+    if (!completed) { try { await reader.cancel(); } catch { /* abort已关闭流。 */ } }
     reader.releaseLock();
   }
 }
@@ -60,6 +62,7 @@ export async function* parseNDJSON(response: Response): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
 
   /**
    * Reads the content of one NDJSON line.
@@ -83,7 +86,7 @@ export async function* parseNDJSON(response: Response): AsyncGenerator<string> {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) { completed = true; break; }
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split("\n");
@@ -99,6 +102,7 @@ export async function* parseNDJSON(response: Response): AsyncGenerator<string> {
     // chunk of a reply.
     for (const content of readLine(buffer)) yield content;
   } finally {
+    if (!completed) { try { await reader.cancel(); } catch { /* abort已关闭流。 */ } }
     reader.releaseLock();
   }
 }

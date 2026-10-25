@@ -1,3 +1,4 @@
+import { LLMRequestError } from "../llm/errors";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 /**
@@ -80,11 +81,18 @@ describe("the distillation pipeline", () => {
     runPythonTool.mockResolvedValue({ stdout: "", stderr: "" });
     // The analyzer succeeds; the builder fails, so the run breaks after the
     // first model call.
-    invoke.mockResolvedValueOnce("{}").mockRejectedValue(new Error("provider exploded"));
+    invoke.mockResolvedValueOnce("{}").mockRejectedValue(new LLMRequestError("transient"));
   });
 
   afterEach(() => {
     pipelineRetryPolicy.delaysMs = [...originalDelays];
+  });
+
+  it("策略拒绝立即结束，不换阶段或重跑整条流水线", async () => {
+    invoke.mockReset().mockRejectedValue(new LLMRequestError("safety"));
+    await runSkillPipeline(input);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(updatePersona.mock.calls.some(call => call[2]?.analysisStatus === "error")).toBe(true);
   });
 
   it("retries a failed run instead of giving up on the first error", async () => {

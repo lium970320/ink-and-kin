@@ -68,8 +68,10 @@ export async function assessTrajectory(params: {
    * falling back to the environment key.
    */
   providerInstance?: LLMProvider;
+  signal?: AbortSignal;
   now?: number;
 }): Promise<TrajectoryAssessment | null> {
+  params.signal?.throwIfAborted();
   const now = params.now ?? Date.now();
   const since = new Date(now);
   since.setDate(since.getDate() - 28);
@@ -97,7 +99,8 @@ export async function assessTrajectory(params: {
         { role: "system" as const, content: SYSTEM_PROMPT },
         { role: "user" as const, content: transcript },
       ],
-      options: { provider: params.provider, temperature: 0, maxTokens: 300 },
+      options: { provider: params.provider, temperature: 0, maxTokens: 300, signal: params.signal,
+        usageContext: { userId: params.userId, personaId: params.personaId, route: "chat.trajectory", purpose: "graduation" } },
     };
     const response = params.providerInstance
       ? await llmService.invokeWithProvider(params.providerInstance, request)
@@ -111,9 +114,11 @@ export async function assessTrajectory(params: {
     if (typeof parsed?.gratitudeRatio === "number") gratitudeRatio = parsed.gratitudeRatio;
     if (typeof parsed?.note === "string") note = parsed.note.slice(0, 120);
   } catch (e) {
+    params.signal?.throwIfAborted();
     console.warn("[Safety] Trajectory assessment failed, using keyword ratios:", (e as Error).message);
   }
 
+  params.signal?.throwIfAborted();
   await db.createGraduationAssessment({
     userId: params.userId,
     personaId: params.personaId,

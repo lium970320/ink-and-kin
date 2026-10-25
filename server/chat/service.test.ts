@@ -150,6 +150,26 @@ describe("runConversation", () => {
     invokeWithProvider.mockResolvedValue("在的。");
   });
 
+  it("取消流式回复后不启动辅助模型或写入虚假回复", async () => {
+    const controller = new AbortController();
+    streamWithProvider.mockImplementation(async function* () {
+      yield { text: "部分" };
+      controller.abort();
+      throw new DOMException("已取消", "AbortError");
+    });
+    const events = [];
+    for await (const event of runConversation({ persona: persona(), userId: 1, message: "你好", mode: "stream", signal: controller.signal })) events.push(event);
+    expect(inferEmotionalState).not.toHaveBeenCalled();
+    expect(createMessage).toHaveBeenCalledTimes(1);
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  it("主回复传递可信用户角色和用途", async () => {
+    for await (const _ of runConversation({ persona: persona({ id: 23, userId: 9 }), userId: 9, message: "你好", mode: "once" })) {}
+    expect(invokeWithProvider.mock.calls[0][1].options.usageContext).toEqual({ userId: 9, personaId: 23, route: "web", purpose: "chat" });
+    expect(inferEmotionalState.mock.calls[0][0].usageContext).toEqual({ userId: 9, personaId: 23, route: "web", purpose: "emotion" });
+  });
+
   it("stores the user's turn and the persona's reply", async () => {
     const events = [];
     for await (const event of runConversation({

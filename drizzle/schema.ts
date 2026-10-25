@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar, jsonb } from "drizzle-orm/pg-core";
+import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, index, uniqueIndex, varchar, jsonb } from "drizzle-orm/pg-core";
 
 export const roleEnum = pgEnum("role", ["user", "admin"]);
 export const analysisStatusEnum = pgEnum("analysis_status", ["pending", "analyzing", "ready", "error"]);
@@ -178,7 +178,7 @@ export const llmConfigs = pgTable("llm_configs", {
   userId: integer("userId").notNull(),
   providerName: varchar("providerName", { length: 64 }).notNull(),
   isDefault: boolean("isDefault").default(false).notNull(),
-  apiKey: varchar("apiKey", { length: 512 }),
+  apiKey: text("apiKey"),
   /** Last 4 characters of the API key, so the UI can show which key is set without revealing it. */
   apiKeyHint: varchar("apiKeyHint", { length: 16 }),
   baseUrl: varchar("baseUrl", { length: 512 }),
@@ -186,10 +186,55 @@ export const llmConfigs = pgTable("llm_configs", {
   systemMessage: text("systemMessage"),
   extraConfig: jsonb("extraConfig"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, table => ({
+  byUserProvider: uniqueIndex("llm_configs_user_provider_idx").on(table.userId, sql`lower(btrim(${table.providerName}))`),
+  oneDefault: uniqueIndex("llm_configs_user_default_idx").on(table.userId).where(sql`${table.isDefault} = true`),
+}));
 
 export type LlmConfig = typeof llmConfigs.$inferSelect;
 export type InsertLlmConfig = typeof llmConfigs.$inferInsert;
+
+export const llmProviderRelays = pgTable("llm_provider_relays", {
+  id: serial("id").primaryKey(),
+  llmConfigId: integer("llmConfigId").notNull().references(() => llmConfigs.id, { onDelete: "cascade" }),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  relayName: varchar("relayName", { length: 128 }).notNull(),
+  priority: integer("priority").default(100).notNull(),
+  enabled: boolean("enabled").default(true).notNull(),
+  apiKey: text("apiKey"),
+  apiKeyHint: varchar("apiKeyHint", { length: 16 }),
+  baseUrl: varchar("baseUrl", { length: 512 }),
+  model: varchar("model", { length: 128 }),
+  reasoningEffort: varchar("reasoningEffort", { length: 16 }),
+  extraConfig: jsonb("extraConfig"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+}, table => ({ byOwner: index("llm_provider_relays_owner_idx").on(table.userId, table.llmConfigId, table.enabled, table.priority) }));
+export type LlmProviderRelay = typeof llmProviderRelays.$inferSelect;
+export type InsertLlmProviderRelay = typeof llmProviderRelays.$inferInsert;
+
+export const llmUsageRecords = pgTable("llm_usage_records", {
+  id: serial("id").primaryKey(), startedAt: timestamp("startedAt").notNull(),
+  durationMs: integer("durationMs").default(0).notNull(),
+  provider: varchar("provider", { length: 64 }).notNull(), requestedProvider: varchar("requestedProvider", { length: 64 }),
+  model: varchar("model", { length: 128 }), reasoningEffort: varchar("reasoningEffort", { length: 32 }),
+  purpose: varchar("purpose", { length: 64 }), route: varchar("route", { length: 128 }),
+  userId: integer("userId").references(() => users.id, { onDelete: "cascade" }),
+  personaId: integer("personaId").references(() => personas.id, { onDelete: "set null" }),
+  relayId: integer("relayId").references(() => llmProviderRelays.id, { onDelete: "set null" }),
+  success: boolean("success").default(true).notNull(), status: varchar("status", { length: 16 }).default("success").notNull(),
+  streaming: boolean("streaming").default(false).notNull(),
+  attempts: integer("attempts").default(1).notNull(),
+  attemptedProviders: jsonb("attemptedProviders").$type<string[]>().default([]).notNull(),
+  attemptedRelayIds: jsonb("attemptedRelayIds").$type<number[]>().default([]).notNull(),
+  inputTokens: integer("inputTokens").default(0).notNull(), outputTokens: integer("outputTokens").default(0).notNull(), totalTokens: integer("totalTokens").default(0).notNull(),
+  inputChars: integer("inputChars").default(0).notNull(), outputChars: integer("outputChars").default(0).notNull(),
+  usageSource: varchar("usageSource", { length: 16 }).default("estimated").notNull(),
+  inputSource: varchar("inputSource", { length: 16 }).default("estimated").notNull(), outputSource: varchar("outputSource", { length: 16 }).default("estimated").notNull(), totalSource: varchar("totalSource", { length: 16 }).default("estimated").notNull(),
+  error: text("error"), createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => ({ byOwnerTime: index("llm_usage_records_owner_started_idx").on(table.userId, table.startedAt, table.id) }));
+export type LlmUsageRecordRow = typeof llmUsageRecords.$inferSelect;
+export type InsertLlmUsageRecordRow = typeof llmUsageRecords.$inferInsert;
 
 export const wechatBotState = pgTable("wechat_bot_state", {
   id: serial("id").primaryKey(),

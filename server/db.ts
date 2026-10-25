@@ -1,9 +1,10 @@
-import { eq, desc, and, or, sql, count, sum, gte, ilike, asc } from "drizzle-orm";
+import { eq, desc, and, or, sql, count, sum, gte, lte, ilike, asc, inArray, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
+import type { UsageRecord, TokenSource } from "./llm/usage";
 import {
   InsertUser, users,
   personas, personaFiles, messages,
-  wechatBindings, skillJobs, llmConfigs, wechatBotState,
+  wechatBindings, skillJobs, llmConfigs, llmProviderRelays, llmUsageRecords, wechatBotState,
   memories, emotionSnapshots, diaryEntries, scenes,
   chatSummaries, safetyEvents, graduationAssessments,
   channelBindings, channelStates, personaTemplates, personaQuestionnaireAnswers,
@@ -557,27 +558,51 @@ export async function updateSkillJob(
 export async function getLlmConfigsByUserId(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(llmConfigs).where(eq(llmConfigs.userId, userId));
+  return db.select().from(llmConfigs).where(eq(llmConfigs.userId, userId)).orderBy(asc(llmConfigs.id));
+}
+
+export function normalizeLlmProviderName(value: string): string {
+  const name = value.trim();
+  if (!name || name.length > 64) throw new Error("Invalid provider name");
+  return name;
+}
+function providerWhere(userId: number, name: string) {
+  return and(eq(llmConfigs.userId, userId), sql`lower(btrim(${llmConfigs.providerName})) = ${name.trim().toLowerCase()}`);
+}
+async function lockLlmConfig(tx: any, userId: number) { await tx.execute(sql`select pg_advisory_xact_lock(714009, ${userId})`); }
+function configExtra(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+async function upsertLlmConfigInTransaction(tx: any, userId: number, data: Partial<InsertLlmConfig> & { providerName: string }): Promise<number> {
+  const providerName = normalizeLlmProviderName(data.providerName);
+  const [existing] = await tx.select().from(llmConfigs).where(providerWhere(userId, providerName)).limit(1);
+  const [currentDefault] = await tx.select({ id: llmConfigs.id }).from(llmConfigs).where(and(eq(llmConfigs.userId, userId), eq(llmConfigs.isDefault, true))).limit(1);
+  const fields: Partial<InsertLlmConfig> = { providerName };
+  for (const key of ["baseUrl", "model", "systemMessage", "apiKeyHint"] as const) if (data[key] !== undefined) fields[key] = data[key];
+  // Empty credentials mean keep the existing encrypted value.
+  if (data.apiKey?.trim()) fields.apiKey = data.apiKey;
+  if (data.extraConfig !== undefined) fields.extraConfig = { ...configExtra(existing?.extraConfig), ...configExtra(data.extraConfig) };
+  fields.isDefault = !currentDefault || existing?.isDefault === true;
+  if (existing) {
+    await tx.update(llmConfigs).set(fields).where(and(eq(llmConfigs.id, existing.id), eq(llmConfigs.userId, userId)));
+    return existing.id;
+  }
+  const [row] = await tx.insert(llmConfigs).values({ ...fields, userId, providerName }).returning({ id: llmConfigs.id });
+  return row.id;
 }
 
 export async function upsertLlmConfig(userId: number, data: Partial<InsertLlmConfig> & { providerName: string }) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const existing = await db.select().from(llmConfigs)
-    .where(and(eq(llmConfigs.userId, userId), eq(llmConfigs.providerName, data.providerName))).limit(1);
-  if (existing[0]) {
-    await db.update(llmConfigs).set(data).where(eq(llmConfigs.id, existing[0].id));
-    return existing[0].id;
-  }
-  const [result] = await db.insert(llmConfigs).values({ userId, ...data }).returning({ id: llmConfigs.id });
-  return result.id;
+  return db.transaction(async tx => { await lockLlmConfig(tx, userId); return upsertLlmConfigInTransaction(tx, userId, data); });
 }
 
 export async function setDefaultLlmConfig(userId: number, providerName: string) {
   await withTransaction(async (tx) => {
+    await lockLlmConfig(tx, userId);
+    const id = await upsertLlmConfigInTransaction(tx, userId, { providerName });
     await tx.update(llmConfigs).set({ isDefault: false }).where(eq(llmConfigs.userId, userId));
     await tx.update(llmConfigs).set({ isDefault: true })
-      .where(and(eq(llmConfigs.userId, userId), eq(llmConfigs.providerName, providerName)));
+      .where(and(eq(llmConfigs.userId, userId), eq(llmConfigs.id, id)));
+    await tx.update(personas).set({ llmProvider: null }).where(eq(personas.userId, userId));
   });
 }
 
@@ -587,6 +612,175 @@ export async function getDefaultLlmConfig(userId: number) {
   const rows = await db.select().from(llmConfigs)
     .where(and(eq(llmConfigs.userId, userId), eq(llmConfigs.isDefault, true))).limit(1);
   return rows[0] ?? null;
+}
+
+/** Pure read: no hidden migration of parent credentials into a relay. */
+export async function getLlmRelaysByUserId(userId: number, providerName?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions = [eq(llmProviderRelays.userId, userId), eq(llmConfigs.userId, userId)];
+  if (providerName) conditions.push(sql`lower(btrim(${llmConfigs.providerName})) = ${providerName.trim().toLowerCase()}`);
+  const rows = await db.select({ relay: llmProviderRelays, providerName: llmConfigs.providerName }).from(llmProviderRelays)
+    .innerJoin(llmConfigs, eq(llmConfigs.id, llmProviderRelays.llmConfigId)).where(and(...conditions))
+    .orderBy(desc(llmProviderRelays.priority), asc(llmProviderRelays.id));
+  return rows.map(({ relay, providerName }) => ({ ...relay, providerName, extraConfig: { ...configExtra(relay.extraConfig), reasoningEffort: relay.reasoningEffort } }));
+}
+
+export async function saveLlmRelayConfig(userId: number, data: {
+  id?: number; providerName: string; relayName: string; priority: number; enabled: boolean;
+  apiKey?: string; apiKeyHint?: string | null; baseUrl?: string | null; model?: string | null;
+  reasoningEffort?: string | null;
+}) {
+  const db = await getDb(); if (!db) throw new Error("DB not available");
+  return db.transaction(async tx => {
+    await lockLlmConfig(tx, userId);
+    const parentId = await upsertLlmConfigInTransaction(tx, userId, { providerName: data.providerName });
+    const fields = { relayName: data.relayName, priority: data.priority, enabled: data.enabled,
+      ...(data.apiKey?.trim() ? { apiKey: data.apiKey, apiKeyHint: data.apiKeyHint ?? null } : {}),
+      ...(data.baseUrl !== undefined ? { baseUrl: data.baseUrl } : {}), ...(data.model !== undefined ? { model: data.model } : {}),
+      ...(data.reasoningEffort !== undefined ? { reasoningEffort: data.reasoningEffort } : {}), updatedAt: new Date() };
+    if (data.id !== undefined) {
+      const [existing] = await tx.select().from(llmProviderRelays).where(and(eq(llmProviderRelays.id, data.id), eq(llmProviderRelays.userId, userId))).limit(1);
+      if (!existing || existing.llmConfigId !== parentId) throw new Error("LLM_RELAY_NOT_FOUND");
+      await tx.update(llmProviderRelays).set(fields).where(and(eq(llmProviderRelays.id, data.id), eq(llmProviderRelays.userId, userId)));
+      return data.id;
+    }
+    const [row] = await tx.insert(llmProviderRelays).values({ ...fields, userId, llmConfigId: parentId }).returning({ id: llmProviderRelays.id });
+    return row.id;
+  });
+}
+export async function deleteLlmRelayConfig(id: number, userId: number) {
+  const db = await getDb(); if (!db) throw new Error("DB not available");
+  return db.transaction(async tx => {
+    await lockLlmConfig(tx, userId);
+    const [removed] = await tx.delete(llmProviderRelays).where(and(eq(llmProviderRelays.id, id), eq(llmProviderRelays.userId, userId))).returning({ configId: llmProviderRelays.llmConfigId });
+    if (!removed) return false;
+    const [remaining] = await tx.select({ id: llmProviderRelays.id }).from(llmProviderRelays).where(and(eq(llmProviderRelays.llmConfigId, removed.configId), eq(llmProviderRelays.userId, userId))).limit(1);
+    if (!remaining) await tx.update(llmConfigs).set({ apiKey: null, apiKeyHint: null, baseUrl: null, model: null }).where(and(eq(llmConfigs.id, removed.configId), eq(llmConfigs.userId, userId)));
+    return true;
+  });
+}
+
+// ─── User-scoped LLM usage metadata ────────────────────────────────────────
+export type LlmUsageDetailQuery = {
+  userId: number; from?: Date | string; to?: Date | string; personaId?: number | null;
+  route?: string; provider?: string; purpose?: string; success?: boolean; limit?: number;
+};
+export type LlmUsagePeriodSummary = {
+  calls: number; successfulCalls: number; failedCalls: number; cancelledCalls: number;
+  inputTokens: number; outputTokens: number; totalTokens: number; averageDurationMs: number;
+  providerReportedCalls: number; estimatedCalls: number; mixedCalls: number;
+};
+function usageNumber(value: number) { return Number.isFinite(value) ? Math.min(2147483647, Math.max(0, Math.floor(value))) : 0; }
+function usageMetadata(value: string | undefined, max: number) {
+  return value && value.length <= max && !Array.from(value).some(char => char.charCodeAt(0) < 32)
+    && !/[<>"'=?&#@]/.test(value) && !/:\/\/|sk-|bearer|token=|key=/i.test(value) ? value : null;
+}
+function tokenSource(value: TokenSource | undefined): TokenSource { return value === "provider" || value === "mixed" ? value : "estimated"; }
+export async function createLlmUsageRecord(record: UsageRecord): Promise<void> {
+  const db = await getDb(); if (!db) throw new Error("DB not available");
+  const startedAt = new Date(record.startedAt);
+  if (!Number.isFinite(startedAt.getTime())) throw new Error("Invalid usage timestamp");
+  const userId = record.userId ?? null;
+  if (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) throw new Error("Invalid usage owner");
+  let personaId: number | null = null; let relayId: number | null = null;
+  if (userId !== null && record.personaId != null) {
+    const rows = await db.select({ id: personas.id }).from(personas).where(and(eq(personas.id, record.personaId), eq(personas.userId, userId))).limit(1);
+    personaId = rows[0]?.id ?? null;
+  }
+  if (userId !== null && record.relayId != null) {
+    const rows = await db.select({ id: llmProviderRelays.id }).from(llmProviderRelays).where(and(eq(llmProviderRelays.id, record.relayId), eq(llmProviderRelays.userId, userId))).limit(1);
+    relayId = rows[0]?.id ?? null;
+  }
+  const attemptedProviders = (record.attemptedProviders ?? []).map(value => usageMetadata(value, 64) ?? "unknown");
+  const attemptedIds = (record.attemptedRelayIds ?? []).filter(value => Number.isSafeInteger(value) && value > 0);
+  const ownedIds = userId !== null && attemptedIds.length
+    ? new Set((await db.select({ id: llmProviderRelays.id }).from(llmProviderRelays)
+      .where(and(eq(llmProviderRelays.userId, userId), inArray(llmProviderRelays.id, attemptedIds)))).map(row => row.id))
+    : new Set<number>();
+  const attemptedRelayIds = attemptedIds.filter(id => ownedIds.has(id));
+  const status = record.status === "cancelled" ? "cancelled" : record.status === "failed" || !record.success ? "failed" : "success";
+  const error = ["provider_error", "cancelled", "consumer_closed"].includes(record.error ?? "") ? record.error : record.error ? "provider_error" : null;
+  await db.insert(llmUsageRecords).values({
+    startedAt, userId, personaId, relayId, durationMs: usageNumber(record.durationMs),
+    provider: usageMetadata(record.provider, 64) ?? "unknown", requestedProvider: usageMetadata(record.requestedProvider, 64), model: usageMetadata(record.model, 128),
+    reasoningEffort: usageMetadata(record.reasoningEffort, 32), purpose: usageMetadata(record.purpose, 64), route: usageMetadata(record.route, 128),
+    streaming: record.streaming === true, status, success: status === "success", attempts: usageNumber(record.attempts), attemptedProviders, attemptedRelayIds,
+    inputTokens: usageNumber(record.inputTokens), outputTokens: usageNumber(record.outputTokens), totalTokens: usageNumber(record.totalTokens),
+    inputChars: usageNumber(record.inputChars), outputChars: usageNumber(record.outputChars),
+    usageSource: tokenSource(record.usageSource), inputSource: tokenSource(record.inputSource), outputSource: tokenSource(record.outputSource), totalSource: tokenSource(record.totalSource), error,
+  });
+}
+function usageDate(value: Date | string | undefined): Date | undefined {
+  if (value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error("Invalid usage date filter");
+  return date;
+}
+function usageWhere(query: LlmUsageDetailQuery) {
+  if (!Number.isSafeInteger(query.userId) || query.userId <= 0) throw new Error("Usage queries require an explicit user owner");
+  const conditions: SQL[] = [eq(llmUsageRecords.userId, query.userId)];
+  const from = usageDate(query.from); const to = usageDate(query.to);
+  if (from) conditions.push(gte(llmUsageRecords.startedAt, from));
+  if (to) conditions.push(lte(llmUsageRecords.startedAt, to));
+  if (from && to && from > to) throw new Error("Invalid usage date range");
+  if (query.personaId !== undefined) conditions.push(query.personaId === null ? sql`${llmUsageRecords.personaId} IS NULL` : eq(llmUsageRecords.personaId, query.personaId));
+  for (const key of ["provider", "route", "purpose"] as const) if (query[key]?.trim()) {
+    const term = query[key]!.trim().replace(/[\\%_]/g, "\\$&");
+    conditions.push(ilike(llmUsageRecords[key], `%${term}%`));
+  }
+  if (query.success !== undefined) conditions.push(eq(llmUsageRecords.success, query.success));
+  return and(...conditions)!;
+}
+const usageSummarySelection = {
+  calls: count(), successfulCalls: sql<number>`count(*) filter (where ${llmUsageRecords.success})::int`,
+  cancelledCalls: sql<number>`count(*) filter (where ${llmUsageRecords.status} = 'cancelled')::int`,
+  inputTokens: sum(llmUsageRecords.inputTokens), outputTokens: sum(llmUsageRecords.outputTokens), totalTokens: sum(llmUsageRecords.totalTokens),
+  averageDurationMs: sql<number>`coalesce(avg(${llmUsageRecords.durationMs}), 0)`,
+  providerReportedCalls: sql<number>`count(*) filter (where ${llmUsageRecords.usageSource} = 'provider')::int`,
+  estimatedCalls: sql<number>`count(*) filter (where ${llmUsageRecords.usageSource} = 'estimated')::int`, mixedCalls: sql<number>`count(*) filter (where ${llmUsageRecords.usageSource} = 'mixed')::int`,
+};
+function usageSummary(row: any): LlmUsagePeriodSummary {
+  const result = Object.fromEntries(Object.keys(usageSummarySelection).map(key => [key, Math.round(Number(row?.[key] ?? 0))]));
+  return { ...result, failedCalls: Math.max(0, result.calls - result.successfulCalls) } as LlmUsagePeriodSummary;
+}
+function usageDto(row: typeof llmUsageRecords.$inferSelect): UsageRecord {
+  return { id: row.id, startedAt: row.startedAt.toISOString(), durationMs: row.durationMs,
+    provider: row.provider, requestedProvider: row.requestedProvider ?? undefined, model: row.model ?? undefined, reasoningEffort: row.reasoningEffort ?? undefined,
+    purpose: row.purpose ?? undefined, userId: row.userId ?? undefined, personaId: row.personaId ?? undefined, relayId: row.relayId ?? undefined, route: row.route ?? undefined,
+    streaming: row.streaming, success: row.success, status: row.status as UsageRecord["status"], attempts: row.attempts,
+    attemptedProviders: row.attemptedProviders, attemptedRelayIds: row.attemptedRelayIds,
+    inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, inputChars: row.inputChars, outputChars: row.outputChars,
+    usageSource: tokenSource(row.usageSource as TokenSource), inputSource: tokenSource(row.inputSource as TokenSource), outputSource: tokenSource(row.outputSource as TokenSource), totalSource: tokenSource(row.totalSource as TokenSource), error: (row.error ?? undefined) as UsageRecord["error"],
+  };
+}
+export async function getPersistentLlmUsageDetails(query: LlmUsageDetailQuery) {
+  const where = usageWhere(query); const db = await getDb(); if (!db) return null;
+  const limit = Math.min(200, Math.max(1, Math.floor(query.limit ?? 50)));
+  const [summaryRows, rows] = await Promise.all([
+    db.select(usageSummarySelection).from(llmUsageRecords).where(where),
+    db.select().from(llmUsageRecords).where(where).orderBy(desc(llmUsageRecords.startedAt), desc(llmUsageRecords.id)).limit(limit),
+  ]);
+  return { source: "database" as const, filters: { ...query, from: usageDate(query.from)?.toISOString(), to: usageDate(query.to)?.toISOString(), limit }, summary: usageSummary(summaryRows[0]), records: rows.map(usageDto) };
+}
+export async function getPersistentLlmUsageSnapshot(filters: { userId: number; now?: Date }) {
+  usageWhere({ userId: filters.userId });
+  const db = await getDb(); if (!db) return null;
+  const now = filters.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error("Invalid usage snapshot time");
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  async function summary(since: Date) { const rows = await db!.select(usageSummarySelection).from(llmUsageRecords).where(usageWhere({ userId: filters.userId, from: since, to: now })); return usageSummary(rows[0]); }
+  async function bucket(key: "provider" | "purpose" | "userId" | "personaId" | "route") {
+    const column = llmUsageRecords[key];
+    const rows = await db!.select({ value: column, ...usageSummarySelection }).from(llmUsageRecords).where(usageWhere({ userId: filters.userId, from: today, to: now }))
+      .groupBy(column).orderBy(desc(count()), desc(sum(llmUsageRecords.totalTokens))).limit(12);
+    return rows.map(row => ({ name: row.value == null ? "unassigned" : String(row.value), [key]: row.value, ...usageSummary(row) }));
+  }
+  const [todaySummary, week, month, byProvider, byPurpose, byUser, byPersona, byRoute, recent] = await Promise.all([
+    summary(today), summary(new Date(today.getTime() - 6 * 86400000)), summary(new Date(today.getTime() - 29 * 86400000)),
+    bucket("provider"), bucket("purpose"), bucket("userId"), bucket("personaId"), bucket("route"),
+    db.select().from(llmUsageRecords).where(usageWhere({ userId: filters.userId, to: now })).orderBy(desc(llmUsageRecords.startedAt), desc(llmUsageRecords.id)).limit(20),
+  ]);
+  return { source: "database" as const, today: todaySummary, week, month, byProvider, byPurpose, byUser, byPersona, byRoute, recent: recent.map(usageDto) };
 }
 
 // ─── Daily Activity helpers ────────────────────────────────────────────────

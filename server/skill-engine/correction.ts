@@ -23,6 +23,8 @@ export interface CorrectionRequest {
   /** What the user wants changed, in their own words. */
   correction: string;
   provider?: string;
+  userId?: number;
+  personaId?: number;
 }
 
 export interface CorrectionResult {
@@ -65,7 +67,8 @@ export async function applyPersonaCorrection(
             '"needsClarification": false, "question": ""}',
         },
       ],
-      options: { provider: request.provider, temperature: 0.3, maxTokens: 2000 },
+      options: { provider: request.provider, temperature: 0.3, maxTokens: 2000,
+        usageContext: request.userId ? { userId: request.userId, personaId: request.personaId, route: "persona.applyCorrection", purpose: "persona_analysis" } : undefined },
     });
 
     const parsed = extractJsonObject(response);

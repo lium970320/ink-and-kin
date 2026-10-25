@@ -21,6 +21,8 @@ export class DifyProvider implements LLMProvider {
     jsonMode: false,
   };
 
+  getConfigSummary() { return { baseUrl: this.url }; }
+
   isConfigured(): boolean {
     return !!this.apiKey && !!this.url;
   }

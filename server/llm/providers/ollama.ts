@@ -1,3 +1,4 @@
+import { requestModelList } from "../model-list";
 import type { LLMMessage, LLMOptions, LLMProvider } from "../types";
 import { getTextContent } from "../types";
 import { parseNDJSON } from "../sse";
@@ -21,6 +22,12 @@ export class OllamaProvider implements LLMProvider {
     tools: false,
     jsonMode: false,
   };
+
+  getModel() { return this.model; }
+  getConfigSummary() { return { baseUrl: this.url, model: this.model }; }
+  listModels(options?: { signal?: AbortSignal }) {
+    return requestModelList({ baseUrl: this.url, protocol: "ollama", signal: options?.signal });
+  }
 
   isConfigured(): boolean {
     return !!this.url && !!this.model;

@@ -1,3 +1,5 @@
+import { LLMRequestError, mayRetryLLM } from "../llm/errors";
+import { withLlmRequestContext } from "../llm/usage-context";
 /**
  * Celebrity research pipeline (Phase 2.2).
  *
@@ -931,9 +933,10 @@ export async function runQualityCheck(
  * Returns null when the profile does not unlock the flow — the caller then
  * keeps the historical five-stage behaviour.
  */
-export async function runCelebrityResearch(
-  input: CelebrityResearchInput,
-): Promise<CelebrityResearchResult | null> {
+export async function runCelebrityResearch(input: CelebrityResearchInput): Promise<CelebrityResearchResult | null> {
+  return withLlmRequestContext({ userId: input.userId, personaId: input.personaId, route: "persona.research", purpose: "skill_pipeline" }, () => runCelebrityResearchScoped(input));
+}
+async function runCelebrityResearchScoped(input: CelebrityResearchInput): Promise<CelebrityResearchResult | null> {
   const resolution = resolveCelebrityProfile("celebrity", input.profile);
   if (!resolution.hasResearchStages) return null;
 
@@ -986,6 +989,7 @@ export async function runCelebrityResearch(
       writeFile(path.join(rawDir, dimension.file), `${normalized.trim()}\n`);
       notes.push(normalized);
     } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
       console.warn(`[SkillEngine] Research track ${dimension.track} failed:`, e);
       errors.push(`研究轨道 ${dimension.track} 失败：${e}`);
       writeFile(
@@ -1042,6 +1046,7 @@ export async function runCelebrityResearch(
     audit = sanitizeForCopyright(auditContent);
     writeFile(path.join(reviewsDir, "research_audit.md"), `${audit}\n`);
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Audit stage failed (non-critical):", e);
     errors.push(`审计阶段失败：${e}`);
   }
@@ -1129,6 +1134,7 @@ export async function runCelebrityResearch(
     });
     writeFile(path.join(reviewsDir, "synthesis.md"), `${synthesis}\n`);
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Synthesis stage failed (non-critical):", e);
     errors.push(`综合阶段失败：${e}`);
   }
@@ -1180,6 +1186,7 @@ export async function runCelebrityResearch(
     validation = renderValidation(parsed);
     writeFile(path.join(reviewsDir, "validation.md"), `${validation}\n`);
   } catch (e) {
+    if (e instanceof LLMRequestError && !mayRetryLLM(e)) throw e;
     console.warn("[SkillEngine] Validation stage failed (non-critical):", e);
     errors.push(`验证阶段失败：${e}`);
   }

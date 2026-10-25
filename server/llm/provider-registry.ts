@@ -125,6 +125,8 @@ export class ProviderRegistry {
     return entry.factory(merged);
   }
 
+  buildOwned(name: string, config: ProviderConfig): LLMProvider | undefined { return this.entries.get(name.toLowerCase())?.factory({ ...config }); }
+
   /** The environment-derived configuration for a provider. */
   getBaseConfig(name: string): ProviderConfig | undefined {
     return this.entries.get(name.toLowerCase())?.baseConfig;

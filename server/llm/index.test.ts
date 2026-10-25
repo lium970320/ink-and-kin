@@ -24,7 +24,7 @@ describe("LLMService retry policy", () => {
 
     const service = new LLMService(registry);
 
-    await expect(service.invoke({ messages: [] })).rejects.toThrow("HTTP 503");
+    await expect(service.invoke({ messages: [] })).rejects.toMatchObject({ kind: "transient", message: "模型服务暂时不可用，请稍后重试。" });
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 });

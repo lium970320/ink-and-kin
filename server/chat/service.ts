@@ -84,7 +84,9 @@ async function maybeCompactHistory(params: {
   keepCount: number;
   providerName?: string;
   now: Date;
+  signal?: AbortSignal;
 }): Promise<string> {
+  params.signal?.throwIfAborted();
   const evicted = params.history.slice(0, Math.max(0, params.history.length - params.keepCount));
   if (evicted.length < 10) return "";
 
@@ -120,9 +122,11 @@ async function maybeCompactHistory(params: {
         },
         { role: "user", content: transcript },
       ],
-      options: { provider: params.providerName, temperature: 0.2, maxTokens: 500 },
+      options: { provider: params.providerName, temperature: 0.2, maxTokens: 500, signal: params.signal,
+        usageContext: { userId: params.userId, personaId: params.persona.id, route: "chat.summary", purpose: "summary" } },
     });
 
+    params.signal?.throwIfAborted();
     const trimmed = (summary || "").trim();
     if (!trimmed) return "";
 
@@ -136,6 +140,7 @@ async function maybeCompactHistory(params: {
 
     return trimmed;
   } catch (e) {
+    params.signal?.throwIfAborted();
     console.warn("[Chat] History summarisation failed, continuing without it:", (e as Error).message);
     return "";
   }
@@ -178,6 +183,7 @@ export async function composeMessages(params: {
   locale?: "zh" | "en";
   now?: Date;
   extraConfig?: Record<string, any>;
+  signal?: AbortSignal;
 }): Promise<LLMMessage[]> {
   const now = params.now ?? new Date();
   const contextLimit = Math.max(4, params.contextLimit);
@@ -203,6 +209,7 @@ export async function composeMessages(params: {
     history: history as any,
     keepCount: contextLimit - 1,
     providerName: params.providerName,
+    signal: params.signal,
     now,
   });
 
@@ -231,6 +238,7 @@ export async function composeMessages(params: {
 export async function* runConversation(
   options: ConversationOptions & { mode: ChatMode },
 ): AsyncGenerator<ChatEvent> {
+  options.signal?.throwIfAborted();
   const { persona, userId, message } = options;
   const now = options.now ?? new Date();
   const locale = options.locale ?? "zh";
@@ -303,7 +311,9 @@ export async function* runConversation(
     locale,
     now,
     extraConfig,
+    signal: options.signal,
   });
+  options.signal?.throwIfAborted();
 
   const provider = await resolveProviderForUser({
     userId,
@@ -328,6 +338,7 @@ export async function* runConversation(
           temperature: extraConfig.temperature,
           maxTokens: extraConfig.maxTokens,
           signal: options.signal,
+          usageContext: { userId, personaId: persona.id, route: options.channel ?? "web", purpose: "chat" },
         },
       })) {
         replyText += chunk.text;
@@ -341,17 +352,21 @@ export async function* runConversation(
           temperature: extraConfig.temperature,
           maxTokens: extraConfig.maxTokens,
           signal: options.signal,
+          usageContext: { userId, personaId: persona.id, route: options.channel ?? "web", purpose: "chat" },
         },
       });
       replyText = replyText || "（沉默）";
       yield { type: "delta", text: replyText };
     }
   } catch (e) {
+    if (options.signal?.aborted || (e instanceof Error && e.name === "AbortError")) return;
     failed = true;
     failureMessage = (e as Error).message;
     console.error("[Chat] LLM call failed:", e);
     yield { type: "error", message: failureMessage, partial: replyText.length > 0 };
   }
+
+  if (options.signal?.aborted) return;
 
   // The care note is decided before the reply is stored, so it can be part
   // of what the persona actually says — the plan asks for the persona itself
@@ -387,7 +402,7 @@ export async function* runConversation(
     channel: options.channel ?? "web",
   });
 
-  const emotion = await inferEmotionalState({
+  const emotion = failed ? { state: persona.emotionalState, source: "heuristic" as const, reason: undefined } : await inferEmotionalState({
     userMessage: message,
     assistantReply: finalText,
     currentState: persona.emotionalState,
@@ -396,8 +411,11 @@ export async function* runConversation(
     // otherwise a user who configured their own key silently falls back to
     // the environment one.
     providerInstance: provider,
+    signal: options.signal,
+    usageContext: { userId, personaId: persona.id, route: options.channel ?? "web", purpose: "emotion" },
     locale,
   });
+  if (options.signal?.aborted) return;
   const newEmotionalState = emotion.state;
   yield { type: "emotion", state: newEmotionalState, reason: emotion.reason };
 
@@ -426,11 +444,12 @@ export async function* runConversation(
   // The trajectory has to be assessed before the graduation check, which
   // reads the stored assessment — otherwise the early-graduation branch never
   // sees a trajectory at all.
-  await maybeAssessTrajectory({
+  if (!failed) await maybeAssessTrajectory({
     personaId: persona.id,
     userId,
     providerName: options.providerName,
     providerInstance: provider,
+    signal: options.signal,
     now,
   });
 
@@ -474,6 +493,7 @@ async function maybeAssessTrajectory(params: {
   userId: number;
   providerName?: string;
   providerInstance?: LLMProvider;
+  signal?: AbortSignal;
   now: Date;
 }): Promise<void> {
   try {
@@ -488,6 +508,7 @@ async function maybeAssessTrajectory(params: {
       personaId: params.personaId,
       provider: params.providerName,
       providerInstance: params.providerInstance,
+      signal: params.signal,
       now: params.now.getTime(),
     });
   } catch (e) {
