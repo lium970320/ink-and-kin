@@ -1,28 +1,18 @@
-import { useState } from "react";
-import { useLocation } from "wouter";
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
+import { useLocation, useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { ArrowLeft, ChevronLeft, ChevronRight, PenLine, Trash2, Loader2, MessageCircle } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Sparkles, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { useLocale } from "@/contexts/LocaleContext";
-import { EMOTIONS, type EmotionDefinition } from "@/lib/emotions";
 
-const fadeUp = {
-  hidden: { opacity: 0, y: 20 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" as const } },
+const EMOTION_EMOJI: Record<string, string> = {
+  warm: "🌸", playful: "😄", nostalgic: "🌙", melancholy: "🌧️", happy: "✨", distant: "❄️",
 };
 
-/* 静态类名映射：Tailwind 需在源码中看到完整类名才会生成对应样式 */
-const MOOD_CHIP: Record<string, string> = {
-  warm: "bg-mood-warm/10 text-mood-warm border-mood-warm/25",
-  playful: "bg-mood-playful/10 text-mood-playful border-mood-playful/25",
-  nostalgic: "bg-mood-nostalgic/10 text-mood-nostalgic border-mood-nostalgic/25",
-  melancholy: "bg-mood-melancholy/10 text-mood-melancholy border-mood-melancholy/25",
-  happy: "bg-mood-happy/10 text-mood-happy border-mood-happy/25",
-  distant: "bg-mood-distant/10 text-mood-distant border-mood-distant/25",
-};
+function formatMonth(year: number, month: number) {
+  return `${year}年${month + 1}月`;
+}
 
 function getDaysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -32,76 +22,40 @@ function getFirstDayOfWeek(year: number, month: number) {
   return new Date(year, month, 1).getDay();
 }
 
-/** Parses a `YYYY-MM-DD` string in the local timezone, not in UTC. */
-function parseLocalDate(dateStr: string): Date {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d);
-}
-
-function MoodChip({ mood, small }: { mood: string; small?: boolean }) {
-  const { t } = useLocale();
-  const cls = MOOD_CHIP[mood] ?? "bg-muted/60 text-muted-foreground border-border/60";
-  const definition = (EMOTIONS as Record<string, EmotionDefinition | undefined>)[mood];
-  return (
-    <span className={`inline-flex items-center gap-1.5 rounded-md border ${small ? "px-2 py-0.5 text-[0.6875rem]" : "px-2.5 py-1 text-xs"} ${cls}`}>
-      <span className="w-1 h-1 bg-current" />
-      {definition ? t(definition.labelKey) : mood}
-    </span>
-  );
-}
-
 function DiaryCard({ entry, onDelete }: { entry: any; onDelete: (id: number) => void }) {
-  const { t } = useLocale();
-  const [confirming, setConfirming] = useState(false);
   const arcs: string[] = Array.isArray(entry.emotionalArc) ? entry.emotionalArc.map(String) : [];
   const highlights: string[] = Array.isArray(entry.highlights) ? entry.highlights.map(String) : [];
   const quotes: string[] = Array.isArray(entry.quotes) ? entry.quotes.map(String) : [];
 
   return (
-    <article className="surface p-6 sm:p-7 space-y-5 animate-fade-in-up">
-      <div className="flex items-center justify-between gap-3">
-        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MessageCircle className="w-3.5 h-3.5" />
-          {t("diary.messageCount", { count: entry.messageCount })}
-        </span>
-        {confirming ? (
-          <span className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">{t("diary.deleteConfirm")}</span>
-            <button onClick={() => onDelete(entry.id)}
-              className="text-xs px-2.5 py-1 rounded-md bg-destructive/10 text-destructive border border-destructive/25 hover:bg-destructive/15 transition-colors">
-              {t("common.delete")}
-            </button>
-            <button onClick={() => setConfirming(false)}
-              className="text-xs px-2.5 py-1 rounded-md text-muted-foreground border border-border/60 hover:text-foreground transition-colors">
-              {t("common.cancel")}
-            </button>
-          </span>
-        ) : (
-          <button onClick={() => setConfirming(true)} aria-label={t("common.delete")}
-            className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        )}
+    <div className="bg-card/90 border border-border rounded-xl p-5 space-y-4 animate-fade-in shadow-xs">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-sm leading-relaxed text-foreground">{entry.summary}</p>
+          <p className="text-xs text-muted-foreground mt-1">{entry.messageCount} 条消息</p>
+        </div>
+        <button onClick={() => onDelete(entry.id)}
+          className="text-muted-foreground hover:text-destructive transition-colors p-1">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
       </div>
-
-      <p className="letter-prose text-[0.9375rem] sm:text-base text-foreground/90">{entry.summary}</p>
-
       {arcs.length > 0 && (
         <div>
-          <p className="kicker mb-2.5">{t("diary.arc")}</p>
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">情绪弧线</p>
           <div className="flex gap-1.5 flex-wrap">
-            {arcs.map((e, i) => <MoodChip key={i} mood={e} />)}
+            {arcs.map((e, i) => (
+              <span key={i} className="text-lg" title={e}>{EMOTION_EMOJI[e] || e}</span>
+            ))}
           </div>
         </div>
       )}
       {highlights.length > 0 && (
         <div>
-          <p className="kicker mb-2.5">{t("diary.highlights")}</p>
-          <ul className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">亮点</p>
+          <ul className="space-y-1">
             {highlights.map((h, i) => (
-              <li key={i} className="text-sm text-foreground/80 flex items-start gap-2 leading-relaxed">
-                <span className="w-1 h-1 bg-cinnabar mt-[0.55rem] flex-shrink-0" />
-                <span>{h}</span>
+              <li key={i} className="text-sm text-foreground/80 flex items-start gap-2">
+                <span className="text-primary mt-0.5">•</span>{h}
               </li>
             ))}
           </ul>
@@ -109,37 +63,56 @@ function DiaryCard({ entry, onDelete }: { entry: any; onDelete: (id: number) => 
       )}
       {quotes.length > 0 && (
         <div>
-          <p className="kicker mb-2.5">{t("diary.quotes")}</p>
-          <div className="space-y-2.5">
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">金句</p>
+          <div className="space-y-1.5">
             {quotes.map((q, i) => (
-              <p key={i} className="letter-prose text-[0.9375rem] text-foreground/80 border-l-2 border-cinnabar/50 pl-4">"{q}"</p>
+              <p key={i} className="text-sm italic text-foreground/70 border-l-2 border-primary/30 pl-3">"{q}"</p>
             ))}
           </div>
         </div>
       )}
       {entry.reflection && (
         <div>
-          <p className="kicker mb-2.5">{t("diary.reflection")}</p>
-          <p className="letter-prose text-sm text-foreground/80">{entry.reflection}</p>
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">反思</p>
+          <p className="text-sm text-foreground/80 leading-relaxed">{entry.reflection}</p>
         </div>
       )}
-    </article>
+    </div>
   );
 }
 
 export default function Diary() {
   const [, navigate] = useLocation();
+  const params = useParams<{ id?: string }>();
   const { isAuthenticated } = useAuth();
-  const { t, locale } = useLocale();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [selectedPersonaId, setSelectedPersonaId] = useState<number | null>(null);
+
+  const queryPersonaId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("personaId") : null;
+  const initialPersonaId = params.id ? parseInt(params.id, 10) : (queryPersonaId ? parseInt(queryPersonaId, 10) : null);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<number | null>(initialPersonaId && !isNaN(initialPersonaId) ? initialPersonaId : null);
 
   const { data: personas } = trpc.persona.list.useQuery(undefined, { enabled: isAuthenticated });
+
+  useEffect(() => {
+    if (params.id) {
+      const pid = parseInt(params.id, 10);
+      if (!isNaN(pid) && pid !== selectedPersonaId) {
+        setSelectedPersonaId(pid);
+      }
+    } else if (!selectedPersonaId && personas && personas.length > 0) {
+      setSelectedPersonaId(personas[0].id);
+    }
+  }, [params.id, personas, selectedPersonaId]);
+
   const { data: diaryDates, refetch: refetchDates } = trpc.diary.getDates.useQuery(
+    { personaId: selectedPersonaId || 0 },
+    { enabled: isAuthenticated && !!selectedPersonaId }
+  );
+  const { data: missingDates, refetch: refetchMissingDates } = trpc.diary.getMissingDates.useQuery(
     { personaId: selectedPersonaId || 0 },
     { enabled: isAuthenticated && !!selectedPersonaId }
   );
@@ -153,19 +126,39 @@ export default function Diary() {
   );
 
   const generateMutation = trpc.diary.generate.useMutation({
-    onSuccess: () => { toast.success(t("diary.generateSuccess")); refetchDates(); refetchEntries(); },
-    onError: (e: any) => toast.error(t("diary.generateFailed", { message: e.message })),
+    onSuccess: () => {
+      toast.success("日记生成成功");
+      refetchDates();
+      refetchEntries();
+      refetchMissingDates();
+    },
+    onError: (e: any) => toast.error("生成失败：" + e.message),
+  });
+
+  const generateAllMissingMutation = trpc.diary.generateAllMissing.useMutation({
+    onSuccess: (res) => {
+      toast.success(`成功补全 ${res.count} 篇未填写的历史日记`);
+      refetchDates();
+      refetchEntries();
+      refetchMissingDates();
+    },
+    onError: (e: any) => toast.error("批量生成失败：" + e.message),
   });
 
   const deleteMutation = trpc.diary.delete.useMutation({
-    onSuccess: () => { toast.success(t("diary.deleted")); setSelectedDate(null); refetchDates(); refetchEntries(); },
+    onSuccess: () => {
+      toast.success("已删除");
+      setSelectedDate(null);
+      refetchDates();
+      refetchEntries();
+      refetchMissingDates();
+    },
     onError: (e: any) => toast.error(e.message),
   });
 
   const datesSet = new Set((diaryDates || []).map((d: any) => d.date));
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfWeek(year, month);
-  const weekdays = Array.from(t("diary.weekdays"));
 
   const prevMonth = () => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else setMonth(m => m - 1); };
   const nextMonth = () => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else setMonth(m => m + 1); };
@@ -181,65 +174,107 @@ export default function Diary() {
 
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else if (selectedPersonaId) {
+      navigate(`/chat/${selectedPersonaId}`);
+    } else {
+      navigate("/");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <header className="sticky top-0 z-40 app-header">
+      <header className="sticky top-0 z-30 app-header">
         <div className="container app-nav max-w-2xl">
-          <button onClick={() => navigate("/")} className="app-nav-back -ml-1" aria-label={t("common.back")}>
+          <button onClick={handleBack} className="app-nav-back -ml-1" title="返回上一个页面">
             <ArrowLeft className="w-4 h-4" />
           </button>
+          <div className="app-nav-title-group">
+            <div className="app-nav-mark">
+              <BookOpen className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <h1 className="app-nav-title">对话日记</h1>
+              <p className="app-nav-subtitle">回顾每天的对话</p>
+            </div>
+          </div>
           <div className="app-nav-spacer" />
+          {missingDates && missingDates.length > 0 && selectedPersonaId && (
+            <Button
+              size="sm"
+              onClick={() => generateAllMissingMutation.mutate({ personaId: selectedPersonaId })}
+              disabled={generateAllMissingMutation.isPending}
+              className="rounded-full gap-1.5 bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 shadow-2xs text-xs font-semibold"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${generateAllMissingMutation.isPending ? "animate-spin" : ""}`} />
+              {generateAllMissingMutation.isPending ? "正在自动补全..." : `一键补全 ${missingDates.length} 篇日记`}
+            </Button>
+          )}
         </div>
       </header>
 
-      <main className="flex-1 container max-w-3xl page-main space-y-6">
-        <motion.div variants={fadeUp} initial="hidden" animate="visible">
-          <p className="kicker kicker-accent mb-3">{t("diary.kicker")}</p>
-          <h1 className="page-title">{t("diary.title")}</h1>
-          <p className="text-sm text-muted-foreground mt-2.5 leading-relaxed">
-            {t("diary.intro")}
-          </p>
-        </motion.div>
-
+      <main className="flex-1 container max-w-2xl mx-auto py-6 px-4 space-y-6">
         {/* Persona selector */}
-        <motion.div variants={fadeUp} initial="hidden" animate="visible" className="flex gap-1 border-b border-border overflow-x-auto scrollbar-hide">
+        <div className="flex gap-2 overflow-x-auto pt-2 px-2 pb-2 -mx-2 scrollbar-hide">
           {(personas || []).map((p: any) => (
             <button key={p.id} onClick={() => { setSelectedPersonaId(p.id); setSelectedDate(null); }}
-              className={`flex-shrink-0 px-3 sm:px-4 py-2.5 -mb-px text-sm border-b-2 transition-colors ${selectedPersonaId === p.id ? "border-cinnabar text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              className={`flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-all ${selectedPersonaId === p.id ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border text-muted-foreground hover:text-foreground"}`}>
               {p.name}
             </button>
           ))}
-        </motion.div>
+        </div>
 
         {!selectedPersonaId && (
-          <motion.div variants={fadeUp} initial="hidden" animate="visible" className="empty-state">
-            <p className="kicker kicker-accent">{t("diary.emptyKicker")}</p>
-            <p className="empty-state-title">
-              {(personas || []).length === 0 ? t("diary.emptyNoPersona") : t("diary.emptySelect")}
-            </p>
-            {(personas || []).length === 0 && (
-              <Button className="mt-3" onClick={() => navigate("/")}>{t("errors.backHome")}</Button>
-            )}
-          </motion.div>
+          <div className="text-center py-20 text-muted-foreground">
+            <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>选择一个角色查看日记</p>
+          </div>
         )}
 
         {selectedPersonaId && (
           <>
+            {/* Missing dates alert banner */}
+            {missingDates && missingDates.length > 0 && (
+              <div className="bg-amber-500/10 border border-amber-500/25 rounded-2xl p-4 flex items-center justify-between gap-3 animate-fade-in shadow-2xs">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4.5 h-4.5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">
+                      检测到有 {missingDates.length} 天历史对话未生成日记
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      包含：{missingDates.slice(0, 3).join("、")}{missingDates.length > 3 ? " 等" : ""}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => generateAllMissingMutation.mutate({ personaId: selectedPersonaId })}
+                  disabled={generateAllMissingMutation.isPending}
+                  className="rounded-xl gap-1.5 bg-amber-500 text-white hover:bg-amber-600 shadow-xs shrink-0 font-medium text-xs"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${generateAllMissingMutation.isPending ? "animate-spin" : ""}`} />
+                  {generateAllMissingMutation.isPending ? "正在自动补全..." : "一键全部补全"}
+                </Button>
+              </div>
+            )}
             {/* Calendar */}
-            <motion.section variants={fadeUp} initial="hidden" animate="visible" className="surface p-4 sm:p-5">
+            <div className="bg-card/90 border border-border rounded-xl p-4 shadow-xs">
               <div className="flex items-center justify-between mb-4">
-                <button onClick={prevMonth} className="app-nav-icon" aria-label={t("diary.prevMonth")}>
+                <button onClick={prevMonth} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-                <span className="font-display text-base font-semibold text-foreground">
-                  {new Date(year, month, 1).toLocaleDateString(locale, { year: "numeric", month: "long" })}
-                </span>
-                <button onClick={nextMonth} className="app-nav-icon" aria-label={t("diary.nextMonth")}>
+                <span className="text-sm font-semibold">{formatMonth(year, month)}</span>
+                <button onClick={nextMonth} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
               <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground mb-2">
-                {weekdays.map((d, i) => <div key={`${d}-${i}`}>{d}</div>)}
+                {["日", "一", "二", "三", "四", "五", "六"].map(d => <div key={d}>{d}</div>)}
               </div>
               <div className="grid grid-cols-7 gap-1">
                 {Array.from({ length: firstDay }).map((_, i) => <div key={`e-${i}`} />)}
@@ -251,68 +286,57 @@ export default function Diary() {
                   const isSelected = dateStr === selectedDate;
                   return (
                     <button key={day} onClick={() => setSelectedDate(dateStr)}
-                      className={`cal-cell relative aspect-square flex items-center justify-center rounded-md text-sm
-                        ${isSelected ? "bg-primary text-primary-foreground font-semibold" : isToday ? "border border-foreground/40 font-medium text-foreground" : "text-foreground/80 hover:bg-muted"}`}>
+                      className={`relative aspect-square flex items-center justify-center rounded-lg text-sm transition-all
+                        ${isSelected ? "bg-primary text-primary-foreground font-semibold" : isToday ? "ring-1 ring-primary/40 font-medium" : "hover:bg-muted"}`}>
                       {day}
-                      {hasDiary && <span className={`absolute bottom-1 w-1 h-1 ${isSelected ? "bg-primary-foreground" : "bg-cinnabar"}`} />}
+                      {hasDiary && <span className="absolute bottom-0.5 w-1.5 h-1.5 rounded-full bg-primary" />}
                     </button>
                   );
                 })}
               </div>
-            </motion.section>
+            </div>
 
             {/* Selected date content */}
             {selectedDate && (
-              <motion.section
-                key={selectedDate}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, ease: "easeOut" }}
-                className="space-y-4"
-              >
-                <div className="flex items-end justify-between gap-3">
-                  <h2 className="section-title">
-                    {parseLocalDate(selectedDate).toLocaleDateString(locale, { year: "numeric", month: "long", day: "numeric" })}
-                  </h2>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold">{selectedDate}</h2>
                   {!dayEntry && (
                     <Button size="sm" onClick={() => handleGenerate(selectedDate)} disabled={generating}
-                      className="gap-1.5">
-                      {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PenLine className="w-3.5 h-3.5" />}
-                      {t("diary.writeDay")}
+                      className="rounded-full gap-1.5">
+                      {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                      生成日记
                     </Button>
                   )}
                 </div>
                 {dayEntry && (
                   <DiaryCard entry={dayEntry} onDelete={(id) => deleteMutation.mutate({ id })} />
                 )}
-              </motion.section>
+              </div>
             )}
 
             {/* Recent entries list */}
             {!selectedDate && entries && entries.length > 0 && (
-              <motion.section variants={fadeUp} initial="hidden" animate="visible" className="space-y-3">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h2 className="section-title">{t("diary.recent")}</h2>
-                  <span className="kicker">{t("diary.recentKicker")}</span>
-                </div>
+              <div className="space-y-3">
+                <h2 className="text-sm font-semibold text-muted-foreground">最近日记</h2>
                 {entries.map((entry: any) => (
                   <button key={entry.id} onClick={() => setSelectedDate(entry.date)}
-                    className="surface surface-interactive w-full text-left p-5">
-                    <div className="flex items-baseline justify-between gap-3 mb-1.5">
-                      <span className="font-display text-base font-semibold text-foreground">{entry.date}</span>
+                    className="w-full text-left bg-card border border-border rounded-xl p-4 hover:border-primary/30 transition-all">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium">{entry.date}</span>
                       <span className="text-xs text-muted-foreground">{entry.personaName || ""}</span>
                     </div>
-                    <p className="text-sm text-muted-foreground line-clamp-2 leading-relaxed">{entry.summary}</p>
+                    <p className="text-sm text-muted-foreground line-clamp-2">{entry.summary}</p>
                     {Array.isArray(entry.emotionalArc) && entry.emotionalArc.length > 0 && (
-                      <div className="flex gap-1.5 mt-3 flex-wrap">
+                      <div className="flex gap-1 mt-2">
                         {entry.emotionalArc.slice(0, 5).map((e: unknown, i: number) => (
-                          <MoodChip key={i} mood={String(e)} small />
+                          <span key={i} className="text-sm">{EMOTION_EMOJI[String(e)] || String(e)}</span>
                         ))}
                       </div>
                     )}
                   </button>
                 ))}
-              </motion.section>
+              </div>
             )}
           </>
         )}
