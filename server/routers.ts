@@ -15,6 +15,13 @@ import type { InvokeParams, InvokeResult } from "./llm/types";
 import { getTextContent } from "./llm/types";
 import { resolveProviderForUser } from "./llm/user-provider";
 import { storagePut } from "./storage";
+import type { InsertScene } from "../drizzle/schema";
+import {
+  SCENE_IMAGE_REFERENCE_MAX_BYTES,
+  SCENE_IMAGE_REFERENCE_MIME_TYPES,
+  detectSceneImageReferenceExtension,
+  normalizeSceneImageReferenceKey,
+} from "./image/scene-image-reference";
 import {
   createPersona, getPersonasByUserId, getPersonaById, updatePersona, deletePersona,
   getPersonasWithStats, getUserStats, getRecentActivity, getDailyChatCounts,
@@ -30,7 +37,7 @@ import {
   getIntimacyData, updateIntimacy,
   getMessageVolume, getEmotionTimeline, getPersonaEngagement, getHourlyDistribution, getAnalyticsStats,
   createDiaryEntry, getDiaryEntries, getDiaryByDate, deleteDiaryEntry, getMessagesByDate, getDiaryDates,
-  getScenes, getSceneById, createScene, deleteScene, activateScene,
+  getScenes, getSceneById, createScene, updateScene, deleteScene, activateScene,
   getExportData, getRecentEmotionTrend, getMessageCountInRange, setGraduationStatus,
   getChannelBindingsByUserId, getChannelBinding, setChannelBindingPersona,
   deleteChannelBinding, getChannelState, upsertChannelState,
@@ -38,6 +45,24 @@ import {
   createQuestionnaireAnswers, getActiveReminders, dismissReminder,
   appendPersonaCorrection,
 } from "./db";
+import {
+  getSceneMemoryStateSnapshot,
+  mutateSceneMemoryState,
+  clearSceneMemoryState,
+  resetPersonaSceneStoryState,
+  bumpChatContextRevision,
+  getSceneMessageContextManagement,
+  setSceneMessagesContextOverride,
+  clearSceneMessagesContextOverride,
+  setAllSceneMessagesContextOverride,
+} from "./db";
+import {
+  buildInitialSceneMemoryCache,
+  normalizeSceneMemoryCache,
+  removeSceneMemoryMessageIds,
+} from "./social/scene-memory";
+import { extractSceneConfirmedFacts, refreshSceneMemorySummary } from "./social/scene-memory-service";
+import { deleteChatMessagesWithBackup } from "./chat-history-management";
 import { nanoid } from "nanoid";
 import path from "path";
 import { getBotStatus, startWeChatBot, stopWeChatBot, startLogin, submitVerifyCode, cancelLogin } from "./wechat/bot";
@@ -1808,10 +1833,70 @@ export const appRouter = router({
       return getScenes(ctx.user.id);
     }),
 
+    // 新建场景：归属固定为当前登录用户，内置标记由服务端写死，客户端不能伪造。
     create: protectedProcedure
-      .input(z.object({ name: z.string().min(1).max(100), description: z.string().optional(), icon: z.string().max(10).optional(), systemPromptOverlay: z.string().optional(), emotionalState: z.string().optional(), starters: z.array(z.string()).optional() }))
+      .input(z.object({ name: z.string().min(1).max(100), description: z.string().optional(), icon: z.string().max(10).optional(), systemPromptOverlay: z.string().optional(), personaIdentityOverride: z.string().max(4000).optional(), userIdentityOverride: z.string().max(4000).optional(), emotionalState: z.string().optional(), starters: z.array(z.string()).optional(), contextSeed: z.string().max(4000).optional(), continuationEnabled: z.boolean().optional(), sceneVisualBaseline: z.string().max(4000).optional().nullable() }))
       .mutation(async ({ ctx, input }) => {
         return createScene({ ...input, userId: ctx.user.id, starters: input.starters || [], isBuiltin: false });
+      }),
+
+    /** 上传/替换某场景的配图资产（人物定妆图 / 用户定妆图 / 场景环境图）；只允许自己创建的非内置场景。 */
+    uploadImageAsset: protectedProcedure
+      .input(z.object({
+        sceneId: z.number(),
+        assetType: z.enum(["persona", "user", "env"]),
+        fileContent: z.string().min(4).max(15_000_000),
+        mimeType: z.enum(SCENE_IMAGE_REFERENCE_MIME_TYPES),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || scene.isBuiltin || scene.userId !== ctx.user.id) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在或不可编辑（内置场景不能改）" });
+        }
+        const buffer = Buffer.from(input.fileContent, "base64");
+        if (buffer.byteLength === 0 || buffer.byteLength > SCENE_IMAGE_REFERENCE_MAX_BYTES) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "场景资产图必须是小于 10 MB 的 PNG、JPEG 或 WebP 图片" });
+        }
+        const extension = detectSceneImageReferenceExtension(buffer, input.mimeType);
+        if (!extension) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "场景资产图内容与所选图片格式不一致" });
+        }
+        const key = `scene-image-assets/${ctx.user.id}/${input.sceneId}/${input.assetType}-${Date.now()}-${nanoid(10)}.${extension}`;
+        const { url } = await storagePut(key, buffer, input.mimeType);
+        const field = input.assetType === "persona"
+          ? "scenePersonaRefKey"
+          : input.assetType === "user"
+            ? "sceneUserRefKey"
+            : "sceneEnvRefKey";
+        await updateScene(input.sceneId, ctx.user.id, { [field]: key } as Partial<InsertScene>);
+        return { key, url };
+      }),
+
+    // 编辑场景：只允许改自己创建的非内置场景；内置场景与别人的场景都返回 NOT_FOUND。
+    update: protectedProcedure
+      .input(z.object({ id: z.number(), name: z.string().min(1).max(100).optional(), description: z.string().optional(), icon: z.string().max(10).optional(), systemPromptOverlay: z.string().optional(), personaIdentityOverride: z.string().max(4000).optional(), userIdentityOverride: z.string().max(4000).optional(), emotionalState: z.string().optional(), starters: z.array(z.string()).optional(), contextSeed: z.string().max(4000).optional(), continuationEnabled: z.boolean().optional(), scenePersonaRefKey: z.string().max(512).optional().nullable(), sceneUserRefKey: z.string().max(512).optional().nullable(), sceneEnvRefKey: z.string().max(512).optional().nullable(), sceneVisualBaseline: z.string().max(4000).optional().nullable() }))
+      .mutation(async ({ ctx, input }) => {
+        const { id, ...rest } = input;
+        // 资产键必须属于当前用户（scene-image-config/ 或 scene-image-assets/ 前缀）。
+        const normalized: Record<string, unknown> = { ...rest };
+        if (rest.scenePersonaRefKey !== undefined) {
+          normalized.scenePersonaRefKey = rest.scenePersonaRefKey
+            ? normalizeSceneImageReferenceKey(rest.scenePersonaRefKey, ctx.user.id)
+            : null;
+        }
+        if (rest.sceneEnvRefKey !== undefined) {
+          normalized.sceneEnvRefKey = rest.sceneEnvRefKey
+            ? normalizeSceneImageReferenceKey(rest.sceneEnvRefKey, ctx.user.id)
+            : null;
+        }
+        if (rest.sceneUserRefKey !== undefined) {
+          normalized.sceneUserRefKey = rest.sceneUserRefKey
+            ? normalizeSceneImageReferenceKey(rest.sceneUserRefKey, ctx.user.id)
+            : null;
+        }
+        const updated = await updateScene(id, ctx.user.id, normalized as Partial<InsertScene>);
+        if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在或不可编辑（内置场景不能改）" });
+        return updated;
       }),
 
     delete: protectedProcedure
@@ -1821,9 +1906,7 @@ export const appRouter = router({
         // scene is never touched — and a refusal is reported rather than a
         // success that did not happen.
         const deleted = await deleteScene(input.id, ctx.user.id);
-        if (!deleted) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "这个场景不存在，或者不属于你" });
-        }
+        if (!deleted) throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在或不可删除" });
         return { success: true };
       }),
 
@@ -1832,6 +1915,12 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const persona = await getPersonaById(input.personaId, ctx.user.id);
         if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        // 校验场景归属：内置场景或本人创建的场景才允许激活，
+        // 否则可激活并把他人私有 systemPromptOverlay 注入自己的对话（越权 + 提示注入）。
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
         await activateScene(input.personaId, input.sceneId, ctx.user.id);
         return { success: true };
       }),
@@ -1842,6 +1931,336 @@ export const appRouter = router({
         const persona = await getPersonaById(input.personaId, ctx.user.id);
         if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
         await activateScene(input.personaId, null, ctx.user.id);
+        return { success: true };
+      }),
+
+    // 场景详情：配置 + 当前用户/人物的场景记忆缓存。
+    // 4A 只提供占位 memory；真实记忆快照（storyState/cache）由 4B 接管。
+    detail: protectedProcedure
+      .input(z.object({ id: z.number(), personaId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.id);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        // 场景记忆快照：storyState（回合/时间线）+ cache（摘要/待续线索/已确认事实）。
+        const memory = await getSceneMemoryStateSnapshot(input.personaId, ctx.user.id, input.id);
+        return { scene, memory };
+      }),
+
+    copy: protectedProcedure
+      .input(z.object({ sceneId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const created = await createScene({
+          userId: ctx.user.id,
+          name: `${scene.name}（我的副本）`,
+          description: scene.description,
+          icon: scene.icon,
+          systemPromptOverlay: scene.systemPromptOverlay,
+          personaIdentityOverride: scene.personaIdentityOverride,
+          userIdentityOverride: scene.userIdentityOverride,
+          emotionalState: scene.emotionalState,
+          starters: scene.starters,
+          contextSeed: scene.contextSeed,
+          continuationEnabled: scene.continuationEnabled,
+          scenePersonaRefKey: scene.scenePersonaRefKey,
+          sceneUserRefKey: scene.sceneUserRefKey,
+          sceneEnvRefKey: scene.sceneEnvRefKey,
+          sceneVisualBaseline: scene.sceneVisualBaseline,
+          isBuiltin: false,
+        });
+        return created;
+      }),
+
+    // 从人物画像 + 用户偏好记忆，生成一版「场景专属行为提示词」初稿，供用户在编辑器里改。
+    generateOverlayDraft: protectedProcedure
+      .input(z.object({ personaId: z.number(), sceneName: z.string().max(100).optional(), hint: z.string().max(500).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const name = persona.name ?? "对方";
+        const pd = (persona.personaData ?? {}) as Record<string, any>;
+        const ps = (pd.profileSections ?? {}) as Record<string, any>;
+        const loveLanguage = ps.personality?.loveLanguage ?? pd.loveLanguage ?? "";
+        const feelingsForUser = ps.relationship?.feelingsForUser ?? "";
+        const boundaries = ps.relationship?.boundaries ?? "";
+        const nickname = ps.relationship?.nickname ?? pd.nickname ?? "";
+        // 偏好记忆：只取仍然有效的 preference / user_fact 两类，最多 12 条。
+        const memories = await getMemoriesByPersonaId(input.personaId, ctx.user.id);
+        const prefs = memories
+          .filter((m) => m.status === "active" && (m.memoryType === "preference" || m.memoryType === "user_fact"))
+          .slice(0, 12)
+          .map((m) => `- ${m.title}：${m.description ?? ""}`);
+        const sceneLabel = input.sceneName?.trim() || "这个场景";
+        const sys = [
+          `你在帮用户给一个 AI 恋人角色「${name}」定制「场景模式专属行为指引」。`,
+          "基于下面的人物设定和用户偏好，写一段可直接当系统提示词用的指引：聚焦「在这个场景里、面对用户，该怎么对待、怎么主动、什么语气、什么分寸」。",
+          "要求：用第二人称「你」指代人物；只写行为/语气/态度，不复述人物固定设定；具体、可执行、贴合用户偏好；150–280 字；只返回这段指引本身，不要标题、不要解释、不要引号。",
+        ].join("\n");
+        const usr = [
+          `场景：${sceneLabel}`,
+          input.hint?.trim() ? `用户的额外要求：${input.hint.trim()}` : "",
+          "",
+          `人物：${name}`,
+          loveLanguage ? `爱的语言：${loveLanguage}` : "",
+          feelingsForUser ? `对用户的情感：${feelingsForUser}` : "",
+          boundaries ? `关系边界：${boundaries}` : "",
+          nickname ? `称呼对方：${nickname}` : "",
+          "",
+          "用户偏好记忆（用户希望人物怎么对待自己）：",
+          prefs.length ? prefs.join("\n") : "（暂无明确偏好记忆，按人物设定与一般亲密关系合理发挥）",
+          "",
+          `请据此写「${sceneLabel}」里的人物专属行为指引。`,
+        ].filter(Boolean).join("\n");
+        const response = await llmService.invoke({
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: usr },
+          ],
+          options: {
+            provider: persona.llmProvider ?? undefined,
+            usageContext: { userId: ctx.user.id, personaId: input.personaId, purpose: "persona_analysis", route: "scene.overlay_draft" },
+          },
+        });
+        const draft = (response ?? "").toString().trim().replace(/^[「"']+/, "").replace(/[」"']+$/, "").trim();
+        return { draft };
+      }),
+
+    // ─── 场景聊天记录与记忆（第 4 批 4B）────────────────────────────────────
+    // 所有端点沿用同一条归属校验：人物属于当前用户，场景是内置或本人创建；
+    // 任一不满足一律 NOT_FOUND（不泄露「存在但不属于你」）。
+
+    // 场景聊天记录查看：按场景范围返回消息，并附带「是否进入模型上下文」状态。
+    getChatHistory: protectedProcedure
+      .input(z.object({ sceneId: z.number(), personaId: z.number(), limit: z.number().int().min(1).max(500).default(300) }))
+      .query(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        return getSceneMessageContextManagement(input.personaId, ctx.user.id, input.sceneId, input.limit);
+      }),
+
+    setContextInclusion: protectedProcedure
+      .input(z.object({
+        sceneId: z.number(),
+        personaId: z.number(),
+        messageIds: z.array(z.number().int().positive()).min(1).max(500),
+        included: z.boolean().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const updated = await setSceneMessagesContextOverride(
+          input.personaId,
+          ctx.user.id,
+          input.sceneId,
+          input.messageIds,
+          input.included,
+        );
+        return { success: true, updated };
+      }),
+
+    setAllContextInclusion: protectedProcedure
+      .input(z.object({
+        sceneId: z.number(),
+        personaId: z.number(),
+        included: z.boolean().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const updated = input.included === null
+          ? (await clearSceneMessagesContextOverride(input.personaId, ctx.user.id, input.sceneId), 0)
+          : await setAllSceneMessagesContextOverride(input.personaId, ctx.user.id, input.sceneId, input.included);
+        return { success: true, updated };
+      }),
+
+    deleteMessages: protectedProcedure
+      .input(z.object({
+        sceneId: z.number(),
+        personaId: z.number(),
+        messageIds: z.array(z.number().int().positive()).min(1).max(500),
+        deleteLinkedMemories: z.boolean().default(false),
+        resetRuntimeCaches: z.boolean().default(true),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const result = await deleteChatMessagesWithBackup({
+          personaId: input.personaId,
+          userId: ctx.user.id,
+          messageIds: input.messageIds,
+          deleteLinkedMemories: input.deleteLinkedMemories,
+          resetRuntimeCaches: input.resetRuntimeCaches,
+          sceneId: input.sceneId,
+        });
+        // 被删除的消息不能继续留在场景记忆的「最近消息」里，否则下次摘要会读到已删内容。
+        if (result.deletedMessages > 0) {
+          await mutateSceneMemoryState(input.personaId, ctx.user.id, input.sceneId, snapshot =>
+            snapshot.cache ? { cache: removeSceneMemoryMessageIds(snapshot.cache, input.messageIds) } : null,
+          );
+        }
+        return result;
+      }),
+
+    clearAllMessages: protectedProcedure
+      .input(z.object({ sceneId: z.number(), personaId: z.number(), deleteLinkedMemories: z.boolean().default(false), resetRuntimeCaches: z.boolean().default(true) }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const result = await deleteChatMessagesWithBackup({
+          personaId: input.personaId,
+          userId: ctx.user.id,
+          deleteLinkedMemories: input.deleteLinkedMemories,
+          resetRuntimeCaches: input.resetRuntimeCaches,
+          sceneId: input.sceneId,
+        });
+        if (result.deletedMessages > 0) {
+          await mutateSceneMemoryState(input.personaId, ctx.user.id, input.sceneId, snapshot =>
+            snapshot.cache ? { cache: removeSceneMemoryMessageIds(snapshot.cache, snapshot.cache.recentMessageIds) } : null,
+          );
+        }
+        return result;
+      }),
+
+    getMemoryStats: protectedProcedure
+      .input(z.object({ personaId: z.number(), sceneIds: z.array(z.number().int().positive()).max(50) }))
+      .query(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        return Promise.all(input.sceneIds.map(async (sceneId) => {
+          const snapshot = await getSceneMemoryStateSnapshot(input.personaId, ctx.user.id, sceneId);
+          return {
+            sceneId,
+            turn: snapshot.storyState?.turn ?? 0,
+            updatedAt: snapshot.storyState?.updatedAt ?? null,
+            factCount: snapshot.cache?.pinnedFacts?.length ?? 0,
+            openThreadCount: snapshot.cache?.openThreads?.filter(thread => thread.status === "open")?.length ?? 0,
+          };
+        }));
+      }),
+
+    updateMemory: protectedProcedure
+      .input(z.object({
+        sceneId: z.number(),
+        personaId: z.number(),
+        summary: z.string().max(2000).optional(),
+        pinnedFacts: z.array(z.object({
+          id: z.string().optional(),
+          fact: z.string().min(1).max(500),
+          source: z.enum(["user", "llm"]).optional(),
+        })).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const memory = await mutateSceneMemoryState(input.personaId, ctx.user.id, input.sceneId, snapshot => {
+          const existingCache = snapshot.cache ?? buildInitialSceneMemoryCache();
+          const next = { ...existingCache };
+          if (input.summary !== undefined) next.summary = input.summary.trim() || null;
+          if (input.pinnedFacts !== undefined) {
+            next.pinnedFacts = input.pinnedFacts.map((fact, index) => ({
+              id: fact.id || "fact-" + Date.now() + "-" + index,
+              fact: fact.fact,
+              source: fact.source ?? "user",
+              createdAt: new Date().toISOString(),
+            }));
+          }
+          return { cache: normalizeSceneMemoryCache(next) ?? existingCache };
+        });
+        return { success: true, memory };
+      }),
+
+    summarizeMemory: protectedProcedure
+      .input(z.object({ sceneId: z.number(), personaId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const [summary] = await Promise.all([
+          refreshSceneMemorySummary({
+            userId: ctx.user.id,
+            personaId: input.personaId,
+            sceneId: input.sceneId,
+            sceneName: scene.name,
+            sceneDescription: scene.description,
+          }),
+          extractSceneConfirmedFacts({
+            userId: ctx.user.id,
+            personaId: input.personaId,
+            sceneId: input.sceneId,
+            sceneName: scene.name,
+            sceneDescription: scene.description,
+          }).catch(() => []),
+        ]);
+        if (!summary) throw new TRPCError({ code: "BAD_REQUEST", message: "暂时没有足够的场景消息可以生成摘要" });
+        return { success: true, summary };
+      }),
+
+    extractFacts: protectedProcedure
+      .input(z.object({ sceneId: z.number(), personaId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const facts = await extractSceneConfirmedFacts({
+          userId: ctx.user.id,
+          personaId: input.personaId,
+          sceneId: input.sceneId,
+          sceneName: scene.name,
+          sceneDescription: scene.description,
+        });
+        return { success: true, facts };
+      }),
+
+    clearMemory: protectedProcedure
+      .input(z.object({ sceneId: z.number(), personaId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const persona = await getPersonaById(input.personaId, ctx.user.id);
+        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
+        const scene = await getSceneById(input.sceneId);
+        if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        await clearSceneMemoryState(input.personaId, ctx.user.id, input.sceneId);
+        await resetPersonaSceneStoryState(input.personaId, ctx.user.id, input.sceneId);
+        // 清空记忆后，正在生成/摘要中的旧任务必须失效，不允许把旧内容写回来。
+        await bumpChatContextRevision(input.personaId, ctx.user.id);
         return { success: true };
       }),
   }),

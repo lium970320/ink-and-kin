@@ -1,11 +1,11 @@
-import { eq, desc, and, or, sql, count, sum, gte, lte, ilike, asc, inArray, type SQL } from "drizzle-orm";
+import { eq, desc, and, or, sql, count, sum, gte, lte, ilike, asc, inArray, isNull, gt, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { UsageRecord, TokenSource } from "./llm/usage";
 import {
   InsertUser, users,
   personas, personaFiles, messages,
   wechatBindings, skillJobs, llmConfigs, llmProviderRelays, llmUsageRecords, wechatBotState,
-  memories, emotionSnapshots, diaryEntries, scenes,
+  memories, emotionSnapshots, diaryEntries, scenes, sceneMemoryStates,
   chatSummaries, safetyEvents, graduationAssessments,
   channelBindings, channelStates, personaTemplates, personaQuestionnaireAnswers,
   reminderDeliveries, researchProfiles, collectedMessages, collectionSources,
@@ -18,6 +18,16 @@ import {
   InsertResearchProfile, InsertCollectedMessage, InsertCollectionSource,
   InsertCollectionJob,
 } from "../drizzle/schema";
+import { chatContextStates } from "../drizzle/chat-context-schema";
+import {
+  appendSceneMemoryRecentMessages,
+  buildInitialSceneMemoryCache,
+  buildInitialSceneMemoryStoryState,
+  normalizeSceneMemoryCache,
+  normalizeSceneMemoryStoryState,
+  type SceneMemoryCache,
+  type SceneMemoryStoryState,
+} from "./social/scene-memory";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -185,6 +195,7 @@ export async function deleteUserAccount(id: number) {
     await tx.delete(researchProfiles).where(eq(researchProfiles.userId, id));
     await tx.delete(safetyEvents).where(eq(safetyEvents.userId, id));
     await tx.delete(scenes).where(eq(scenes.userId, id));
+    await tx.delete(sceneMemoryStates).where(eq(sceneMemoryStates.userId, id));
     await tx.delete(skillJobs).where(eq(skillJobs.userId, id));
     await tx.delete(wechatBindings).where(eq(wechatBindings.userId, id));
     await tx.delete(wechatBotState).where(eq(wechatBotState.userId, id));
@@ -343,6 +354,7 @@ export async function deletePersona(id: number, userId: number) {
     await tx.delete(reminderDeliveries).where(and(eq(reminderDeliveries.personaId, id), eq(reminderDeliveries.userId, userId)));
     await tx.delete(researchProfiles).where(and(eq(researchProfiles.personaId, id), eq(researchProfiles.userId, userId)));
     await tx.delete(safetyEvents).where(and(eq(safetyEvents.personaId, id), eq(safetyEvents.userId, userId)));
+    await tx.delete(sceneMemoryStates).where(and(eq(sceneMemoryStates.personaId, id), eq(sceneMemoryStates.userId, userId)));
     await tx.delete(skillJobs).where(and(eq(skillJobs.personaId, id), eq(skillJobs.userId, userId)));
     await tx.delete(wechatBindings).where(and(eq(wechatBindings.personaId, id), eq(wechatBindings.userId, userId)));
     await tx.delete(personas).where(and(eq(personas.id, id), eq(personas.userId, userId)));
@@ -371,7 +383,13 @@ export async function getFilesByPersonaId(personaId: number, userId: number) {
 export async function createMessage(data: InsertMessage) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const [result] = await db.insert(messages).values(data).returning({ id: messages.id });
+  // 消息模式由归属推导：带 sceneId 的是场景消息，其余是日常消息。
+  // 日常上下文只读 mode='daily'，场景上下文只读 sceneId，二者互不串线。
+  const payload = {
+    ...data,
+    mode: data.mode ?? (data.sceneId ? "scene" : "daily"),
+  };
+  const [result] = await db.insert(messages).values(payload).returning({ id: messages.id });
   return result.id;
 }
 
@@ -1160,43 +1178,117 @@ export async function getScenes(userId: number) {
 /**
  * Reads a scene by id.
  *
- * Built-in scenes belong to no user and are readable by everyone; a custom
- * scene is only readable by the user who created it.
+ * 与自用版一致：只按 id 读取，不再在数据层按 userId 过滤。
+ * 调用方必须自己校验归属——路由层统一按 `isBuiltin || scene.userId === userId`
+ * 判断（见 `server/routers.ts` 的 scene.activate / detail / copy / update），
+ * `chat/service.ts` 读当前场景时也再兜一次同样的判断，避免历史脏数据把
+ * 别人的 systemPromptOverlay 注入本用户对话。
+ *
+ * 内置场景 userId 为 null，由调用方按 `isBuiltin` 放行。
  */
-export async function getSceneById(id: number, userId: number) {
+export async function getSceneById(id: number) {
   const db = await getDb();
   if (!db) return null;
-  const [row] = await db.select().from(scenes)
-    .where(and(
-      eq(scenes.id, id),
-      or(eq(scenes.isBuiltin, true), eq(scenes.userId, userId)),
-    )).limit(1);
+  const [row] = await db.select().from(scenes).where(eq(scenes.id, id)).limit(1);
   return row || null;
+}
+
+/** 去掉首尾空白；空串按 null 存，避免“有覆盖但内容为空”的歧义状态。 */
+function normalizedSceneText(value: string | null | undefined): string | null {
+  return value?.trim() || null;
 }
 
 export async function createScene(data: InsertScene) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const [row] = await db.insert(scenes).values(data).returning();
+  const normalizedData: InsertScene = {
+    ...data,
+    personaIdentityOverride: normalizedSceneText(data.personaIdentityOverride),
+    userIdentityOverride: normalizedSceneText(data.userIdentityOverride),
+    scenePersonaRefKey: normalizedSceneText(data.scenePersonaRefKey),
+    sceneUserRefKey: normalizedSceneText(data.sceneUserRefKey),
+    sceneEnvRefKey: normalizedSceneText(data.sceneEnvRefKey),
+    sceneVisualBaseline: normalizedSceneText(data.sceneVisualBaseline),
+  };
+  const [row] = await db.insert(scenes).values(normalizedData).returning();
   return row;
 }
 
 /**
- * Deletes a custom scene.
+ * Edits a scene.
+ *
+ * Only the user who created a custom scene may change it: the WHERE clause
+ * carries both the owner and `isBuiltin = false`, so a built-in scene can
+ * never be rewritten and another user's scene is never touched. Returns
+ * null when nothing matched — the caller turns that into a refusal.
+ */
+export async function updateScene(id: number, userId: number, data: Partial<InsertScene>) {
+  const db = await getDb();
+  if (!db) return null;
+  const normalizedData: Partial<InsertScene> = { ...data };
+  if ("personaIdentityOverride" in data) {
+    normalizedData.personaIdentityOverride = normalizedSceneText(data.personaIdentityOverride);
+  }
+  if ("userIdentityOverride" in data) {
+    normalizedData.userIdentityOverride = normalizedSceneText(data.userIdentityOverride);
+  }
+  if ("contextSeed" in data) {
+    normalizedData.contextSeed = data.contextSeed?.trim() || null;
+  }
+  if ("scenePersonaRefKey" in data) {
+    normalizedData.scenePersonaRefKey = normalizedSceneText(data.scenePersonaRefKey);
+  }
+  if ("sceneUserRefKey" in data) {
+    normalizedData.sceneUserRefKey = normalizedSceneText(data.sceneUserRefKey);
+  }
+  if ("sceneEnvRefKey" in data) {
+    normalizedData.sceneEnvRefKey = normalizedSceneText(data.sceneEnvRefKey);
+  }
+  if ("sceneVisualBaseline" in data) {
+    normalizedData.sceneVisualBaseline = normalizedSceneText(data.sceneVisualBaseline);
+  }
+  const [row] = await db.update(scenes)
+    .set(normalizedData)
+    .where(and(
+      eq(scenes.id, id),
+      eq(scenes.isBuiltin, false),
+      eq(scenes.userId, userId),
+    ))
+    .returning();
+  return row || null;
+}
+
+/**
+ * Deletes a custom scene and everything that hangs off it.
  *
  * Returns false when nothing was deleted — the scene belongs to somebody
  * else, or it is a built-in one. The caller turns that into a refusal
- * rather than reporting a success that did not happen.
+ * rather than reporting a success that did not happen. The cleanup runs in
+ * one transaction with the delete, mirroring the self-use build: the scene
+ * memory rows go, and any persona that was standing in the scene is put
+ * back to daily chat instead of pointing at a scene that no longer exists.
  */
 export async function deleteScene(id: number, userId: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
-  const deleted = await db.delete(scenes).where(and(
-    eq(scenes.id, id),
-    eq(scenes.isBuiltin, false),
-    eq(scenes.userId, userId),
-  ));
-  return (deleted.rowCount ?? 0) > 0;
+  return withTransaction(async (tx) => {
+    const ownedScene = and(
+      eq(scenes.id, id),
+      eq(scenes.isBuiltin, false),
+      eq(scenes.userId, userId),
+    );
+    const [scene] = await tx.select({ id: scenes.id }).from(scenes)
+      .where(ownedScene).limit(1).for("update");
+    if (!scene) return false;
+    await tx.delete(sceneMemoryStates).where(and(
+      eq(sceneMemoryStates.sceneId, id),
+      eq(sceneMemoryStates.userId, userId),
+    ));
+    await tx.update(personas).set({ activeSceneId: null, updatedAt: new Date() })
+      .where(and(eq(personas.userId, userId), eq(personas.activeSceneId, id)));
+    await tx.delete(scenes).where(ownedScene);
+    return true;
+  });
 }
 
 /**
@@ -1205,18 +1297,577 @@ export async function deleteScene(id: number, userId: number): Promise<boolean> 
  * Only the persona's owner may change this, and only their own scenes (or a
  * built-in one) may be attached — otherwise a user could graft another
  * user's scene prompt onto their persona.
+ *
+ * 场景记忆与剧情进度的读写属于第 4 批 4B；本函数只负责切换人物的当前场景。
  */
 export async function activateScene(personaId: number, sceneId: number | null, userId: number) {
   const db = await getDb();
   if (!db) return;
 
   if (sceneId != null) {
-    const scene = await getSceneById(sceneId, userId);
+    // 归属校验留在数据层：内置场景或本人创建的场景才允许挂到人物上。
+    const [scene] = await db.select({ id: scenes.id }).from(scenes)
+      .where(and(
+        eq(scenes.id, sceneId),
+        or(eq(scenes.isBuiltin, true), eq(scenes.userId, userId)),
+      ))
+      .limit(1);
     if (!scene) throw new Error("Scene not found");
   }
 
   await db.update(personas).set({ activeSceneId: sceneId, updatedAt: new Date() })
     .where(and(eq(personas.id, personaId), eq(personas.userId, userId)));
+
+  // 切换/退出场景后让在途回合失效：与日常「对话上下文已变化」共用同一 revision 语义。
+  await bumpChatContextRevision(personaId, userId);
+
+  if (sceneId === null) return;
+
+  // continuationEnabled=false 的场景每次进入都从新故事开始（与自用版一致）；
+  // 默认 true 时保留该场景的摘要、事实与回合，实现「再次进入自动续写」。
+  const [sceneRow] = await db.select({ continuationEnabled: scenes.continuationEnabled }).from(scenes)
+    .where(eq(scenes.id, sceneId))
+    .limit(1);
+  if (sceneRow?.continuationEnabled === false) {
+    await clearSceneMemoryState(personaId, userId, sceneId);
+    await resetPersonaSceneStoryState(personaId, userId, sceneId);
+  }
+}
+
+// ─── Scene memory & scene conversation context ──────────────────────────────
+
+/**
+ * 场景记忆缓存与场景会话上下文（第 4 批 4B）。
+ *
+ * 数据落在 scene_memory_states（4A 迁移建表）与 messages 的
+ * contextOverride / sceneId / mode 三列；日常上下文的边界与手动覆盖仍由
+ * chat_context_states（第 3 批）持有，这里只读取它的 startAfterMessageId，
+ * 保证「日常」和「场景」两条上下文用同一条会话起点。
+ *
+ * 移植自自用版 db.ts 的场景区段，做了三处书中人适配：
+ * 1. 不再在运行时 ensure 建表/建列（schema 由手写迁移维护）；
+ * 2. 自用版放在 persona_runtime_states 的剧情进度，合并进 scene_memory_states.storyState，
+ *    回合数按「该场景会话起点之后的助手回复数」校准；
+ * 3. 清空/重建用 stateId 做乐观锁，清空后迟到的摘要/事实任务写不回来。
+ */
+
+export type SceneMemoryStateSnapshot = {
+  /** 用于拒绝清空/重建前启动的后台任务；不是客户端可修改字段。 */
+  stateId?: number | null;
+  storyState: SceneMemoryStoryState | null;
+  cache: SceneMemoryCache | null;
+};
+
+/**
+ * 当前会话（日常与场景共用）的上下文起点。
+ * 与 chat/context-state 的 chat_context_states.startAfterMessageId 保持同一口径。
+ */
+export async function getPersonaConversationContextStartMessageId(
+  personaId: number,
+  userId: number,
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const [state] = await db.select({ boundary: chatContextStates.startAfterMessageId })
+    .from(chatContextStates)
+    .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
+    .limit(1);
+  const boundary = state?.boundary;
+  return typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary > 0
+    ? boundary
+    : 0;
+}
+
+/** 场景会话起点之后的助手回复数，等于该段剧情的回复回合数。 */
+export async function countSceneAssistantMessages(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
+  const [row] = await db.select({ count: count() }).from(messages)
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+      eq(messages.role, "assistant"),
+      gt(messages.id, startAfterMessageId),
+    ));
+  return Number(row?.count ?? 0);
+}
+
+export async function getSceneMemoryStateSnapshot(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+): Promise<SceneMemoryStateSnapshot> {
+  const db = await getDb();
+  if (!db) return { storyState: null, cache: null };
+  const [row] = await db.select().from(sceneMemoryStates)
+    .where(and(
+      eq(sceneMemoryStates.personaId, personaId),
+      eq(sceneMemoryStates.userId, userId),
+      eq(sceneMemoryStates.sceneId, sceneId),
+    ))
+    .limit(1);
+  const storyState = normalizeSceneMemoryStoryState(row?.storyState);
+  const cache = normalizeSceneMemoryCache(row?.cache);
+
+  // 回合数校准：以场景会话起点之后实际落库的助手回复数为准。
+  if (storyState) {
+    const messageTurns = await countSceneAssistantMessages(personaId, userId, sceneId);
+    if (messageTurns > 0 && storyState.turn !== messageTurns) storyState.turn = messageTurns;
+  }
+
+  return { stateId: row?.id ?? null, storyState, cache };
+}
+
+export async function upsertSceneMemoryState(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  data: {
+    storyState?: SceneMemoryStoryState | null;
+    cache?: SceneMemoryCache | null;
+  },
+): Promise<void> {
+  await mutateSceneMemoryState(personaId, userId, sceneId, () => data);
+}
+
+/**
+ * 在短事务内锁定并读取最新快照，再应用局部修改。
+ * 同一人物/场景的首次插入由事务级 advisory lock 串行化；锁内不跑模型。
+ * expectedStateId 防止后台结果在用户清空或重建记忆后重新灌入旧内容。
+ */
+export async function mutateSceneMemoryState(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  mutate: (current: SceneMemoryStateSnapshot) => {
+    storyState?: SceneMemoryStoryState | null;
+    cache?: SceneMemoryCache | null;
+  } | null,
+  expectedStateId?: number,
+): Promise<SceneMemoryStateSnapshot | null> {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  return withTransaction(async tx => {
+    const lockKey = userId + ":" + personaId + ":" + sceneId;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-memory'), hashtext(${lockKey}))`);
+    const [existing] = await tx.select().from(sceneMemoryStates)
+      .where(and(
+        eq(sceneMemoryStates.personaId, personaId),
+        eq(sceneMemoryStates.userId, userId),
+        eq(sceneMemoryStates.sceneId, sceneId),
+      ))
+      .limit(1)
+      .for("update");
+    if (expectedStateId !== undefined && existing?.id !== expectedStateId) return null;
+    const current: SceneMemoryStateSnapshot = {
+      stateId: existing?.id ?? null,
+      storyState: normalizeSceneMemoryStoryState(existing?.storyState),
+      cache: normalizeSceneMemoryCache(existing?.cache),
+    };
+    const data = mutate(current);
+    if (data === null) return current;
+    const storyState = normalizeSceneMemoryStoryState(
+      data.storyState === undefined ? current.storyState : data.storyState,
+    ) ?? buildInitialSceneMemoryStoryState("scene:" + sceneId);
+    const cache = normalizeSceneMemoryCache(
+      data.cache === undefined ? current.cache : data.cache,
+    ) ?? buildInitialSceneMemoryCache();
+    let stateId = existing?.id;
+    if (existing) {
+      await tx.update(sceneMemoryStates)
+        .set({ storyState, cache, updatedAt: new Date() })
+        .where(eq(sceneMemoryStates.id, existing.id));
+    } else {
+      const [created] = await tx.insert(sceneMemoryStates).values({
+        personaId, userId, sceneId, storyState, cache,
+      }).returning({ id: sceneMemoryStates.id });
+      stateId = created.id;
+    }
+    return { stateId, storyState, cache };
+  });
+}
+
+export async function clearSceneMemoryState(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(sceneMemoryStates).where(and(
+    eq(sceneMemoryStates.personaId, personaId),
+    eq(sceneMemoryStates.userId, userId),
+    eq(sceneMemoryStates.sceneId, sceneId),
+  ));
+}
+
+/** 删除某场景的记忆；传 userId 时只清该用户的关联（删除他人场景时绝不越权）。 */
+export async function deleteSceneMemoryStatesForScene(
+  sceneId: number,
+  userId?: number,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(sceneMemoryStates).where(userId === undefined
+    ? eq(sceneMemoryStates.sceneId, sceneId)
+    : and(eq(sceneMemoryStates.sceneId, sceneId), eq(sceneMemoryStates.userId, userId)));
+}
+
+export async function deleteSceneMemoryStatesForPersona(
+  personaId: number,
+  userId: number,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(sceneMemoryStates).where(and(
+    eq(sceneMemoryStates.personaId, personaId),
+    eq(sceneMemoryStates.userId, userId),
+  ));
+}
+
+export async function deleteSceneMemoryStatesForUser(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(sceneMemoryStates).where(eq(sceneMemoryStates.userId, userId));
+}
+
+/**
+ * 场景回合成功后推进剧情进度并记录本轮消息。
+ * 返回该场景当前回合数，供调用方决定是否触发滚动摘要。
+ */
+export async function recordSceneMemoryTurn(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  sceneKey: string,
+  messageIds: number[],
+): Promise<number> {
+  const now = new Date().toISOString();
+  const messageTurns = await countSceneAssistantMessages(personaId, userId, sceneId);
+  const messageIdList = messageIds.filter(id => Number.isSafeInteger(id) && id > 0);
+  let resultTurn = messageTurns;
+  await mutateSceneMemoryState(personaId, userId, sceneId, snapshot => {
+    const previous = snapshot.storyState;
+    const turn = Math.max(messageTurns, previous?.turn ?? 0);
+    resultTurn = turn;
+    return {
+      storyState: {
+        sceneKey: sceneKey || previous?.sceneKey || "scene:" + sceneId,
+        turn,
+        startedAt: previous?.startedAt || now,
+        updatedAt: now,
+        lastMessageId: messageIdList.at(-1) ?? previous?.lastMessageId ?? null,
+        lastExitAt: previous?.lastExitAt ?? null,
+      },
+      cache: appendSceneMemoryRecentMessages(
+        snapshot.cache ?? buildInitialSceneMemoryCache(now),
+        messageIdList,
+        now,
+      ),
+    };
+  });
+  return resultTurn;
+}
+
+/** 清空剧情进度；传 sceneId 只重置该场景，不传则重置该人物全部场景。 */
+export async function resetPersonaSceneStoryState(
+  personaId: number,
+  userId: number,
+  sceneId?: number,
+): Promise<void> {
+  if (sceneId !== undefined) {
+    await mutateSceneMemoryState(personaId, userId, sceneId, () => ({
+      storyState: buildInitialSceneMemoryStoryState("scene:" + sceneId),
+    }));
+    return;
+  }
+  const db = await getDb();
+  if (!db) return;
+  await db.update(sceneMemoryStates)
+    .set({ storyState: null, updatedAt: new Date() })
+    .where(and(
+      eq(sceneMemoryStates.personaId, personaId),
+      eq(sceneMemoryStates.userId, userId),
+    ));
+}
+
+/**
+ * 开始新一段对话（场景「开始」标记 / 日常新对话按钮共用）。
+ *
+ * 与自用版 startNewPersonaConversationContext 等价：把会话起点推进到最新消息，
+ * 清掉边界前的手动上下文标记与滚动摘要；若人物正处在场景中，同时清空该场景的
+ * 摘要/待续线索/最近消息，但保留「已确认事实」，并把剧情回合归零。
+ * 删除再插入记忆行会换掉 stateId，使清空前启动的摘要任务在返回时写不进来。
+ */
+export async function startNewPersonaConversationContext(
+  personaId: number,
+  userId: number,
+): Promise<number> {
+  return withTransaction(async tx => {
+    const [persona] = await tx.select({ activeSceneId: personas.activeSceneId }).from(personas)
+      .where(and(eq(personas.id, personaId), eq(personas.userId, userId)))
+      .limit(1);
+    const activeSceneId = persona?.activeSceneId ?? null;
+    if (activeSceneId !== null) {
+      const lockKey = userId + ":" + personaId + ":" + activeSceneId;
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-memory'), hashtext(${lockKey}))`);
+    }
+    const [latestMessage] = await tx.select({ id: messages.id }).from(messages)
+      .where(and(eq(messages.personaId, personaId), eq(messages.userId, userId)))
+      .orderBy(desc(messages.id))
+      .limit(1);
+    const startAfterMessageId = latestMessage?.id ?? 0;
+    await tx.update(messages)
+      .set({ contextOverride: null })
+      .where(and(
+        eq(messages.personaId, personaId),
+        eq(messages.userId, userId),
+        lte(messages.id, startAfterMessageId),
+      ));
+
+    const [existing] = await tx.select().from(chatContextStates)
+      .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
+      .limit(1)
+      .for("update");
+    if (existing) {
+      await tx.update(chatContextStates)
+        .set({
+          startAfterMessageId,
+          overrides: {},
+          revision: existing.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(chatContextStates.id, existing.id));
+    } else {
+      await tx.insert(chatContextStates).values({
+        userId,
+        personaId,
+        startAfterMessageId,
+        overrides: {},
+        revision: 1,
+      });
+    }
+
+    await tx.delete(chatSummaries).where(and(
+      eq(chatSummaries.personaId, personaId),
+      eq(chatSummaries.userId, userId),
+    ));
+
+    if (activeSceneId !== null) {
+      const [oldMemory] = await tx.select().from(sceneMemoryStates)
+        .where(and(
+          eq(sceneMemoryStates.personaId, personaId),
+          eq(sceneMemoryStates.userId, userId),
+          eq(sceneMemoryStates.sceneId, activeSceneId),
+        ))
+        .limit(1)
+        .for("update");
+      if (oldMemory) {
+        const pinnedFacts = normalizeSceneMemoryCache(oldMemory.cache)?.pinnedFacts ?? [];
+        await tx.delete(sceneMemoryStates).where(eq(sceneMemoryStates.id, oldMemory.id));
+        await tx.insert(sceneMemoryStates).values({
+          personaId,
+          userId,
+          sceneId: activeSceneId,
+          storyState: buildInitialSceneMemoryStoryState("scene:" + activeSceneId),
+          cache: { ...buildInitialSceneMemoryCache(), pinnedFacts },
+        });
+      }
+    }
+
+    return startAfterMessageId;
+  });
+}
+
+/** 让当前人物的在途生成失效（切换/退出场景、清空场景记忆时使用）。 */
+export async function bumpChatContextRevision(
+  personaId: number,
+  userId: number,
+): Promise<number> {
+  return withTransaction(async tx => {
+    const [existing] = await tx.select({ id: chatContextStates.id, revision: chatContextStates.revision })
+      .from(chatContextStates)
+      .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
+      .limit(1)
+      .for("update");
+    if (!existing) {
+      const [created] = await tx.insert(chatContextStates)
+        .values({ userId, personaId, revision: 1 })
+        .returning({ revision: chatContextStates.revision });
+      return created.revision;
+    }
+    const [updated] = await tx.update(chatContextStates)
+      .set({ revision: existing.revision + 1, updatedAt: new Date() })
+      .where(eq(chatContextStates.id, existing.id))
+      .returning({ revision: chatContextStates.revision });
+    return updated.revision;
+  });
+}
+
+export function isMessageIncludedInContext(
+  messageId: number,
+  contextOverride: boolean | null,
+  startAfterMessageId: number,
+): boolean {
+  if (contextOverride === true) return true;
+  if (contextOverride === false) return false;
+  return messageId > startAfterMessageId;
+}
+
+/**
+ * 供场景模式下模型生成使用的剧本会话窗口。
+ * 场景模式按剧本独立回放：只取当前场景（sceneId）内且位于会话起点之后的消息；
+ * 显式排除（contextOverride === false）的消息不入上下文，显式纳入（true）优先入选。
+ */
+export async function getSceneConversationMessagesBySceneId(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  limit = 50,
+) {
+  const db = await getDb();
+  if (!db) return [];
+  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
+  const boundedLimit = Math.max(1, Math.trunc(limit));
+
+  const forcedRows = await db.select().from(messages)
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+      eq(messages.contextOverride, true),
+    ))
+    .orderBy(desc(messages.createdAt))
+    .limit(boundedLimit);
+
+  const automaticLimit = Math.max(0, boundedLimit - forcedRows.length);
+  const automaticRows = automaticLimit > 0
+    ? await db.select().from(messages)
+      .where(and(
+        eq(messages.personaId, personaId),
+        eq(messages.userId, userId),
+        eq(messages.sceneId, sceneId),
+        isNull(messages.contextOverride),
+        gt(messages.id, startAfterMessageId),
+      ))
+      .orderBy(desc(messages.createdAt))
+      .limit(automaticLimit)
+    : [];
+
+  return [...forcedRows, ...automaticRows]
+    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id - right.id)
+    .map(message => message.messageType === "image" && message.role === "assistant"
+      ? { ...message, content: "[图片]" }
+      : message);
+}
+
+/** 场景配图导演模型使用的剧情上下文，与人物正文共用场景窗口与纳入/排除规则。 */
+export async function getSceneMessagesForImageContext(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  limit = 10,
+) {
+  const boundedLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
+  return getSceneConversationMessagesBySceneId(personaId, userId, sceneId, boundedLimit);
+}
+
+/** 场景聊天记录管理：只返回某个场景内的消息，并附带「是否进入模型上下文」状态。 */
+export async function getSceneMessageContextManagement(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  limit = 300,
+) {
+  const db = await getDb();
+  if (!db) return { startAfterMessageId: 0, messages: [] as Array<Record<string, unknown>> };
+  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
+  const rows = await db.select().from(messages)
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+    ))
+    .orderBy(desc(messages.createdAt))
+    .limit(Math.max(1, Math.min(500, Math.trunc(limit))));
+  return {
+    startAfterMessageId,
+    messages: rows.reverse().map(message => ({
+      ...message,
+      // 图片消息的 content 只是内部占位；管理界面也归一化显示，避免展示原始文件路径。
+      content: message.messageType === "image" && message.role === "assistant"
+        ? "[图片]"
+        : message.content,
+      effectiveInContext: message.contextOverride === true
+        || (message.contextOverride !== false && message.id > startAfterMessageId),
+    })),
+  };
+}
+
+export async function setSceneMessagesContextOverride(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  messageIds: number[],
+  included: boolean | null,
+): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  const ids = Array.from(new Set(messageIds.filter(id => Number.isSafeInteger(id) && id > 0)));
+  if (ids.length === 0) return 0;
+  const updated = await db.update(messages)
+    .set({ contextOverride: included })
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+      inArray(messages.id, ids),
+    ))
+    .returning({ id: messages.id });
+  return updated.length;
+}
+
+/** 清空某个场景内所有消息的手动上下文标记，恢复跟随会话起点。 */
+export async function clearSceneMessagesContextOverride(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(messages)
+    .set({ contextOverride: null })
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+    ));
+}
+
+/** 批量设置某个场景内全部消息的上下文标记（true=全部强制加入，false=全部排除，null=跟随起点）。 */
+export async function setAllSceneMessagesContextOverride(
+  personaId: number,
+  userId: number,
+  sceneId: number,
+  included: boolean | null,
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const updated = await db.update(messages)
+    .set({ contextOverride: included })
+    .where(and(
+      eq(messages.personaId, personaId),
+      eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId),
+    ))
+    .returning({ id: messages.id });
+  return updated.length;
 }
 
 // ─── Export helpers ─────────────────────────────────────────────────────────

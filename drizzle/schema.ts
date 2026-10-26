@@ -117,6 +117,12 @@ export const messages = pgTable("messages", {
   mediaDuration: integer("mediaDuration"),
   emotionalState: varchar("emotionalState", { length: 50 }),
   channel: channelEnum().default("web").notNull(),
+  /** null=跟随会话边界，true=强制加入模型上下文，false=强制排除。 */
+  contextOverride: boolean("contextOverride"),
+  /** 场景消息归属；历史消息为 null，用于按场景精确回放与续写上下文。 */
+  sceneId: integer("sceneId"),
+  /** 消息模式：daily=日常对话，scene=场景剧情；供分类/统计/剧情记忆回放的显式标记。 */
+  mode: varchar("mode", { length: 16 }).default("daily").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -331,14 +337,57 @@ export const scenes = pgTable("scenes", {
   description: text("description"),
   icon: varchar("icon", { length: 10 }),
   systemPromptOverlay: text("systemPromptOverlay"),
+  /** 进入场景后覆盖人物身份描述；为空时沿用分身原本的身份设定。 */
+  personaIdentityOverride: text("personaIdentityOverride"),
+  /** 进入场景后覆盖用户身份描述；为空时沿用原本的用户身份。 */
+  userIdentityOverride: text("userIdentityOverride"),
   emotionalState: varchar("emotionalState", { length: 50 }),
   starters: jsonb("starters"),
+  /** 用户手写的前情提要/当前上下文；进入场景时在记忆缓存之前注入。 */
+  contextSeed: text("contextSeed"),
+  /** 再次进入同一场景时是否自动续写记忆；关闭则每次都从头开始。 */
+  continuationEnabled: boolean("continuationEnabled").default(true).notNull(),
+  /** 场景配图资产：场景人物定妆图（人物在该场景中的服装造型基准），设置页上传。 */
+  scenePersonaRefKey: text("scenePersonaRefKey"),
+  /** 场景配图资产：场景用户定妆图（用户在该场景中的服装造型基准），设置页上传。 */
+  sceneUserRefKey: text("sceneUserRefKey"),
+  /** 场景配图资产：场景环境图（地点、道具、光线基准），设置页上传。 */
+  sceneEnvRefKey: text("sceneEnvRefKey"),
+  /** 画面基线文字：服装/场景/光线/镜头的文字基准；用户可手填，出图成功后自动回填。 */
+  sceneVisualBaseline: text("sceneVisualBaseline"),
   isBuiltin: boolean("isBuiltin").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type Scene = typeof scenes.$inferSelect;
 export type InsertScene = typeof scenes.$inferInsert;
+
+/**
+ * 场景剧情记忆缓存区。
+ *
+ * 每个场景按 (personaId, userId, sceneId) 保存一份只属于该场景的剧情记忆，
+ * 供再次进入场景时自动续写，而不是重新开场。读写函数由第 4 批 4B 实现。
+ *
+ * 账号/分身被删除时由数据库级联清理；场景删除由 `deleteScene` 显式清理。
+ */
+export const sceneMemoryStates = pgTable("scene_memory_states", {
+  id: serial("id").primaryKey(),
+  personaId: integer("personaId").notNull().references(() => personas.id, { onDelete: "cascade" }),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sceneId: integer("sceneId").notNull(),
+  storyState: jsonb("storyState"),
+  cache: jsonb("cache"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+}, table => ({
+  memoryOwner: uniqueIndex("scene_memory_states_persona_user_scene_idx")
+    .on(table.personaId, table.userId, table.sceneId),
+  memoryUser: index("scene_memory_states_user_idx").on(table.userId),
+  memoryScene: index("scene_memory_states_scene_idx").on(table.sceneId),
+}));
+
+export type SceneMemoryStateRow = typeof sceneMemoryStates.$inferSelect;
+export type InsertSceneMemoryStateRow = typeof sceneMemoryStates.$inferInsert;
 
 /**
  * Applied-schema bookkeeping for `scripts/migrate.mjs`.

@@ -26,11 +26,20 @@ const store = {
 const getSkillJobById = vi.fn(async (id: number, userId: number) =>
   store.skillJobs.find((row) => row.id === id && row.userId === userId),
 );
-const getSceneById = vi.fn(async (id: number, userId: number) =>
-  store.scenes.find(
-    (row) => row.id === id && (row.isBuiltin || row.userId === userId),
-  ),
+// 场景读取与自用版一致只按 id 返回；归属由路由层按 isBuiltin/userId 判定，
+// 因此这里的模拟只模拟“按 id 查一行”。
+const getSceneById = vi.fn(async (id: number) =>
+  store.scenes.find((row) => row.id === id),
 );
+// Mirrors the SQL predicate: only the owner can edit a non-built-in scene.
+const updateScene = vi.fn(async (id: number, userId: number, data: Record<string, unknown>) => {
+  const scene = store.scenes.find(
+    (row) => row.id === id && !row.isBuiltin && row.userId === userId,
+  );
+  if (!scene) return null;
+  Object.assign(scene, data);
+  return scene;
+});
 const deleteScene = vi.fn(async (id: number, userId: number) => {
   const index = store.scenes.findIndex(
     (row) => row.id === id && !row.isBuiltin && row.userId === userId,
@@ -50,10 +59,14 @@ const deletePersona = vi.fn(async (id: number, userId: number) => {
   store.personas.splice(index, 1);
   return true;
 });
+// 场景记忆写入口：跨用户用例断言它们完全没被调用。
+const mutateSceneMemoryState = vi.fn();
+const clearSceneMemoryState = vi.fn();
 
 vi.mock("./db", () => ({
   getSkillJobById: (id: number, userId: number) => getSkillJobById(id, userId),
-  getSceneById: (id: number, userId: number) => getSceneById(id, userId),
+  getSceneById: (id: number) => getSceneById(id),
+  updateScene: (id: number, userId: number, data: Record<string, unknown>) => updateScene(id, userId, data),
   deleteScene: (id: number, userId: number) => deleteScene(id, userId),
   getPersonaById: (id: number, userId: number) => getPersonaById(id, userId),
   deletePersona: (id: number, userId: number) => deletePersona(id, userId),
@@ -128,6 +141,18 @@ vi.mock("./db", () => ({
   getActiveReminders: vi.fn().mockResolvedValue([]),
   dismissReminder: vi.fn(),
   appendPersonaCorrection: vi.fn(),
+  // 第 4 批 4B：场景记忆与场景上下文管理（行为测试按需覆写返回值）。
+  getDb: vi.fn().mockResolvedValue(null),
+  getSceneMemoryStateSnapshot: vi.fn(async () => ({ stateId: null, storyState: null, cache: null })),
+  mutateSceneMemoryState: (personaId: number, userId: number, sceneId: number, mutate: unknown) => mutateSceneMemoryState(personaId, userId, sceneId, mutate),
+  clearSceneMemoryState: (personaId: number, userId: number, sceneId: number) => clearSceneMemoryState(personaId, userId, sceneId),
+  resetPersonaSceneStoryState: vi.fn(),
+  bumpChatContextRevision: vi.fn(),
+  getSceneMessageContextManagement: vi.fn(async () => ({ startAfterMessageId: 0, messages: [] })),
+  setSceneMessagesContextOverride: vi.fn(async () => 0),
+  clearSceneMessagesContextOverride: vi.fn(),
+  setAllSceneMessagesContextOverride: vi.fn(async () => 0),
+  startNewPersonaConversationContext: vi.fn(async () => 0),
 }));
 
 import { appRouter } from "./routers";
@@ -193,11 +218,23 @@ describe("db helpers enforce ownership", () => {
     expect(functions.length).toBeGreaterThan(50);
   });
 
+  /**
+   * 只按行 id 读取、归属交给调用方校验的显式例外。
+   *
+   * `getSceneById` 与自用版一致保持单参：场景要么是内置（userId 为 null，所有人可读），
+   * 要么属于某个用户。数据层不再按 userId 过滤，归属改由每个场景路由显式校验
+   * （isBuiltin || scene.userId === ctx.user.id；chat/service.ts 读取当前场景时同样兜底），
+   * 并由下方 "a user cannot reach another user's scenes" 的跨用户测试覆盖。
+   * 这也是本文件里唯一允许的单参读取——新增这类读取必须先说明归属由谁校验。
+   */
+  const ID_ONLY_READ_EXCEPTIONS = new Set(["getSceneById"]);
+
   it("requires a userId on every helper that takes a row identifier", () => {
     const unguarded = functions
       .filter((fn) => ID_PARAM.test(fn.params))
       .filter((fn) => !fn.params.includes("userId"))
       .filter((fn) => !isUserScoped(fn))
+      .filter((fn) => !ID_ONLY_READ_EXCEPTIONS.has(fn.name))
       .map((fn) => `${fn.name}(${fn.params})`);
 
     expect(
@@ -214,9 +251,14 @@ describe("db helpers enforce ownership", () => {
       .sort();
 
     // These operate on the caller's own user row — the id *is* the owner.
+    // `getSceneById` is also id-only, matching the self-use build: a scene is
+    // either built-in (userId null, readable by everyone) or owned by a user,
+    // and the scene router re-checks `isBuiltin || userId === ctx.user.id`
+    // before returning anything. The same check guards chat/service.ts.
     expect(withoutUserId).toEqual([
       "bumpUserTokenVersion",
       "deleteUserAccount",
+      "getSceneById",
       "getUserById",
       "updateUserLastSignedIn",
       "updateUserPassword",
@@ -229,7 +271,6 @@ describe("db helpers enforce ownership", () => {
       "getSkillJobById",
       "deleteScene",
       "activateScene",
-      "getSceneById",
       "getFilesByPersonaId",
       "getMessagesByPersonaId",
       "getMemoriesByPersonaId",
@@ -354,5 +395,117 @@ describe("a user cannot reach another user's data", () => {
     const result = await callerA.persona.delete({ id: 5 });
     expect(result).toEqual({ success: true });
     expect(store.personas.some((p) => p.id === 5)).toBe(false);
+  });
+});
+
+// ─── Scene isolation ──────────────────────────────────────────────────────
+
+/**
+ * 场景读取在数据层只按 id 返回，所以归属校验必须在路由层，且必须有测试守住。
+ *
+ * 这里给 B 用户自己的分身，目的是让 activate 通过“分身属于本人”这一关，
+ * 真正走到场景归属判断：越权的场景必须 NOT_FOUND，而不是被别的检查顺带挡住。
+ */
+describe("a user cannot reach another user's scenes", () => {
+  beforeEach(() => {
+    store.scenes = [
+      { id: 3, userId: 1, name: "A 的场景", isBuiltin: false },
+      { id: 4, userId: null, name: "内置场景", isBuiltin: true },
+    ];
+    store.personas = [
+      { id: 5, userId: 1, name: "A 的分身" },
+      { id: 6, userId: 2, name: "B 的分身" },
+    ];
+    vi.clearAllMocks();
+  });
+
+  it("hides another user's scene from detail", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.detail({ id: 3, personaId: 6 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("lets any user read a built-in scene", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    const detail = await callerB.scene.detail({ id: 4, personaId: 6 });
+    expect(detail.scene.id).toBe(4);
+    // 4A 的占位：真实记忆快照由 4B 接管，键名与自用版一致。
+    expect(detail.memory).toMatchObject({ stateId: null, storyState: null, cache: null });
+  });
+
+  it("refuses to update another user's scene", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.update({ id: 3, name: "被改掉的场景" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(store.scenes.find((s) => s.id === 3)?.name).toBe("A 的场景");
+  });
+
+  it("lets the owner update their own scene", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+    const updated = await callerA.scene.update({ id: 3, name: "我改的场景" });
+    expect(updated.name).toBe("我改的场景");
+  });
+
+  it("refuses to activate another user's scene on the caller's own persona", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.activate({ personaId: 6, sceneId: 3 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses to copy another user's scene", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.copy({ sceneId: 3 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses to delete another user's scene", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(callerB.scene.delete({ id: 3 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(store.scenes.some((s) => s.id === 3)).toBe(true);
+  });
+
+  // 第 4 批 4B：场景记忆/历史/上下文端点必须和 detail/update 一样先校验归属。
+  it("refuses to read another user's scene chat history", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.getChatHistory({ sceneId: 3, personaId: 6 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses to change another user's scene context inclusion", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.setContextInclusion({ sceneId: 3, personaId: 6, messageIds: [1], included: true }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      callerB.scene.setAllContextInclusion({ sceneId: 3, personaId: 6, included: false }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses to edit another user's scene memory", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.updateMemory({ sceneId: 3, personaId: 6, summary: "越权摘要" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(mutateSceneMemoryState).not.toHaveBeenCalled();
+  });
+
+  it("refuses to clear another user's scene memory", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.clearMemory({ sceneId: 3, personaId: 6 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(clearSceneMemoryState).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete another user's scene messages", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.scene.deleteMessages({ sceneId: 3, personaId: 6, messageIds: [1] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

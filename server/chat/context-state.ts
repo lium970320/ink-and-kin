@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
-import { getDb } from '../db';
+import { getDb, startNewPersonaConversationContext } from '../db';
 import { personas, messages, memories, chatSummaries } from '../../drizzle/schema';
 import { chatContextStates as states, chatDeletionBackups as backups } from '../../drizzle/chat-context-schema';
 import { memoryReviewProvenance as provenance } from '../../drizzle/memory-review-schema';
@@ -19,13 +19,20 @@ export async function getContextState(userId:number,personaId:number) {
   const db=await database(userId,personaId);
   return (await db.select().from(states).where(scope(userId,personaId)).limit(1))[0];
 }
+/**
+ * 日常对话的生成窗口。
+ *
+ * 只取 mode='daily' 的消息：场景消息按 sceneId 单独回放（见 db.getSceneConversationMessagesBySceneId），
+ * 二者共用一个会话起点（startAfterMessageId）但绝不互相进入对方的上下文——
+ * 这是「场景消息不进日常对话上下文」的落点，也是场景 A/B 不串的前提。
+ */
 export async function getContextHistory(userId:number,personaId:number,limit=200) {
   const db=await database(userId,personaId);
   return db.transaction(async tx=>{
     const state=(await tx.select().from(states).where(scope(userId,personaId)).for('share'))[0];
     // Filter before the limit so excluded rows do not consume the context window.
     const included=sql`COALESCE((${JSON.stringify(state.overrides)}::jsonb ->> ${messages.id}::text)::boolean, ${messages.id} > ${state.startAfterMessageId})`;
-    const rows=await tx.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId),included)).orderBy(desc(messages.id)).limit(limit);
+    const rows=await tx.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId),eq(messages.mode,'daily'),included)).orderBy(desc(messages.id)).limit(limit);
     return {state,history:rows.reverse()};
   });
 }
@@ -37,20 +44,30 @@ export async function withContextRevision<T>(userId:number,personaId:number,revi
     return work(tx);
   });
 }
+/** 日常上下文管理的展示数据；与生成窗口一致，只列 mode='daily' 的消息。 */
 export async function contextOverview(userId:number,personaId:number,limit:number) {
   const db=await database(userId,personaId);const state=await getContextState(userId,personaId);
-  const rows=await db.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId))).orderBy(desc(messages.id)).limit(limit);
+  const rows=await db.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId),eq(messages.mode,'daily'))).orderBy(desc(messages.id)).limit(limit);
   return {...state,messages:rows.map(row=>({...row,contextOverride:state.overrides[String(row.id)]??null,effectiveInContext:isIncluded(state,row.id)}))};
 }
 export async function changeContext(userId:number,personaId:number,action:'start'|'restore'|'include'|'delete'|'clear',input:{messageIds?:number[];included?:boolean|null;deleteLinkedMemories?:boolean}={}) {
+  // 「开始新对话」与场景「开始」标记共用同一实现（db.startNewPersonaConversationContext）：
+  // 推进会话起点、清空边界前的手动标记与滚动摘要，场景中保留已确认事实并把剧情回合归零。
+  // revision 与 scene_memory_states.stateId 一起让切换/清空之前启动的迟到的生成与摘要失效。
+  if (action === 'start') {
+    const startAfterMessageId = await startNewPersonaConversationContext(personaId, userId);
+    const state = await getContextState(userId, personaId);
+    return { updated: 0, deletedMessages: 0, deletedMemories: 0, backupId: null, startAfterMessageId, revision: state.revision };
+  }
   const db=await database(userId,personaId);
   return db.transaction(async tx=>{
     const state=(await tx.select().from(states).where(scope(userId,personaId)).for('update'))[0];
     const ids=Array.from(new Set(input.messageIds??[]));
-    const rows=await tx.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId),action==='clear'?undefined:ids.length?inArray(messages.id,ids):eq(messages.id,-1))).orderBy(messages.id).for('update');
+    // 日常上下文管理只作用于 mode='daily'：场景消息有独立的场景面板与删除备份路径，
+    // 从这里删除/清空不会波及场景剧情记录。
+    const rows=await tx.select().from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId),eq(messages.mode,'daily'),action==='clear'?undefined:ids.length?inArray(messages.id,ids):eq(messages.id,-1))).orderBy(messages.id).for('update');
     if(ids.length!==rows.length&&action!=='clear') throw new TRPCError({code:'NOT_FOUND',message:'部分消息不存在或不属于当前角色。'});
     let start=state.startAfterMessageId;let overrides={...state.overrides};let deletedMemories=0;let backupId:number|null=null;
-    if(action==='start') { const latest=await tx.select({id:messages.id}).from(messages).where(and(eq(messages.userId,userId),eq(messages.personaId,personaId))).orderBy(desc(messages.id)).limit(1);start=latest[0]?.id??0;overrides={}; }
     if(action==='restore'||action==='clear') {start=0;overrides={};}
     if(action==='include') for(const id of ids){ if(input.included==null)delete overrides[String(id)];else overrides[String(id)]=input.included; }
     if((action==='delete'||action==='clear')&&rows.length){

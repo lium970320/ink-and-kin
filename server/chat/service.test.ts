@@ -25,6 +25,10 @@ const createSafetyEvent = vi.fn();
 const getLastMessageAt = vi.fn();
 const getMessageCountSince = vi.fn();
 const getDailyChatCounts = vi.fn();
+const getSceneMemoryStateSnapshot = vi.fn();
+const getSceneConversationMessagesBySceneId = vi.fn();
+const recordSceneMemoryTurn = vi.fn();
+const startNewPersonaConversationContext = vi.fn();
 
 vi.mock("../db", () => ({
   createMessage: (...a: unknown[]) => createMessage(...a),
@@ -39,6 +43,10 @@ vi.mock("../db", () => ({
   getMemoriesByPersonaId: (...a: unknown[]) => getMemoriesByPersonaId(...a),
   getFilesByPersonaId: (...a: unknown[]) => getFilesByPersonaId(...a),
   getSceneById: (...a: unknown[]) => getSceneById(...a),
+  getSceneMemoryStateSnapshot: (...a: unknown[]) => getSceneMemoryStateSnapshot(...a),
+  getSceneConversationMessagesBySceneId: (...a: unknown[]) => getSceneConversationMessagesBySceneId(...a),
+  recordSceneMemoryTurn: (...a: unknown[]) => recordSceneMemoryTurn(...a),
+  startNewPersonaConversationContext: (...a: unknown[]) => startNewPersonaConversationContext(...a),
   getLatestChatSummary: (...a: unknown[]) => getLatestChatSummary(...a),
   createChatSummary: (...a: unknown[]) => createChatSummary(...a),
   getRecentEmotionTrend: (...a: unknown[]) => getRecentEmotionTrend(...a),
@@ -124,6 +132,8 @@ describe("runConversation", () => {
       createGraduationAssessment, getMessagesSince, touchMemoryRecalled, createSafetyEvent,
       getLastMessageAt, getMessageCountSince, getDailyChatCounts, invoke, invokeWithProvider,
       streamWithProvider, resolveProviderForUser, inferEmotionalState,
+      getSceneMemoryStateSnapshot, getSceneConversationMessagesBySceneId,
+      recordSceneMemoryTurn, startNewPersonaConversationContext,
     ]) {
       fn.mockReset();
     }
@@ -138,6 +148,10 @@ describe("runConversation", () => {
     getMemoriesByPersonaId.mockResolvedValue([]);
     getFilesByPersonaId.mockResolvedValue([]);
     getSceneById.mockResolvedValue(null);
+    getSceneMemoryStateSnapshot.mockResolvedValue({ stateId: null, storyState: null, cache: null });
+    getSceneConversationMessagesBySceneId.mockResolvedValue([]);
+    recordSceneMemoryTurn.mockResolvedValue(0);
+    startNewPersonaConversationContext.mockResolvedValue(0);
     getLatestChatSummary.mockResolvedValue(undefined);
     getRecentEmotionTrend.mockResolvedValue([]);
     getMessageCountInRange.mockResolvedValue(0);
@@ -458,6 +472,116 @@ describe("runConversation", () => {
 
     expect(createGraduationAssessment).not.toHaveBeenCalled();
   });
+
+  // ─── 场景模式（第 4 批 4B）───────────────────────────────────────────────
+
+  it("scene mode replays only the active scene and records the scene turn", async () => {
+    getSceneById.mockResolvedValue({
+      id: 7,
+      userId: 1,
+      isBuiltin: false,
+      name: "山寺夜宿",
+      description: "两人傍晚避雨来到山寺。",
+      systemPromptOverlay: "钟楼不可随意进入。",
+      contextSeed: "上次已经见过主持。",
+      continuationEnabled: true,
+      personaIdentityOverride: "你是借宿的琴师。",
+      userIdentityOverride: null,
+    });
+    getSceneConversationMessagesBySceneId.mockResolvedValue([
+      {
+        id: 11, personaId: 1, userId: 1, role: "user", content: "场景里甲",
+        messageType: "text", mediaUrl: null, sceneId: 7, contextOverride: null,
+        mode: "scene", createdAt: new Date("2026-01-15T11:00:00Z"),
+      },
+      {
+        id: 12, personaId: 1, userId: 1, role: "assistant", content: "场景里乙",
+        messageType: "text", mediaUrl: null, sceneId: 7, contextOverride: null,
+        mode: "scene", createdAt: new Date("2026-01-15T11:01:00Z"),
+      },
+      // 真实库里本轮用户消息先落库再组装提示词，所以历史里包含它（id=101）。
+      {
+        id: 101, personaId: 1, userId: 1, role: "user", content: "继续往里走",
+        messageType: "text", mediaUrl: null, sceneId: 7, contextOverride: null,
+        mode: "scene", createdAt: new Date("2026-01-15T11:02:00Z"),
+      },
+    ]);
+    getSceneMemoryStateSnapshot.mockResolvedValue({
+      stateId: 1,
+      storyState: {
+        sceneKey: "scene:7", turn: 2,
+        startedAt: "2026-01-15T10:00:00.000Z", updatedAt: "2026-01-15T11:01:00.000Z",
+        lastMessageId: 12, lastExitAt: null,
+      },
+      cache: {
+        version: 1, summary: "他们已进入山寺", openThreads: [],
+        pinnedFacts: [{ id: "f1", fact: "小岚怕黑", source: "user" }],
+        recentMessageIds: [11, 12], updatedAt: "2026-01-15T11:01:00.000Z",
+      },
+    });
+    createMessage.mockReset();
+    createMessage.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
+
+    for await (const _ of runConversation({
+      persona: persona({ activeSceneId: 7 }),
+      userId: 1,
+      message: "继续往里走",
+      mode: "once",
+    })) {
+      // drain
+    }
+
+    expect(getSceneConversationMessagesBySceneId).toHaveBeenCalledWith(1, 1, 7, 200);
+    expect(createMessage.mock.calls[0][0].sceneId).toBe(7);
+    expect(createMessage.mock.calls[1][0].sceneId).toBe(7);
+    expect(recordSceneMemoryTurn).toHaveBeenCalledWith(1, 1, 7, "scene:7", [101, 102]);
+    const sent = invokeWithProvider.mock.calls[0][1].messages as Array<{ role: string; content: unknown }>;
+    const system = String(sent[0].content);
+    expect(system).toContain("场景名称：山寺夜宿");
+    expect(system).toContain("前情提要：他们已进入山寺");
+    expect(system).toContain("场景内已确认事实：小岚怕黑");
+    expect(system).toContain("第 3 个回复回合");
+    expect(String(sent[sent.length - 1].content)).toContain("本轮场景导演输入");
+    expect(sent.some((m) => typeof m.content === "string" && m.content.includes("场景里甲"))).toBe(true);
+  });
+
+  it("the scene start marker opens a new story segment before storing the turn", async () => {
+    getSceneById.mockResolvedValue({
+      id: 7, userId: 1, isBuiltin: false, name: "山寺夜宿", description: null,
+      systemPromptOverlay: null, contextSeed: null, continuationEnabled: true,
+      personaIdentityOverride: null, userIdentityOverride: null,
+    });
+    getSceneConversationMessagesBySceneId.mockResolvedValue([]);
+
+    for await (const _ of runConversation({
+      persona: persona({ activeSceneId: 7 }),
+      userId: 1,
+      message: "【开始】我们到了山门",
+      mode: "once",
+    })) {
+      // drain
+    }
+
+    expect(startNewPersonaConversationContext).toHaveBeenCalledWith(1, 1);
+    expect(createMessage.mock.calls[0][0].content).toContain("【开始】");
+    expect(createMessage.mock.calls[0][0].sceneId).toBe(7);
+  });
+
+  it("daily conversations never read or write scene tables", async () => {
+    for await (const _ of runConversation({
+      persona: persona(),
+      userId: 1,
+      message: "你好",
+      mode: "once",
+    })) {
+      // drain
+    }
+
+    expect(getSceneConversationMessagesBySceneId).not.toHaveBeenCalled();
+    expect(recordSceneMemoryTurn).not.toHaveBeenCalled();
+    expect(getSceneMemoryStateSnapshot).not.toHaveBeenCalled();
+    expect(createMessage.mock.calls.every((call) => call[0].sceneId == null)).toBe(true);
+  });
 });
 
 describe("composeMessages", () => {
@@ -467,6 +591,8 @@ describe("composeMessages", () => {
     getMemoriesByPersonaId.mockResolvedValue([]);
     getFilesByPersonaId.mockResolvedValue([]);
     getSceneById.mockResolvedValue(null);
+    getSceneMemoryStateSnapshot.mockResolvedValue({ stateId: null, storyState: null, cache: null });
+    getSceneConversationMessagesBySceneId.mockResolvedValue([]);
     getLatestChatSummary.mockResolvedValue(undefined);
     touchMemoryRecalled.mockResolvedValue(undefined);
   });

@@ -24,6 +24,16 @@ import { buildCrisisResponse, buildGentleCheckIn, detectCrisis } from "../safety
 import { evaluateUsage, pickCareNote, type CareNote } from "../safety/usage-monitor";
 import { assessTrajectory, getStoredTrajectory } from "../safety/trajectory";
 import { checkGraduationEligibility } from "../_core/persona-utils";
+import { buildSceneMemoryInstruction } from "../social/scene-memory";
+import {
+  buildSceneIdentityOverrideInstruction,
+  buildSceneStorySystemInstruction,
+  buildSceneStoryUserDirectionInstruction,
+  formatScenePromptOverlay,
+  getSceneIdentityOverrides,
+  isSceneStoryStartMarker,
+} from "../social/scene-story";
+import { refreshSceneMemoryAndFacts, SCENE_MEMORY_SUMMARY_INTERVAL_TURNS } from "../social/scene-memory-service";
 
 export type ChatMode = "stream" | "once";
 
@@ -187,14 +197,30 @@ export async function composeMessages(params: {
   now?: Date;
   extraConfig?: Record<string, any>;
   signal?: AbortSignal;
+  /** 本轮用户消息 id：场景模式下，导演指令只追加在这一条用户消息上。 */
+  userMessageId?: number;
 }): Promise<LLMMessage[]> {
   const now = params.now ?? new Date();
   const contextLimit = Math.max(4, params.contextLimit);
-  const { history, state } = await getContextHistory(params.userId, params.persona.id, 200);
+  const contextState = await getContextState(params.userId, params.persona.id);
 
-  const scene = params.persona.activeSceneId
-    ? await db.getSceneById(params.persona.activeSceneId, params.userId)
+  const sceneRow = params.persona.activeSceneId
+    ? await db.getSceneById(params.persona.activeSceneId)
     : null;
+  // activeSceneId 只在激活时校验过归属；这里再兜一次，避免历史脏数据把
+  // 别人的 systemPromptOverlay 注入本用户的对话。
+  const scene = sceneRow && (sceneRow.isBuiltin || sceneRow.userId === params.userId) ? sceneRow : null;
+  const activeSceneId = scene?.id ?? null;
+
+  // 场景模式按场景精确回放：只取当前场景的消息，绝不混入日常或别的场景（A/B 不串）。
+  const sceneMemory = activeSceneId !== null
+    ? await db.getSceneMemoryStateSnapshot(params.persona.id, params.userId, activeSceneId)
+    : null;
+  const sceneTurn = sceneMemory?.storyState?.turn ?? 0;
+  const history = activeSceneId !== null
+    ? (await db.getSceneConversationMessagesBySceneId(params.persona.id, params.userId, activeSceneId, 200))
+      .filter(message => message.sceneId === activeSceneId || message.id === params.userMessageId)
+    : (await getContextHistory(params.userId, params.persona.id, 200)).history;
 
   const retrieved = await retrieveMemories({
     personaId: params.persona.id,
@@ -206,19 +232,33 @@ export async function composeMessages(params: {
   const anchors = retrieved.filter((m) => m.category === "anchor");
   const ordinary = retrieved.filter((m) => m.category !== "anchor");
 
-  const summarySection = await maybeCompactHistory({
-    persona: params.persona,
-    userId: params.userId,
-    history: history as any,
-    keepCount: contextLimit - 1,
-    contextRevision: state.revision,
-    providerName: params.providerName,
-    signal: params.signal,
-    now,
-  });
+  // 日常对话才有滚动摘要；场景剧情由 scene_memory_states 的摘要/事实承接，
+  // 场景回合不推进日常摘要，日常摘要也不会被写进场景提示词。
+  const summarySection = activeSceneId === null
+    ? await maybeCompactHistory({
+      persona: params.persona,
+      userId: params.userId,
+      history: history as any,
+      keepCount: contextLimit - 1,
+      contextRevision: contextState.revision,
+      providerName: params.providerName,
+      signal: params.signal,
+      now,
+    })
+    : "";
+
+  // 场景模式的三段注入（顺序与自用版 persona-text-chat 一致）：
+  // 故事线 → 场景记忆缓存 → 场景身份覆盖。
+  const scenePromptSections = activeSceneId !== null && scene
+    ? [
+      buildSceneStorySystemInstruction({ turn: sceneTurn }),
+      buildSceneMemoryInstruction({ turn: sceneTurn, cache: sceneMemory?.cache ?? null }),
+      buildSceneIdentityOverrideInstruction(getSceneIdentityOverrides(scene)),
+    ].filter(Boolean)
+    : [];
 
   const systemPrompt = buildSystemPrompt(params.persona, {
-    sceneOverlay: scene?.systemPromptOverlay ?? null,
+    sceneOverlay: scene ? formatScenePromptOverlay(scene) : null,
     memorySection: formatMemoriesForPrompt(ordinary),
     anchorSection: formatAnchorsForPrompt(anchors),
     summarySection: summarySection ? `【以往对话摘要】\n${summarySection}` : "",
@@ -227,16 +267,32 @@ export async function composeMessages(params: {
     now,
   });
 
-  const recent = history.slice(-(contextLimit - 1)).map((m) => toLLMMessage(m));
+  // 当前轮导演指令：把用户这条消息作为当前场景的最高优先推进指令。
+  const sceneDirectionInstruction = activeSceneId !== null && params.userMessageId !== undefined
+    ? buildSceneStoryUserDirectionInstruction({ text: params.userMessage, turn: sceneTurn })
+    : "";
 
-  const sourceContext = await sourceLibraryService.context(params.userId, params.persona.id, params.userMessage,
-    history.filter(m => m.role === "user").slice(0, -1).map(m => m.content));
+  const recent = history.slice(-(contextLimit - 1)).map((m) => {
+    const message = toLLMMessage(m);
+    if (sceneDirectionInstruction && m.id === params.userMessageId && typeof message.content === "string") {
+      return { ...message, content: message.content + "\n\n" + sceneDirectionInstruction };
+    }
+    return message;
+  });
+
+  // 场景是虚构剧情、不是原著考据：自用版同样在沉浸态跳过 source recall，
+  // 否则考据改写会删掉场景里的【】旁白。
+  const sourceContext = activeSceneId !== null
+    ? null
+    : await sourceLibraryService.context(params.userId, params.persona.id, params.userMessage,
+      history.filter(m => m.role === "user").slice(0, -1).map(m => m.content));
   if (sourceContext) {
     const evidence: LLMMessage = { role: "user", content: sourceContext.evidence };
     recent.splice(Math.max(0, recent.length - 1), 0, evidence);
   }
-  await withContextRevision(params.userId, params.persona.id, state.revision, async () => undefined);
-  return [{ role: "system", content: systemPrompt + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
+  await withContextRevision(params.userId, params.persona.id, contextState.revision, async () => undefined);
+  const sceneHeader = scenePromptSections.length > 0 ? "\n\n" + scenePromptSections.join("\n\n") : "";
+  return [{ role: "system", content: systemPrompt + sceneHeader + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
 }
 
 /**
@@ -253,6 +309,21 @@ export async function* runConversation(
   const { persona, userId, message } = options;
   const now = options.now ?? new Date();
   const locale = options.locale ?? "zh";
+
+  // 场景模式：入口就是 persona.activeSceneId（不额外加入参）。归属再兜一次，
+  // 避免历史脏数据把别人的场景当成本人的场景。
+  const sceneRow = persona.activeSceneId
+    ? await db.getSceneById(persona.activeSceneId)
+    : null;
+  const activeScene = sceneRow && (sceneRow.isBuiltin || sceneRow.userId === userId) ? sceneRow : null;
+  const activeSceneId = activeScene?.id ?? null;
+  // 【开始】是用户主动声明的新故事边界：先把会话起点推到当前最新消息，
+  // 清空该场景的摘要/待续线索（保留已确认事实）并让在途旧任务失效，
+  // 再保存这条标记消息，确保本轮仍能被模型看到（与自用版一致）。
+  if (activeScene && isSceneStoryStartMarker(message)) {
+    await db.startNewPersonaConversationContext(persona.id, userId);
+  }
+
   const generationRevision = (await getContextState(userId, persona.id)).revision;
 
   const defaultConfig = await db.getDefaultLlmConfig(userId);
@@ -265,8 +336,10 @@ export async function* runConversation(
   const lastActivityAt = (await db.getLastMessageAt(persona.id, userId)) ?? null;
 
   // The user's turn is stored first so the history and any summarisation see it.
+  // 场景消息带 sceneId（db.createMessage 据此把 mode 记为 scene），日常消息不带。
+  let userMessageId: number | null = null;
   if (!options.alreadyPersisted) {
-    await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
+    userMessageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
       personaId: persona.id,
       userId,
       role: "user",
@@ -275,6 +348,7 @@ export async function* runConversation(
       channel: options.channel ?? "web",
       messageType: options.media?.type ?? "text",
       mediaUrl: options.media?.url ?? null,
+      sceneId: activeSceneId,
     }));
   }
 
@@ -289,6 +363,7 @@ export async function* runConversation(
       content: replyText,
       emotionalState: persona.emotionalState,
       channel: options.channel ?? "web",
+      sceneId: activeSceneId,
     }));
     await db.createSafetyEvent({
       userId,
@@ -324,6 +399,7 @@ export async function* runConversation(
     now,
     extraConfig,
     signal: options.signal,
+    userMessageId: userMessageId ?? undefined,
   });
   options.signal?.throwIfAborted();
 
@@ -416,7 +492,34 @@ export async function* runConversation(
     content: finalText,
     emotionalState: persona.emotionalState,
     channel: options.channel ?? "web",
+    sceneId: activeSceneId,
   }));
+
+  // 场景回合簿记：推进剧情进度、记录本轮消息，并按固定间隔异步刷新场景摘要/事实。
+  // 切换/清空场景会提升 revision，迟到的写入在这里被拒绝（与日常上下文同一语义）。
+  if (activeSceneId !== null && activeScene) {
+    try {
+      const turn = await withContextRevision(userId, persona.id, generationRevision, async () =>
+        db.recordSceneMemoryTurn(
+          persona.id,
+          userId,
+          activeSceneId,
+          "scene:" + activeSceneId,
+          [userMessageId, messageId].filter((id): id is number => typeof id === "number"),
+        ));
+      if (turn > 0 && turn % SCENE_MEMORY_SUMMARY_INTERVAL_TURNS === 0) {
+        void refreshSceneMemoryAndFacts({
+          userId,
+          personaId: persona.id,
+          sceneId: activeSceneId,
+          sceneName: activeScene.name,
+          sceneDescription: activeScene.description,
+        });
+      }
+    } catch (e) {
+      console.warn("[Chat] Scene memory turn failed:", (e as Error).message);
+    }
+  }
 
   const emotion = failed ? { state: persona.emotionalState, source: "heuristic" as const, reason: undefined } : await inferEmotionalState({
     userMessage: message,
