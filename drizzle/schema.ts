@@ -129,6 +129,88 @@ export const messages = pgTable("messages", {
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = typeof messages.$inferInsert;
 
+// ─── Roleplay channels ──────────────────────────────────────────────────────
+
+/**
+ * 角色生活频道：两到多个「人物」在同一个情景里共同生活、轮流发言。
+ *
+ * 与一对一聊天（personas/messages）分开存放：频道有自己的成员表与消息表，
+ * 消息不进入日常对话上下文；频道删除时消息与成员由外键级联清理。
+ */
+export const roleplayChannels = pgTable("roleplay_channels", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 100 }).notNull(),
+  description: text("description"),
+  scenePrompt: text("scenePrompt"),
+  isActive: boolean("isActive").default(true).notNull(),
+  /** 频道来源：channel=角色生活频道，duet=对戏专用频道（两者共用同一条生成链路但列表隔离）。 */
+  channelKind: varchar("channelKind", { length: 16 }).default("channel").notNull(),
+  /** 每轮发言后的运行诊断快照（最近一轮时间/节奏导演反思/风险提示），由 5B 生成侧写入。 */
+  runtimeDiagnostics: jsonb("runtimeDiagnostics"),
+  /** 剧本导演线（arc）：模型生成的接下来几拍计划，可被用户引导改写，由 5B 生成侧写入。 */
+  directorState: jsonb("directorState"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+}, table => ({
+  channelUser: index("roleplay_channels_user_idx").on(table.userId),
+}));
+
+export type RoleplayChannel = typeof roleplayChannels.$inferSelect;
+export type InsertRoleplayChannel = typeof roleplayChannels.$inferInsert;
+
+/**
+ * 频道成员：一个频道里参与生活的人物，按 displayOrder 决定默认发言顺序。
+ *
+ * 同一个人物在同一频道只允许出现一次（唯一索引）；lastReadMessageId 是生成侧
+ * 记录各人物读到哪一拍的游标。
+ */
+export const roleplayChannelMembers = pgTable("roleplay_channel_members", {
+  id: serial("id").primaryKey(),
+  channelId: integer("channelId").notNull().references(() => roleplayChannels.id, { onDelete: "cascade" }),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  personaId: integer("personaId").notNull().references(() => personas.id, { onDelete: "cascade" }),
+  displayOrder: integer("displayOrder").default(0).notNull(),
+  speakingEnabled: boolean("speakingEnabled").default(true).notNull(),
+  lastReadMessageId: integer("lastReadMessageId").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => ({
+  memberChannel: index("roleplay_members_channel_idx").on(table.channelId, table.displayOrder),
+  memberChannelPersona: uniqueIndex("roleplay_members_channel_persona_idx").on(table.channelId, table.personaId),
+}));
+
+export type RoleplayChannelMember = typeof roleplayChannelMembers.$inferSelect;
+export type InsertRoleplayChannelMember = typeof roleplayChannelMembers.$inferInsert;
+
+/**
+ * 频道消息：role=user 为用户旁白/插话，role=persona 为人物发言。
+ *
+ * contextOverride 记录用户对该条消息是否进入模型上下文的强制选择
+ * （auto=跟随会话边界，included=强制加入，excluded=强制排除）；
+ * mode 是频道消息的显式模式标记，默认 channel。
+ */
+export const roleplayMessages = pgTable("roleplay_messages", {
+  id: serial("id").primaryKey(),
+  channelId: integer("channelId").notNull().references(() => roleplayChannels.id, { onDelete: "cascade" }),
+  userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  personaId: integer("personaId").references(() => personas.id, { onDelete: "cascade" }),
+  speakerName: varchar("speakerName", { length: 100 }).notNull(),
+  role: varchar("role", { length: 32 }).default("persona").notNull(),
+  content: text("content").notNull(),
+  innerThought: text("innerThought"),
+  moodState: jsonb("moodState"),
+  contextOverride: varchar("contextOverride", { length: 16 }).default("auto"),
+  turnKind: varchar("turnKind", { length: 50 }).default("dialogue").notNull(),
+  mode: varchar("mode", { length: 16 }).default("channel").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => ({
+  messageChannel: index("roleplay_messages_channel_idx").on(table.channelId, table.id),
+  messageMode: index("roleplay_messages_mode_idx").on(table.mode),
+}));
+
+export type RoleplayMessage = typeof roleplayMessages.$inferSelect;
+export type InsertRoleplayMessage = typeof roleplayMessages.$inferInsert;
+
 export const wechatBindings = pgTable("wechat_bindings", {
   id: serial("id").primaryKey(),
   personaId: integer("personaId").notNull(),

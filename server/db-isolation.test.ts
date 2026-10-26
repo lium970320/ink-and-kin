@@ -10,7 +10,54 @@ import path from "path";
  * makes the cross-user assertions meaningful — the router is exercised
  * end-to-end, and the filter is simulated rather than assumed.
  */
-const store = {
+interface RoleplayChannelRow {
+  id: number;
+  userId: number;
+  name: string;
+  description: string | null;
+  scenePrompt: string | null;
+  isActive: boolean;
+  channelKind: string;
+  runtimeDiagnostics: unknown;
+  directorState: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface RoleplayMemberRow {
+  id: number;
+  channelId: number;
+  userId: number;
+  personaId: number;
+  displayOrder: number;
+  speakingEnabled: boolean;
+  lastReadMessageId: number;
+}
+
+interface RoleplayMessageRow {
+  id: number;
+  channelId: number;
+  userId: number;
+  personaId: number | null;
+  speakerName: string;
+  role: string;
+  content: string;
+  innerThought: string | null;
+  moodState: unknown;
+  contextOverride: string | null;
+  turnKind: string;
+  mode: string;
+  createdAt: Date;
+}
+
+const store: {
+  skillJobs: Array<{ id: number; userId: number; personaId: number; pipelineStage: string; analysisResult: unknown }>;
+  scenes: Array<{ id: number; userId: number | null; name: string; isBuiltin: boolean }>;
+  personas: Array<{ id: number; userId: number; name: string; analysisStatus?: string }>;
+  roleplayChannels: RoleplayChannelRow[];
+  roleplayMembers: RoleplayMemberRow[];
+  roleplayMessages: RoleplayMessageRow[];
+} = {
   skillJobs: [
     { id: 7, userId: 1, personaId: 5, pipelineStage: "complete", analysisResult: { private: "A's data" } },
   ],
@@ -19,9 +66,37 @@ const store = {
     { id: 4, userId: null, name: "内置场景", isBuiltin: true },
   ],
   personas: [
-    { id: 5, userId: 1, name: "A 的分身" },
+    { id: 5, userId: 1, name: "A 的分身", analysisStatus: "ready" },
   ],
+  roleplayChannels: [],
+  roleplayMembers: [],
+  roleplayMessages: [],
 };
+
+function roleplayMembersView(channelId: number) {
+  return store.roleplayMembers
+    .filter((row) => row.channelId === channelId)
+    .map((row) => {
+      const persona = store.personas.find((item) => item.id === row.personaId);
+      return {
+        id: row.id,
+        channelId: row.channelId,
+        personaId: row.personaId,
+        displayOrder: row.displayOrder,
+        speakingEnabled: row.speakingEnabled,
+        lastReadMessageId: row.lastReadMessageId,
+        personaName: persona?.name ?? "",
+        avatarUrl: null,
+        emotionalState: "warm",
+        analysisStatus: persona?.analysisStatus ?? "ready",
+      };
+    })
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id);
+}
+
+let roleplayChannelSeq = 0;
+let roleplayMemberSeq = 0;
+let roleplayMessageSeq = 0;
 
 const getSkillJobById = vi.fn(async (id: number, userId: number) =>
   store.skillJobs.find((row) => row.id === id && row.userId === userId),
@@ -62,6 +137,166 @@ const deletePersona = vi.fn(async (id: number, userId: number) => {
 // 场景记忆写入口：跨用户用例断言它们完全没被调用。
 const mutateSceneMemoryState = vi.fn();
 const clearSceneMemoryState = vi.fn();
+
+// ─── 角色频道：内存实现（模拟 SQL 的 (channelId, userId) 谓词） ───────────────
+const getRoleplayChannels = vi.fn(async (userId: number) =>
+  store.roleplayChannels
+    .filter((row) => row.userId === userId)
+    .map((row) => ({ ...row, members: roleplayMembersView(row.id) })),
+);
+const getRoleplayChannelById = vi.fn(async (channelId: number, userId: number) => {
+  const channel = store.roleplayChannels.find((row) => row.id === channelId && row.userId === userId);
+  if (!channel) return undefined;
+  return { ...channel, members: roleplayMembersView(channel.id) };
+});
+const createRoleplayChannel = vi.fn(async (
+  data: Omit<RoleplayChannelRow, "id" | "createdAt" | "updatedAt">,
+  memberPersonaIds: number[],
+) => {
+  roleplayChannelSeq += 1;
+  const id = 200 + roleplayChannelSeq;
+  const now = new Date();
+  store.roleplayChannels.push({ id, ...data, createdAt: now, updatedAt: now });
+  memberPersonaIds.forEach((personaId, index) => {
+    roleplayMemberSeq += 1;
+    store.roleplayMembers.push({
+      id: roleplayMemberSeq,
+      channelId: id,
+      userId: data.userId,
+      personaId,
+      displayOrder: index,
+      speakingEnabled: true,
+      lastReadMessageId: 0,
+    });
+  });
+  return id;
+});
+const updateRoleplayChannel = vi.fn(async (
+  channelId: number,
+  userId: number,
+  data: Partial<RoleplayChannelRow>,
+  memberPersonaIds?: number[],
+) => {
+  const channel = store.roleplayChannels.find((row) => row.id === channelId && row.userId === userId);
+  if (!channel) return;
+  Object.assign(channel, data, { updatedAt: new Date() });
+  if (memberPersonaIds && memberPersonaIds.length >= 2) {
+    store.roleplayMembers = store.roleplayMembers.filter((row) => row.channelId !== channelId);
+    memberPersonaIds.forEach((personaId, index) => {
+      roleplayMemberSeq += 1;
+      store.roleplayMembers.push({
+        id: roleplayMemberSeq,
+        channelId,
+        userId,
+        personaId,
+        displayOrder: index,
+        speakingEnabled: true,
+        lastReadMessageId: 0,
+      });
+    });
+  }
+});
+const deleteRoleplayChannel = vi.fn(async (channelId: number, userId: number) => {
+  store.roleplayChannels = store.roleplayChannels.filter((row) => !(row.id === channelId && row.userId === userId));
+  store.roleplayMembers = store.roleplayMembers.filter((row) => !(row.channelId === channelId && row.userId === userId));
+  store.roleplayMessages = store.roleplayMessages.filter((row) => !(row.channelId === channelId && row.userId === userId));
+});
+const getRoleplayChannelMessages = vi.fn(async (channelId: number, userId: number, limit = 80) =>
+  store.roleplayMessages
+    .filter((row) => row.channelId === channelId && row.userId === userId)
+    .sort((a, b) => a.id - b.id)
+    .slice(-limit),
+);
+const createRoleplayMessage = vi.fn(async (data: Omit<RoleplayMessageRow, "id" | "createdAt">) => {
+  roleplayMessageSeq += 1;
+  const row: RoleplayMessageRow = { id: 500 + roleplayMessageSeq, createdAt: new Date(), ...data };
+  store.roleplayMessages.push(row);
+  return row;
+});
+const getRoleplayChannelStats = vi.fn(async (channelId: number, userId: number) => {
+  const channel = store.roleplayChannels.find((row) => row.id === channelId && row.userId === userId);
+  if (!channel) return null;
+  const messages = store.roleplayMessages.filter((row) => row.channelId === channelId && row.userId === userId);
+  return {
+    totalMessages: messages.length,
+    includedMessages: messages.length,
+    excludedMessages: 0,
+    bySpeaker: [],
+    firstMessageAt: null,
+    lastMessageAt: null,
+    lastMessageSpeaker: null,
+    memory: {
+      scenePromptChars: (channel.scenePrompt ?? "").length,
+      contextSeedPreview: "",
+      includedCount: messages.length,
+      excludedCount: 0,
+      totalCount: messages.length,
+      contextWindowLimit: 6500,
+      currentEstimatedTokens: 0,
+      isolationMode: "test",
+    },
+    llm: {
+      todayCalls: 0,
+      todayTokens: 0,
+      todayInputTokens: 0,
+      todayOutputTokens: 0,
+      totalCalls: 0,
+      totalTokens: 0,
+      avgDurationMs: 0,
+      routes: [],
+    },
+  };
+});
+const setRoleplayMessageContextInclusion = vi.fn(async (
+  channelId: number,
+  userId: number,
+  messageIds: number[],
+  status: "included" | "excluded" | "auto",
+) => {
+  const override = status === "auto" ? null : status;
+  for (const row of store.roleplayMessages) {
+    if (row.channelId === channelId && row.userId === userId && messageIds.includes(row.id)) {
+      row.contextOverride = override;
+    }
+  }
+  return { updated: messageIds.length };
+});
+const setAllRoleplayMessagesContextInclusion = vi.fn(async (
+  channelId: number,
+  userId: number,
+  status: "included" | "excluded" | "auto",
+) => {
+  const override = status === "auto" ? null : status;
+  for (const row of store.roleplayMessages) {
+    if (row.channelId === channelId && row.userId === userId) row.contextOverride = override;
+  }
+  return { updated: 1 };
+});
+const deleteRoleplayMessages = vi.fn(async (channelId: number, userId: number, messageIds: number[]) => {
+  store.roleplayMessages = store.roleplayMessages.filter(
+    (row) => !(row.channelId === channelId && row.userId === userId && messageIds.includes(row.id)),
+  );
+  return { deletedMessages: messageIds.length };
+});
+const updateRoleplayMessageContent = vi.fn(async (
+  channelId: number,
+  userId: number,
+  messageId: number,
+  content: string,
+) => {
+  const row = store.roleplayMessages.find(
+    (item) => item.id === messageId && item.channelId === channelId && item.userId === userId,
+  );
+  if (!row) return null;
+  row.content = content;
+  return { success: true };
+});
+const clearAllRoleplayMessages = vi.fn(async (channelId: number, userId: number) => {
+  store.roleplayMessages = store.roleplayMessages.filter(
+    (row) => !(row.channelId === channelId && row.userId === userId),
+  );
+  return { deletedMessages: 1 };
+});
 
 vi.mock("./db", () => ({
   getSkillJobById: (id: number, userId: number) => getSkillJobById(id, userId),
@@ -153,6 +388,38 @@ vi.mock("./db", () => ({
   clearSceneMessagesContextOverride: vi.fn(),
   setAllSceneMessagesContextOverride: vi.fn(async () => 0),
   startNewPersonaConversationContext: vi.fn(async () => 0),
+  // 第 5 批 5A：角色频道数据层（行为测试按需覆写返回值）。
+  getRoleplayChannels: (userId: number) => getRoleplayChannels(userId),
+  getRoleplayChannelById: (channelId: number, userId: number) => getRoleplayChannelById(channelId, userId),
+  createRoleplayChannel: (data: Parameters<typeof createRoleplayChannel>[0], memberPersonaIds: number[]) =>
+    createRoleplayChannel(data, memberPersonaIds),
+  updateRoleplayChannel: (
+    channelId: number,
+    userId: number,
+    data: Parameters<typeof updateRoleplayChannel>[2],
+    memberPersonaIds?: number[],
+  ) => updateRoleplayChannel(channelId, userId, data, memberPersonaIds),
+  deleteRoleplayChannel: (channelId: number, userId: number) => deleteRoleplayChannel(channelId, userId),
+  getRoleplayChannelMessages: (channelId: number, userId: number, limit?: number) =>
+    getRoleplayChannelMessages(channelId, userId, limit),
+  createRoleplayMessage: (data: Parameters<typeof createRoleplayMessage>[0]) => createRoleplayMessage(data),
+  getRoleplayChannelStats: (channelId: number, userId: number) => getRoleplayChannelStats(channelId, userId),
+  setRoleplayMessageContextInclusion: (
+    channelId: number,
+    userId: number,
+    messageIds: number[],
+    status: "included" | "excluded" | "auto",
+  ) => setRoleplayMessageContextInclusion(channelId, userId, messageIds, status),
+  setAllRoleplayMessagesContextInclusion: (
+    channelId: number,
+    userId: number,
+    status: "included" | "excluded" | "auto",
+  ) => setAllRoleplayMessagesContextInclusion(channelId, userId, status),
+  deleteRoleplayMessages: (channelId: number, userId: number, messageIds: number[]) =>
+    deleteRoleplayMessages(channelId, userId, messageIds),
+  updateRoleplayMessageContent: (channelId: number, userId: number, messageId: number, content: string) =>
+    updateRoleplayMessageContent(channelId, userId, messageId, content),
+  clearAllRoleplayMessages: (channelId: number, userId: number) => clearAllRoleplayMessages(channelId, userId),
 }));
 
 import { appRouter } from "./routers";
@@ -507,5 +774,260 @@ describe("a user cannot reach another user's scenes", () => {
     await expect(
       callerB.scene.deleteMessages({ sceneId: 3, personaId: 6, messageIds: [1] }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+// ─── Roleplay channel isolation ────────────────────────────────────────────
+
+/**
+ * 角色频道的归属校验：频道、成员、消息都按 (channelId, userId) 收窄，
+ * 越权一律 NOT_FOUND（不区分"不存在"与"别人的"，不泄露存在性）。
+ *
+ * 这里给 B 用户自己的分身，确保越权用例不是被"人物不属于本人"顺带挡住的。
+ */
+describe("a user cannot reach another user's roleplay channel", () => {
+  function seedRoleplay() {
+    roleplayChannelSeq = 0;
+    roleplayMemberSeq = 0;
+    roleplayMessageSeq = 0;
+    const now = new Date();
+    store.personas = [
+      { id: 5, userId: 1, name: "A 的分身", analysisStatus: "ready" },
+      { id: 6, userId: 2, name: "B 的分身", analysisStatus: "ready" },
+      { id: 7, userId: 1, name: "A 未就绪", analysisStatus: "pending" },
+      { id: 8, userId: 1, name: "A 的分身二", analysisStatus: "ready" },
+    ];
+    store.roleplayChannels = [
+      {
+        id: 10,
+        userId: 1,
+        name: "A 的频道",
+        description: null,
+        scenePrompt: "古城档案馆",
+        isActive: true,
+        channelKind: "channel",
+        runtimeDiagnostics: { lastTurnAt: "2026-10-26T00:00:00.000Z" },
+        directorState: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 11,
+        userId: 2,
+        name: "B 的频道",
+        description: null,
+        scenePrompt: null,
+        isActive: true,
+        channelKind: "channel",
+        runtimeDiagnostics: null,
+        directorState: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    store.roleplayMembers = [
+      { id: 1, channelId: 10, userId: 1, personaId: 5, displayOrder: 0, speakingEnabled: true, lastReadMessageId: 0 },
+      { id: 2, channelId: 11, userId: 2, personaId: 6, displayOrder: 0, speakingEnabled: true, lastReadMessageId: 0 },
+    ];
+    store.roleplayMessages = [
+      {
+        id: 100,
+        channelId: 10,
+        userId: 1,
+        personaId: 5,
+        speakerName: "A 的分身",
+        role: "persona",
+        content: "第一拍",
+        innerThought: null,
+        moodState: null,
+        contextOverride: "auto",
+        turnKind: "dialogue",
+        mode: "channel",
+        createdAt: now,
+      },
+    ];
+  }
+
+  beforeEach(() => {
+    seedRoleplay();
+    vi.clearAllMocks();
+  });
+
+  it("lists only the caller's own channels", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+    const callerB = appRouter.createCaller(ctxFor(2));
+
+    const own = await callerA.roleplay.list();
+    expect(own.map((channel) => channel.id)).toEqual([10]);
+    // 5B 契约：频道行带 channelKind / runtimeDiagnostics，成员视图带人物资料。
+    expect(own[0].channelKind).toBe("channel");
+    expect(own[0].runtimeDiagnostics).toEqual({ lastTurnAt: "2026-10-26T00:00:00.000Z" });
+    expect(own[0].members[0]).toMatchObject({
+      personaId: 5,
+      personaName: "A 的分身",
+      displayOrder: 0,
+      speakingEnabled: true,
+      lastReadMessageId: 0,
+      analysisStatus: "ready",
+      emotionalState: "warm",
+    });
+
+    const other = await callerB.roleplay.list();
+    expect(other.map((channel) => channel.id)).toEqual([11]);
+    expect(other.some((channel) => channel.id === 10)).toBe(false);
+  });
+
+  it("hides another user's channel from get and returns messages in id order", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+    const callerB = appRouter.createCaller(ctxFor(2));
+
+    await expect(callerB.roleplay.get({ channelId: 10, limit: 120 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const detail = await callerA.roleplay.get({ channelId: 10, limit: 120 });
+    expect(detail.channel.id).toBe(10);
+    expect(detail.messages.map((message) => message.id)).toEqual([100]);
+  });
+
+  it("hides another user's channel stats", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+    const callerB = appRouter.createCaller(ctxFor(2));
+
+    await expect(callerB.roleplay.stats({ channelId: 10 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const stats = await callerA.roleplay.stats({ channelId: 10 });
+    expect(stats.totalMessages).toBe(1);
+  });
+
+  it("refuses to update another user's channel", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.roleplay.update({ channelId: 10, name: "被改掉的频道" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(store.roleplayChannels.find((channel) => channel.id === 10)?.name).toBe("A 的频道");
+
+    const callerA = appRouter.createCaller(ctxFor(1));
+    await expect(
+      callerA.roleplay.update({ channelId: 10, name: "我改的频道" }),
+    ).resolves.toEqual({ success: true });
+    expect(store.roleplayChannels.find((channel) => channel.id === 10)?.name).toBe("我改的频道");
+  });
+
+  it("refuses to add another user's persona as a member", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+    await expect(
+      callerA.roleplay.update({ channelId: 10, memberPersonaIds: [5, 6] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses to post into another user's channel", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    const before = store.roleplayMessages.length;
+    await expect(
+      callerB.roleplay.postUserMessage({ channelId: 10, content: "越权插话" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(store.roleplayMessages.length).toBe(before);
+    expect(createRoleplayMessage).not.toHaveBeenCalled();
+  });
+
+  it("refuses to change another user's message context inclusion", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.roleplay.setContextInclusion({ channelId: 10, messageIds: [100], status: "excluded" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      callerB.roleplay.setAllContextInclusion({ channelId: 10, status: "excluded" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(setRoleplayMessageContextInclusion).not.toHaveBeenCalled();
+    expect(setAllRoleplayMessagesContextInclusion).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete or edit another user's messages", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(
+      callerB.roleplay.deleteMessages({ channelId: 10, messageIds: [100] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      callerB.roleplay.updateMessage({ channelId: 10, messageId: 100, content: "被改的内容" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      callerB.roleplay.clearAllMessages({ channelId: 10 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(deleteRoleplayMessages).not.toHaveBeenCalled();
+    expect(updateRoleplayMessageContent).not.toHaveBeenCalled();
+    expect(clearAllRoleplayMessages).not.toHaveBeenCalled();
+    expect(store.roleplayMessages[0].content).toBe("第一拍");
+  });
+
+  it("refuses to delete another user's channel", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    await expect(callerB.roleplay.delete({ channelId: 10 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(store.roleplayChannels.some((channel) => channel.id === 10)).toBe(true);
+    expect(deleteRoleplayChannel).not.toHaveBeenCalled();
+  });
+
+  it("lets the owner write, edit, clear and delete their own channel", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+
+    const posted = await callerA.roleplay.postUserMessage({ channelId: 10, content: "我来插一句" });
+    expect(posted.message).toMatchObject({ userId: 1, channelId: 10, role: "user", content: "我来插一句" });
+    const created = store.roleplayMessages.find((message) => message.role === "user");
+    expect(created?.personaId).toBeNull();
+    expect(created?.turnKind).toBe("user_note");
+
+    await callerA.roleplay.setContextInclusion({ channelId: 10, messageIds: [100], status: "excluded" });
+    expect(store.roleplayMessages.find((message) => message.id === 100)?.contextOverride).toBe("excluded");
+
+    await callerA.roleplay.updateMessage({ channelId: 10, messageId: 100, content: "改过的第一拍" });
+    expect(store.roleplayMessages.find((message) => message.id === 100)?.content).toBe("改过的第一拍");
+
+    await callerA.roleplay.deleteMessages({ channelId: 10, messageIds: [100] });
+    expect(store.roleplayMessages.some((message) => message.id === 100)).toBe(false);
+
+    await callerA.roleplay.clearAllMessages({ channelId: 10 });
+    expect(store.roleplayMessages).toEqual([]);
+
+    await expect(callerA.roleplay.delete({ channelId: 10 })).resolves.toEqual({ success: true });
+    expect(store.roleplayChannels.some((channel) => channel.id === 10)).toBe(false);
+  });
+
+  it("creates a channel only with the caller's ready personas", async () => {
+    const callerA = appRouter.createCaller(ctxFor(1));
+
+    // 别人的人物、未就绪的人物、去重后不足两人，都必须拒绝。
+    await expect(
+      callerA.roleplay.create({ name: "越权频道", memberPersonaIds: [5, 6] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      callerA.roleplay.create({ name: "未就绪频道", memberPersonaIds: [5, 7] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      callerA.roleplay.create({ name: "单人频道", memberPersonaIds: [5, 5] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(createRoleplayChannel).not.toHaveBeenCalled();
+
+    const { id } = await callerA.roleplay.create({ name: "新频道", memberPersonaIds: [5, 8] });
+    const detail = await callerA.roleplay.get({ channelId: id, limit: 80 });
+    expect(detail.channel.userId).toBe(1);
+    expect(detail.channel.members.map((member) => [member.personaId, member.displayOrder])).toEqual([[5, 0], [8, 1]]);
+    expect(detail.messages).toEqual([]);
+  });
+
+  it("refuses another user's web-advance endpoints and hides advance status", async () => {
+    const callerB = appRouter.createCaller(ctxFor(2));
+    for (const action of [
+      () => callerB.roleplay.startWebAdvance({ channelId: 10, taskId: "client-one:1" }),
+      () => callerB.roleplay.stopAdvance({ channelId: 10, taskId: "client-one:1" }),
+      () => callerB.roleplay.stopAdvance({ channelId: 10 }),
+      () => callerB.roleplay.finishWebAdvance({ channelId: 10, taskId: "client-one:1" }),
+      () => callerB.roleplay.advanceStatus({ channelId: 10 }),
+      () => callerB.roleplay.tick({ channelId: 10 }),
+    ]) {
+      await expect(action()).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    // 带 taskId 的 tick 先看任务表：别人的任务在本用户命名空间下不存在，直接 cancelled 且不生成。
+    await expect(callerB.roleplay.tick({ channelId: 10, taskId: "client-one:1" }))
+      .resolves.toMatchObject({ cancelled: true });
+    // 5B 等价边界：书中人没有 QQ 端服务端推进，归属本人时 advanceStatus 恒为 null。
+    const callerA = appRouter.createCaller(ctxFor(1));
+    await expect(callerA.roleplay.advanceStatus({ channelId: 10 })).resolves.toBeNull();
   });
 });

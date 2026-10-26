@@ -61,6 +61,37 @@ import {
   normalizeSceneMemoryCache,
   removeSceneMemoryMessageIds,
 } from "./social/scene-memory";
+import {
+  getRoleplayChannels,
+  getRoleplayChannelById,
+  createRoleplayChannel,
+  updateRoleplayChannel,
+  deleteRoleplayChannel,
+  getRoleplayChannelMessages,
+  createRoleplayMessage,
+  getRoleplayChannelStats,
+  setRoleplayMessageContextInclusion,
+  setAllRoleplayMessagesContextInclusion,
+  deleteRoleplayMessages,
+  updateRoleplayMessageContent,
+  clearAllRoleplayMessages,
+} from "./db";
+import {
+  WEB_ADVANCE_TASK_ID_PATTERN,
+  WebChannelAdvanceCancelledError,
+  finishWebChannelAdvance,
+  getCurrentWebChannelAdvanceTask,
+  getWebChannelAdvanceTask,
+  reserveWebChannelAdvanceOrder,
+  runWebChannelAdvanceTurn,
+  startWebChannelAdvance,
+  stopWebChannelAdvance,
+} from "./social/web-channel-advance";
+import {
+  RoleplayTurnCancelledError,
+  runRoleplayChannelTurn,
+  type RunRoleplayTurnResult,
+} from "./social/roleplay-channel";
 import { extractSceneConfirmedFacts, refreshSceneMemorySummary } from "./social/scene-memory-service";
 import { deleteChatMessagesWithBackup } from "./chat-history-management";
 import { nanoid } from "nanoid";
@@ -228,6 +259,53 @@ function assertKnownProvider(providerName: string): void {
     code: "BAD_REQUEST",
     message: `未知的 LLM 提供商：${providerName}`,
   });
+}
+
+/**
+ * 校验一组人物都能加入角色频道：必须属于当前用户且分析就绪。
+ *
+ * 与自用版一致：不存在 → NOT_FOUND（不区分"不存在"与"别人的"）；
+ * 未就绪 → BAD_REQUEST，并把人物名字写进提示里方便前端 toast。
+ */
+async function assertRoleplayMembersReady(personaIds: number[], userId: number) {
+  for (const personaId of personaIds) {
+    const persona = await getPersonaById(personaId, userId);
+    if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: `人物 ${personaId} 不存在` });
+    if (persona.analysisStatus !== "ready") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `${persona.name} 还未准备好，不能加入角色频道` });
+    }
+  }
+}
+
+/**
+ * 频道推进状态（进程内）的形状。
+ *
+ * 自用版这里读 QQ 端 `/R` 的服务端推进；书中人第 5 批没有 QQ 服务端推进，
+ * advanceStatus 在归属校验后恒返回 null。保留这个形状是为了让 Roleplay.tsx 的
+ * `advanceStatusQuery.data?.channelId / .running / .continuous...` 仍然可编译。
+ */
+type RoleplayAdvanceStatus = {
+  channelId: number;
+  running: boolean;
+  current: number;
+  total: number;
+  continuous: boolean;
+  lastSpeaker: string | null;
+};
+
+/** tick 被停止/任务失效时的统一返回：标记 cancelled，让前端正常结束而不是报错。 */
+function cancelledRoleplayTurn(channelId: number, personaId?: number): RunRoleplayTurnResult {
+  return {
+    spoken: false,
+    cancelled: true,
+    channelId,
+    personaId: personaId ?? 0,
+    speakerName: "",
+    replyText: "",
+    innerThought: "",
+    emotionalState: "warm",
+    beats: [],
+  };
 }
 
 export const appRouter = router({
@@ -2262,6 +2340,333 @@ export const appRouter = router({
         // 清空记忆后，正在生成/摘要中的旧任务必须失效，不允许把旧内容写回来。
         await bumpChatContextRevision(input.personaId, ctx.user.id);
         return { success: true };
+      }),
+  }),
+
+  /**
+   * 角色频道（第 5 批 5A：数据层与频道/成员/消息端点）。
+   *
+   * 生成类端点（tick / startWebAdvance / finishWebAdvance / stopAdvance /
+   * advanceStatus）由 5B 在本块末尾追加；不要移动本块已有端点。
+   *
+   * 归属校验统一做法：先 getRoleplayChannelById(channelId, ctx.user.id)，
+   * 查不到就 NOT_FOUND——别人的频道与不存在的频道返回同一个错误，不泄露存在性。
+   */
+  roleplay: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return getRoleplayChannels(ctx.user.id);
+    }),
+
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(100),
+        description: z.string().max(1000).optional(),
+        scenePrompt: z.string().max(3000).optional(),
+        memberPersonaIds: z.array(z.number()).min(2).max(8),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const memberPersonaIds = Array.from(new Set(input.memberPersonaIds));
+        if (memberPersonaIds.length < 2) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "角色频道至少需要两个不同人物" });
+        }
+        await assertRoleplayMembersReady(memberPersonaIds, ctx.user.id);
+
+        const id = await createRoleplayChannel({
+          userId: ctx.user.id,
+          name: input.name,
+          description: input.description ?? null,
+          scenePrompt: input.scenePrompt ?? null,
+          isActive: true,
+        }, memberPersonaIds);
+        return { id };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        name: z.string().min(1).max(100).optional(),
+        description: z.string().max(1000).optional(),
+        scenePrompt: z.string().max(3000).optional(),
+        memberPersonaIds: z.array(z.number()).min(2).max(8).optional(),
+        isActive: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const existing = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
+
+        if (input.memberPersonaIds) {
+          const memberPersonaIds = Array.from(new Set(input.memberPersonaIds));
+          if (memberPersonaIds.length < 2) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "角色频道至少需要两个不同人物" });
+          }
+          await assertRoleplayMembersReady(memberPersonaIds, ctx.user.id);
+        }
+
+        await updateRoleplayChannel(
+          input.channelId,
+          ctx.user.id,
+          {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.description !== undefined ? { description: input.description } : {}),
+            ...(input.scenePrompt !== undefined ? { scenePrompt: input.scenePrompt } : {}),
+            ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          },
+          input.memberPersonaIds,
+        );
+        return { success: true };
+      }),
+
+    get: protectedProcedure
+      .input(z.object({ channelId: z.number(), limit: z.number().default(80) }))
+      .query(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        const messages = await getRoleplayChannelMessages(input.channelId, ctx.user.id, input.limit);
+        return { channel, messages };
+      }),
+
+    stats: protectedProcedure
+      .input(z.object({ channelId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        const stats = await getRoleplayChannelStats(input.channelId, ctx.user.id);
+        if (!stats) throw new TRPCError({ code: "NOT_FOUND" });
+        return stats;
+      }),
+
+    /** 用户旁白/插话：落一条 role=user 的消息，不触发角色生成（生成由 tick 推进）。 */
+    postUserMessage: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        content: z.string().min(1).max(4000),
+        speakerName: z.string().max(100).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        const message = await createRoleplayMessage({
+          channelId: input.channelId,
+          userId: ctx.user.id,
+          personaId: null,
+          speakerName: input.speakerName?.trim() || ctx.user.name || ctx.user.username || "用户",
+          role: "user",
+          content: input.content,
+          turnKind: "user_note",
+        });
+        return { message };
+      }),
+
+    setContextInclusion: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        messageIds: z.array(z.number()),
+        status: z.enum(["included", "excluded", "auto"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return setRoleplayMessageContextInclusion(input.channelId, ctx.user.id, input.messageIds, input.status);
+      }),
+
+    setAllContextInclusion: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        status: z.enum(["included", "excluded", "auto"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return setAllRoleplayMessagesContextInclusion(input.channelId, ctx.user.id, input.status);
+      }),
+
+    deleteMessages: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        messageIds: z.array(z.number()),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return deleteRoleplayMessages(input.channelId, ctx.user.id, input.messageIds);
+      }),
+
+    updateMessage: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        messageId: z.number(),
+        content: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return updateRoleplayMessageContent(input.channelId, ctx.user.id, input.messageId, input.content);
+      }),
+
+    clearAllMessages: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return clearAllRoleplayMessages(input.channelId, ctx.user.id);
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ channelId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        await deleteRoleplayChannel(input.channelId, ctx.user.id);
+        return { success: true };
+      }),
+
+    // ─── 以下为 5B 生成类端点（tick / startWebAdvance / finishWebAdvance / stopAdvance /
+    // advanceStatus）：任务身份与取消语义全部来自 server/social/web-channel-advance。
+    // 归属校验与 5A 相同：先 getRoleplayChannelById(channelId, ctx.user.id)，查不到 NOT_FOUND。 ───
+
+    /**
+     * 频道推进状态：书中人没有 QQ 端服务端推进，归属校验后恒返回 null。
+     *
+     * 显式声明 RoleplayAdvanceStatus | null 返回类型，避免 tRPC 把输出推成 null 字面量，
+     * 客户端 `advanceStatusQuery.data?.running` 因此仍可编译（与自用版"没有 QQ 推进"等价）。
+     */
+    advanceStatus: protectedProcedure
+      .input(z.object({ channelId: z.number() }))
+      .query(async ({ ctx, input }): Promise<RoleplayAdvanceStatus | null> => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return null;
+      }),
+
+    /**
+     * 网页每次单轮、多轮或持续推进都登记独立任务；编号包含页面身份与递增序号。
+     *
+     * 先 reserve 到达顺序再查权限：跨页面的慢旧请求不能覆盖后来开始的任务。
+     */
+    startWebAdvance: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        taskId: z.string().max(100).regex(WEB_ADVANCE_TASK_ID_PATTERN),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const requestOrder = reserveWebChannelAdvanceOrder();
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        const task = startWebChannelAdvance({
+          channelId: input.channelId,
+          userId: ctx.user.id,
+          taskId: input.taskId,
+        }, requestOrder);
+        return { started: task !== null, cancelled: task === null };
+      }),
+
+    /** 结束网页推进任务：只结束匹配的任务编号，不会清新任务。 */
+    finishWebAdvance: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        taskId: z.string().max(100).regex(WEB_ADVANCE_TASK_ID_PATTERN),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return {
+          finished: finishWebChannelAdvance({
+            channelId: input.channelId,
+            userId: ctx.user.id,
+            taskId: input.taskId,
+          }),
+        };
+      }),
+
+    /** 指定任务只停止它；没有 taskId 时停止当前频道的网页任务（书中人无 QQ 服务端推进）。 */
+    stopAdvance: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        taskId: z.string().max(100).regex(WEB_ADVANCE_TASK_ID_PATTERN).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+        if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+        return {
+          stopped: stopWebChannelAdvance({
+            channelId: input.channelId,
+            userId: ctx.user.id,
+            ...(input.taskId ? { taskId: input.taskId } : {}),
+          }),
+        };
+      }),
+
+    /**
+     * 单拍/多拍推进：一次 tick 生成一拍（同人续拍时最多两条人物发言）。
+     *
+     * 多拍语义（验收核心）：
+     * - 带 taskId：任务已失效/已停止直接返回 cancelled，不查库、不生成、不落库；
+     * - 不带 taskId（旧单轮调用）：先登记一次性任务，同样受停止与生成租约约束；
+     * - 生成与保存都在 runWebChannelAdvanceTurn 的租约里：停止后返回的结果被丢弃，
+     *   已落库的拍由生成侧按"保留停止前已保存的发言"处理；
+     * - 同一频道多拍串行（runRoleplayChannelTurn 内部锁 + 任务租约），不会并发写重。
+     */
+    tick: protectedProcedure
+      .input(z.object({
+        channelId: z.number(),
+        personaId: z.number().optional(),
+        allowSilence: z.boolean().optional(),
+        taskId: z.string().max(100).regex(WEB_ADVANCE_TASK_ID_PATTERN).optional(),
+      }))
+      .mutation(async ({ ctx, input }): Promise<RunRoleplayTurnResult> => {
+        let task = input.taskId
+          ? getWebChannelAdvanceTask({
+              channelId: input.channelId,
+              userId: ctx.user.id,
+              taskId: input.taskId,
+            })
+          : null;
+        if (input.taskId && !task) return cancelledRoleplayTurn(input.channelId, input.personaId);
+        // 旧调用方仍可单轮推进，但也登记一次性任务，不能绕过停止及生成租约。
+        if (!input.taskId) {
+          const requestOrder = reserveWebChannelAdvanceOrder();
+          const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
+          if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
+          if (getCurrentWebChannelAdvanceTask(input.channelId, ctx.user.id)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "该角色频道正在推进，请先停止或等待当前任务结束" });
+          }
+          task = startWebChannelAdvance({
+            channelId: input.channelId,
+            userId: ctx.user.id,
+            taskId: `legacy-${nanoid()}:1`,
+          }, requestOrder);
+          if (!task) return cancelledRoleplayTurn(input.channelId, input.personaId);
+        }
+        // 到这里 task 必非空：带 taskId 时上面已确认任务存在，不带 taskId 时刚登记完。
+        if (!task) return cancelledRoleplayTurn(input.channelId, input.personaId);
+        const activeTask = task;
+        try {
+          return await runWebChannelAdvanceTurn(activeTask, shouldAbort => runRoleplayChannelTurn({
+            channelId: input.channelId,
+            userId: ctx.user.id,
+            personaId: input.personaId,
+            allowSilence: input.allowSilence,
+            shouldAbort,
+          }));
+        } catch (err) {
+          if (err instanceof RoleplayTurnCancelledError || err instanceof WebChannelAdvanceCancelledError) {
+            return cancelledRoleplayTurn(input.channelId, input.personaId);
+          }
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "角色频道轮转失败",
+          });
+        } finally {
+          if (!input.taskId && activeTask) {
+            finishWebChannelAdvance({
+              channelId: input.channelId,
+              userId: ctx.user.id,
+              taskId: activeTask.taskId,
+            });
+          }
+        }
       }),
   }),
 

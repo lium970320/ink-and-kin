@@ -6,6 +6,7 @@ import {
   personas, personaFiles, messages,
   wechatBindings, skillJobs, llmConfigs, llmProviderRelays, llmUsageRecords, wechatBotState,
   memories, emotionSnapshots, diaryEntries, scenes, sceneMemoryStates,
+  roleplayChannels, roleplayChannelMembers, roleplayMessages,
   chatSummaries, safetyEvents, graduationAssessments,
   channelBindings, channelStates, personaTemplates, personaQuestionnaireAnswers,
   reminderDeliveries, researchProfiles, collectedMessages, collectionSources,
@@ -15,6 +16,7 @@ import {
   InsertMemory, InsertEmotionSnapshot, InsertDiaryEntry, InsertScene,
   InsertChatSummary, InsertSafetyEvent, InsertGraduationAssessment,
   InsertChannelBinding, InsertPersonaTemplate, InsertPersonaQuestionnaireAnswer,
+  InsertRoleplayChannel, InsertRoleplayChannelMember, InsertRoleplayMessage,
   InsertResearchProfile, InsertCollectedMessage, InsertCollectionSource,
   InsertCollectionJob,
 } from "../drizzle/schema";
@@ -28,6 +30,7 @@ import {
   type SceneMemoryCache,
   type SceneMemoryStoryState,
 } from "./social/scene-memory";
+import { shouldDeactivateRoleplayChannelAfterMemberRemoval } from "./social/roleplay-channel-policy";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -196,6 +199,10 @@ export async function deleteUserAccount(id: number) {
     await tx.delete(safetyEvents).where(eq(safetyEvents.userId, id));
     await tx.delete(scenes).where(eq(scenes.userId, id));
     await tx.delete(sceneMemoryStates).where(eq(sceneMemoryStates.userId, id));
+    // 角色频道：消息 → 成员 → 频道，顺序满足外键依赖，也覆盖没有外键的历史数据。
+    await tx.delete(roleplayMessages).where(eq(roleplayMessages.userId, id));
+    await tx.delete(roleplayChannelMembers).where(eq(roleplayChannelMembers.userId, id));
+    await tx.delete(roleplayChannels).where(eq(roleplayChannels.userId, id));
     await tx.delete(skillJobs).where(eq(skillJobs.userId, id));
     await tx.delete(wechatBindings).where(eq(wechatBindings.userId, id));
     await tx.delete(wechatBotState).where(eq(wechatBotState.userId, id));
@@ -332,6 +339,45 @@ export async function updatePersona(id: number, userId: number, data: Partial<In
  * Covers every table with a `personaId` — the same completeness rule as
  * `deleteUserAccount`, and checked by `server/db-delete-coverage.test.ts`.
  */
+/**
+ * 删除人物后，把因此只剩一个（或零个）成员的频道自动停用。
+ *
+ * 与自用版一致：频道必须至少两个人物才能继续「多人生活」，否则生成侧
+ * 会拿到一个无法轮转的频道。只按 userId 收窄，不跨用户改别人的频道。
+ */
+async function deactivateRoleplayChannelsWithTooFewMembers(
+  database: DbTransaction,
+  userId: number,
+  channelIds: number[],
+) {
+  const uniqueChannelIds = Array.from(new Set(channelIds)).filter(Number.isFinite);
+  if (uniqueChannelIds.length === 0) return;
+
+  const memberCounts = await database.select({
+    channelId: roleplayChannelMembers.channelId,
+    memberCount: count(),
+  })
+    .from(roleplayChannelMembers)
+    .where(and(
+      eq(roleplayChannelMembers.userId, userId),
+      inArray(roleplayChannelMembers.channelId, uniqueChannelIds),
+    ))
+    .groupBy(roleplayChannelMembers.channelId);
+
+  const countsByChannel = new Map(memberCounts.map(row => [row.channelId, row.memberCount]));
+  const inactiveChannelIds = uniqueChannelIds.filter(channelId => (
+    shouldDeactivateRoleplayChannelAfterMemberRemoval(countsByChannel.get(channelId) ?? 0)
+  ));
+  if (inactiveChannelIds.length === 0) return;
+
+  await database.update(roleplayChannels)
+    .set({ isActive: false, updatedAt: new Date() })
+    .where(and(
+      eq(roleplayChannels.userId, userId),
+      inArray(roleplayChannels.id, inactiveChannelIds),
+    ));
+}
+
 export async function deletePersona(id: number, userId: number) {
   // The ownership check comes first: without it, a caller who passed
   // somebody else's persona id would still delete that persona's messages
@@ -340,6 +386,11 @@ export async function deletePersona(id: number, userId: number) {
   if (!owned) throw new Error("Persona not found");
 
   await withTransaction(async (tx) => {
+    // 先记下人物在哪些频道里，删完成员后据此停用人手不足的频道。
+    const affectedRoleplayChannelIds = (await tx.select({ channelId: roleplayChannelMembers.channelId })
+      .from(roleplayChannelMembers)
+      .where(and(eq(roleplayChannelMembers.personaId, id), eq(roleplayChannelMembers.userId, userId))))
+      .map(row => row.channelId);
     await tx.delete(channelBindings).where(and(eq(channelBindings.personaId, id), eq(channelBindings.userId, userId)));
     await tx.delete(chatSummaries).where(and(eq(chatSummaries.personaId, id), eq(chatSummaries.userId, userId)));
     await tx.delete(collectedMessages).where(and(eq(collectedMessages.personaId, id), eq(collectedMessages.userId, userId)));
@@ -355,6 +406,10 @@ export async function deletePersona(id: number, userId: number) {
     await tx.delete(researchProfiles).where(and(eq(researchProfiles.personaId, id), eq(researchProfiles.userId, userId)));
     await tx.delete(safetyEvents).where(and(eq(safetyEvents.personaId, id), eq(safetyEvents.userId, userId)));
     await tx.delete(sceneMemoryStates).where(and(eq(sceneMemoryStates.personaId, id), eq(sceneMemoryStates.userId, userId)));
+    // 角色频道：先删人物在频道里的消息与成员关系，再停用只剩单人/空频道的频道。
+    await tx.delete(roleplayMessages).where(and(eq(roleplayMessages.personaId, id), eq(roleplayMessages.userId, userId)));
+    await tx.delete(roleplayChannelMembers).where(and(eq(roleplayChannelMembers.personaId, id), eq(roleplayChannelMembers.userId, userId)));
+    await deactivateRoleplayChannelsWithTooFewMembers(tx, userId, affectedRoleplayChannelIds);
     await tx.delete(skillJobs).where(and(eq(skillJobs.personaId, id), eq(skillJobs.userId, userId)));
     await tx.delete(wechatBindings).where(and(eq(wechatBindings.personaId, id), eq(wechatBindings.userId, userId)));
     await tx.delete(personas).where(and(eq(personas.id, id), eq(personas.userId, userId)));
@@ -2500,4 +2555,552 @@ export async function getMessageCountSince(userId: number, since: Date) {
   const [result] = await db.select({ c: count() }).from(messages)
     .where(and(eq(messages.userId, userId), gte(messages.createdAt, since)));
   return result?.c || 0;
+}
+
+// ─── Roleplay channel helpers ───────────────────────────────────────────────
+
+/**
+ * 频道列表/详情里的成员视图：人物资料直接 join 出来，避免前端再查一次。
+ */
+export type RoleplayChannelMemberView = {
+  id: number;
+  channelId: number;
+  personaId: number;
+  displayOrder: number;
+  speakingEnabled: boolean;
+  lastReadMessageId: number;
+  personaName: string;
+  avatarUrl: string | null;
+  emotionalState: string;
+  analysisStatus: string;
+};
+
+/**
+ * 频道视图：频道主体字段 + 成员列表。
+ *
+ * 所有读取都带 userId，跨用户读别人的频道只会得到 undefined/空列表；
+ * 路由层再把 undefined 统一翻译成 NOT_FOUND。
+ */
+export type RoleplayChannelView = {
+  id: number;
+  userId: number;
+  name: string;
+  description: string | null;
+  scenePrompt: string | null;
+  isActive: boolean;
+  /** channel=角色生活频道；duet=对戏专用频道。 */
+  channelKind: string;
+  runtimeDiagnostics: unknown | null;
+  /** 剧本导演线（arc），生成侧解析；没有时为空。 */
+  directorState: unknown | null;
+  createdAt: Date;
+  updatedAt: Date;
+  members: RoleplayChannelMemberView[];
+};
+
+/**
+ * 创建频道并一次性写入成员。
+ *
+ * 与自用版一致：至少两个不同人物（频道是多人生活，单人没有轮转意义）；
+ * 重复人物去重，displayOrder 按传入顺序落库。返回新频道 id。
+ */
+export async function createRoleplayChannel(data: InsertRoleplayChannel, memberPersonaIds: number[]) {
+  const uniquePersonaIds = Array.from(new Set(memberPersonaIds));
+  if (uniquePersonaIds.length < 2) throw new Error("roleplay channel requires at least two personas");
+
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+
+  return withTransaction(async (tx) => {
+    const [channel] = await tx.insert(roleplayChannels).values(data).returning();
+    const memberRows: InsertRoleplayChannelMember[] = uniquePersonaIds.map((personaId, index) => ({
+      channelId: channel.id,
+      userId: data.userId,
+      personaId,
+      displayOrder: index,
+    }));
+    await tx.insert(roleplayChannelMembers).values(memberRows);
+    return channel.id;
+  });
+}
+
+/**
+ * 更新频道设定；只有归属本人（userId 匹配）的频道会被改到。
+ *
+ * memberPersonaIds 存在（>=2）时整体替换成员：删除本人频道下的旧成员再按新顺序写入。
+ * 与自用版一致，替换会重置成员游标（lastReadMessageId）；频道消息不删。
+ */
+export async function updateRoleplayChannel(
+  channelId: number,
+  userId: number,
+  data: Partial<InsertRoleplayChannel>,
+  memberPersonaIds?: number[],
+) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+
+  await db.update(roleplayChannels)
+    .set({
+      ...data,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+
+  if (memberPersonaIds && memberPersonaIds.length >= 2) {
+    const uniquePersonaIds = Array.from(new Set(memberPersonaIds));
+    await withTransaction(async (tx) => {
+      await tx.delete(roleplayChannelMembers)
+        .where(and(eq(roleplayChannelMembers.channelId, channelId), eq(roleplayChannelMembers.userId, userId)));
+      const memberRows: InsertRoleplayChannelMember[] = uniquePersonaIds.map((personaId, index) => ({
+        channelId,
+        userId,
+        personaId,
+        displayOrder: index,
+      }));
+      await tx.insert(roleplayChannelMembers).values(memberRows);
+    });
+  }
+}
+
+/** 用户全部频道（按最近更新排序），每个频道带上成员视图。 */
+export async function getRoleplayChannels(userId: number): Promise<RoleplayChannelView[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const channels = await db.select().from(roleplayChannels)
+    .where(eq(roleplayChannels.userId, userId))
+    .orderBy(desc(roleplayChannels.updatedAt));
+
+  const result: RoleplayChannelView[] = [];
+  for (const channel of channels) {
+    result.push({
+      ...channel,
+      members: await getRoleplayChannelMembers(channel.id, userId),
+    });
+  }
+  return result;
+}
+
+/** 单个频道（含成员）；不是本人频道时返回 undefined，由路由层翻译成 NOT_FOUND。 */
+export async function getRoleplayChannelById(channelId: number, userId: number): Promise<RoleplayChannelView | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [channel] = await db.select().from(roleplayChannels)
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)))
+    .limit(1);
+  if (!channel) return undefined;
+  return {
+    ...channel,
+    members: await getRoleplayChannelMembers(channelId, userId),
+  };
+}
+
+/** 频道运行诊断快照：每轮发言后由生成侧写入（最近一轮时间/节奏导演反思/策略/风险提示）。 */
+export async function updateRoleplayChannelDiagnostics(
+  channelId: number,
+  userId: number,
+  diagnostics: Record<string, unknown>,
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(roleplayChannels)
+    .set({ runtimeDiagnostics: diagnostics })
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+}
+
+/** 读取频道的导演线状态（原始 JSON，解析交给生成侧）。 */
+export async function getRoleplayChannelDirectorState(
+  channelId: number,
+  userId: number,
+): Promise<unknown | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select({ directorState: roleplayChannels.directorState })
+    .from(roleplayChannels)
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)))
+    .limit(1);
+  return (rows[0] as { directorState?: unknown } | undefined)?.directorState ?? null;
+}
+
+/** 写入频道的导演线状态。 */
+export async function setRoleplayChannelDirectorState(
+  channelId: number,
+  userId: number,
+  directorState: Record<string, unknown> | null,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(roleplayChannels)
+    .set({ directorState })
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+}
+
+/**
+ * 频道成员视图：join personas 拿名字/头像/情绪/分析状态。
+ *
+ * 三重条件（频道 + 成员归属 + 人物归属）确保即使存在脏数据，也不会把
+ * 别人的人物资料带进当前用户的频道。
+ */
+export async function getRoleplayChannelMembers(channelId: number, userId: number): Promise<RoleplayChannelMemberView[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: roleplayChannelMembers.id,
+    channelId: roleplayChannelMembers.channelId,
+    personaId: roleplayChannelMembers.personaId,
+    displayOrder: roleplayChannelMembers.displayOrder,
+    speakingEnabled: roleplayChannelMembers.speakingEnabled,
+    lastReadMessageId: roleplayChannelMembers.lastReadMessageId,
+    personaName: personas.name,
+    avatarUrl: personas.avatarUrl,
+    emotionalState: personas.emotionalState,
+    analysisStatus: personas.analysisStatus,
+  })
+    .from(roleplayChannelMembers)
+    .innerJoin(personas, eq(roleplayChannelMembers.personaId, personas.id))
+    .where(and(
+      eq(roleplayChannelMembers.channelId, channelId),
+      eq(roleplayChannelMembers.userId, userId),
+      eq(personas.userId, userId),
+    ))
+    .orderBy(asc(roleplayChannelMembers.displayOrder), asc(roleplayChannelMembers.id));
+}
+
+/** 频道最近 limit 条消息，按 id 升序返回（时间线与渲染都按它来）。 */
+export async function getRoleplayChannelMessages(channelId: number, userId: number, limit = 80) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(roleplayMessages)
+    .where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)))
+    .orderBy(desc(roleplayMessages.id))
+    .limit(limit);
+  return rows.reverse();
+}
+
+/**
+ * 写入一条频道消息，并把频道的 updatedAt 推到当前时间（列表按它排序）。
+ *
+ * data 里必须带 channelId/userId；调用方（路由/生成侧）负责先校验频道归属。
+ */
+export async function createRoleplayMessage(data: InsertRoleplayMessage) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  const payload = {
+    ...data,
+    mode: data.mode ?? "channel",
+  };
+  const [result] = await db.insert(roleplayMessages).values(payload).returning();
+  await db.update(roleplayChannels)
+    .set({ updatedAt: new Date() })
+    .where(and(eq(roleplayChannels.id, data.channelId), eq(roleplayChannels.userId, data.userId)));
+  return result;
+}
+
+/** 更新某个人物在某频道的已读游标（生成侧每轮推进后调用）。 */
+export async function updateRoleplayMemberCursor(channelId: number, userId: number, personaId: number, lastReadMessageId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  await db.update(roleplayChannelMembers)
+    .set({ lastReadMessageId })
+    .where(and(
+      eq(roleplayChannelMembers.channelId, channelId),
+      eq(roleplayChannelMembers.userId, userId),
+      eq(roleplayChannelMembers.personaId, personaId),
+    ));
+}
+
+/** 删除频道及其消息、成员；全部按 userId 收窄，删别人的频道不会命中任何行。 */
+export async function deleteRoleplayChannel(channelId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  await withTransaction(async (tx) => {
+    await tx.delete(roleplayMessages).where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)));
+    await tx.delete(roleplayChannelMembers).where(and(eq(roleplayChannelMembers.channelId, channelId), eq(roleplayChannelMembers.userId, userId)));
+    await tx.delete(roleplayChannels).where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+  });
+}
+
+/**
+ * 批量设置消息的上下文包含状态（auto=null，跟随会话边界）。
+ *
+ * 只更新「本频道 + 本人」的消息；返回本次请求命中的消息条数（与自用版一致，
+ * 前端用它提示"已更新 N 条"）。
+ */
+export async function setRoleplayMessageContextInclusion(
+  channelId: number,
+  userId: number,
+  messageIds: number[],
+  status: "included" | "excluded" | "auto",
+) {
+  const db = await getDb();
+  if (!db || messageIds.length === 0) return { updated: 0 };
+  const override = status === "auto" ? null : status;
+  await db.update(roleplayMessages)
+    .set({ contextOverride: override })
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+      inArray(roleplayMessages.id, messageIds),
+    ));
+  return { updated: messageIds.length };
+}
+
+/** 设置频道内全部消息的上下文包含状态。 */
+export async function setAllRoleplayMessagesContextInclusion(
+  channelId: number,
+  userId: number,
+  status: "included" | "excluded" | "auto",
+) {
+  const db = await getDb();
+  if (!db) return { updated: 0 };
+  const override = status === "auto" ? null : status;
+  await db.update(roleplayMessages)
+    .set({ contextOverride: override })
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+    ));
+  return { updated: 1 };
+}
+
+/** 删除频道内指定消息（只删本频道 + 本人的行）。 */
+export async function deleteRoleplayMessages(
+  channelId: number,
+  userId: number,
+  messageIds: number[],
+) {
+  const db = await getDb();
+  if (!db || messageIds.length === 0) return { deletedMessages: 0 };
+  await db.delete(roleplayMessages)
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+      inArray(roleplayMessages.id, messageIds),
+    ));
+  return { deletedMessages: messageIds.length };
+}
+
+/** 编辑一条频道消息的内容（频道 + 用户 + 消息 id 三重收窄）。 */
+export async function updateRoleplayMessageContent(
+  channelId: number,
+  userId: number,
+  messageId: number,
+  content: string,
+) {
+  const db = await getDb();
+  if (!db) return null;
+  await db.update(roleplayMessages)
+    .set({ content })
+    .where(and(
+      eq(roleplayMessages.id, messageId),
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+    ));
+  return { success: true };
+}
+
+/**
+ * 清空频道全部消息。
+ *
+ * 同时清掉运行诊断里的时空锚（runtimeDiagnostics）：否则下一拍会拿着旧剧情
+ * 的地点/道具继续演，清空后剧情直接接不上（自用版踩过的坑）。
+ */
+export async function clearAllRoleplayMessages(
+  channelId: number,
+  userId: number,
+) {
+  const db = await getDb();
+  if (!db) return { deletedMessages: 0 };
+  await db.delete(roleplayMessages)
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+    ));
+  await db.update(roleplayChannels)
+    .set({ runtimeDiagnostics: null, updatedAt: new Date() })
+    .where(and(
+      eq(roleplayChannels.id, channelId),
+      eq(roleplayChannels.userId, userId),
+    ));
+  return { deletedMessages: 1 };
+}
+
+/** 频道统计（诊断面板）：消息/上下文计数、各角色发言数、频道专属 LLM 消耗。 */
+export type RoleplayChannelStats = {
+  totalMessages: number;
+  includedMessages: number;
+  excludedMessages: number;
+  bySpeaker: Array<{ speakerName: string; count: number }>;
+  lastMessageAt: string | null;
+  lastMessageSpeaker: string | null;
+  firstMessageAt: string | null;
+  memory: {
+    scenePromptChars: number;
+    contextSeedPreview: string;
+    includedCount: number;
+    excludedCount: number;
+    totalCount: number;
+    contextWindowLimit: number;
+    currentEstimatedTokens: number;
+    isolationMode: string;
+  };
+  llm: {
+    todayCalls: number;
+    todayTokens: number;
+    todayInputTokens: number;
+    todayOutputTokens: number;
+    totalCalls: number;
+    totalTokens: number;
+    avgDurationMs: number;
+    routes: Array<{ route: string; calls: number; totalTokens: number }>;
+  };
+};
+
+/** 频道进度诊断数据：真实总消息数、上下文包含/排除统计、各角色发言数、频道专属记忆与 LLM 消耗。 */
+export async function getRoleplayChannelStats(
+  channelId: number,
+  userId: number,
+): Promise<RoleplayChannelStats | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const [channelRow] = await db.select({
+    id: roleplayChannels.id,
+    scenePrompt: roleplayChannels.scenePrompt,
+    description: roleplayChannels.description,
+  })
+    .from(roleplayChannels)
+    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)))
+    .limit(1);
+  if (!channelRow) return null;
+
+  const [totalRow] = await db.select({ c: count() }).from(roleplayMessages)
+    .where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)));
+  const [includedRow] = await db.select({ c: count() }).from(roleplayMessages)
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+      sql`COALESCE(${roleplayMessages.contextOverride}, 'auto') <> 'excluded'`,
+    ));
+  const [excludedRow] = await db.select({ c: count() }).from(roleplayMessages)
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+      eq(roleplayMessages.contextOverride, "excluded"),
+    ));
+
+  const speakerRows = await db.select({
+    speakerName: roleplayMessages.speakerName,
+    count: count(),
+  })
+    .from(roleplayMessages)
+    .where(and(
+      eq(roleplayMessages.channelId, channelId),
+      eq(roleplayMessages.userId, userId),
+      eq(roleplayMessages.role, "persona"),
+    ))
+    .groupBy(roleplayMessages.speakerName)
+    .orderBy(desc(count()));
+
+  const [firstRow] = await db.select({ createdAt: roleplayMessages.createdAt })
+    .from(roleplayMessages)
+    .where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)))
+    .orderBy(asc(roleplayMessages.id))
+    .limit(1);
+  const [lastRow] = await db.select({ createdAt: roleplayMessages.createdAt, speakerName: roleplayMessages.speakerName })
+    .from(roleplayMessages)
+    .where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)))
+    .orderBy(desc(roleplayMessages.id))
+    .limit(1);
+
+  // 频道专属 LLM 调用与 Token 统计（书中人的用量表记 purpose/route，按 UTC 日切）。
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  const [llmTodayRow] = await db.select({
+    calls: count(),
+    inputTokens: sum(llmUsageRecords.inputTokens),
+    outputTokens: sum(llmUsageRecords.outputTokens),
+    totalTokens: sum(llmUsageRecords.totalTokens),
+    avgDurationMs: sql<number>`coalesce(avg(${llmUsageRecords.durationMs}), 0)`,
+  })
+    .from(llmUsageRecords)
+    .where(and(
+      eq(llmUsageRecords.userId, userId),
+      or(
+        eq(llmUsageRecords.purpose, "roleplay"),
+        ilike(llmUsageRecords.route, "roleplay.%"),
+      ),
+      gte(llmUsageRecords.startedAt, todayStart),
+    ));
+
+  const [llmTotalRow] = await db.select({
+    calls: count(),
+    totalTokens: sum(llmUsageRecords.totalTokens),
+  })
+    .from(llmUsageRecords)
+    .where(and(
+      eq(llmUsageRecords.userId, userId),
+      or(
+        eq(llmUsageRecords.purpose, "roleplay"),
+        ilike(llmUsageRecords.route, "roleplay.%"),
+      ),
+    ));
+
+  const routeRows = await db.select({
+    route: sql<string>`coalesce(${llmUsageRecords.route}, 'unknown')`,
+    calls: count(),
+    totalTokens: sum(llmUsageRecords.totalTokens),
+  })
+    .from(llmUsageRecords)
+    .where(and(
+      eq(llmUsageRecords.userId, userId),
+      or(
+        eq(llmUsageRecords.purpose, "roleplay"),
+        ilike(llmUsageRecords.route, "roleplay.%"),
+      ),
+      gte(llmUsageRecords.startedAt, todayStart),
+    ))
+    .groupBy(sql`coalesce(${llmUsageRecords.route}, 'unknown')`)
+    .orderBy(desc(count()));
+
+  const scenePromptText = channelRow.scenePrompt || "";
+  const totalCount = Number(totalRow?.c ?? 0);
+  const includedCount = Number(includedRow?.c ?? 0);
+  const excludedCount = Number(excludedRow?.c ?? 0);
+  const estimatedChars = scenePromptText.length + (includedCount * 120);
+  const currentEstimatedTokens = Math.round(estimatedChars / 1.5);
+
+  return {
+    totalMessages: totalCount,
+    includedMessages: includedCount,
+    excludedMessages: excludedCount,
+    bySpeaker: speakerRows.map(row => ({ speakerName: row.speakerName, count: Number(row.count) })),
+    firstMessageAt: firstRow?.createdAt ? firstRow.createdAt.toISOString() : null,
+    lastMessageAt: lastRow?.createdAt ? lastRow.createdAt.toISOString() : null,
+    lastMessageSpeaker: lastRow?.speakerName ?? null,
+    memory: {
+      scenePromptChars: scenePromptText.length,
+      contextSeedPreview: scenePromptText.slice(0, 160) || "自由生活场景，未设定前情种子",
+      includedCount,
+      excludedCount,
+      totalCount,
+      contextWindowLimit: 6500,
+      currentEstimatedTokens,
+      isolationMode: "原著人物隔离 · 纯当下生活情景",
+    },
+    llm: {
+      todayCalls: Number(llmTodayRow?.calls ?? 0),
+      todayTokens: Number(llmTodayRow?.totalTokens ?? 0),
+      todayInputTokens: Number(llmTodayRow?.inputTokens ?? 0),
+      todayOutputTokens: Number(llmTodayRow?.outputTokens ?? 0),
+      totalCalls: Number(llmTotalRow?.calls ?? 0),
+      totalTokens: Number(llmTotalRow?.totalTokens ?? 0),
+      avgDurationMs: Math.round(Number(llmTodayRow?.avgDurationMs ?? 0)),
+      routes: routeRows.map(row => ({
+        route: row.route,
+        calls: Number(row.calls),
+        totalTokens: Number(row.totalTokens ?? 0),
+      })),
+    },
+  };
 }
