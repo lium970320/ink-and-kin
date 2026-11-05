@@ -28,7 +28,8 @@ const getDailyChatCounts = vi.fn();
 const getSceneMemoryStateSnapshot = vi.fn();
 const getSceneConversationMessagesBySceneId = vi.fn();
 const recordSceneMemoryTurn = vi.fn();
-const startNewPersonaConversationContext = vi.fn();
+const getSceneGenerationSnapshot = vi.fn();
+const lockedTransaction = Object.freeze({ fixture: "context-transaction" });
 
 vi.mock("../db", () => ({
   createMessage: (...a: unknown[]) => createMessage(...a),
@@ -46,7 +47,7 @@ vi.mock("../db", () => ({
   getSceneMemoryStateSnapshot: (...a: unknown[]) => getSceneMemoryStateSnapshot(...a),
   getSceneConversationMessagesBySceneId: (...a: unknown[]) => getSceneConversationMessagesBySceneId(...a),
   recordSceneMemoryTurn: (...a: unknown[]) => recordSceneMemoryTurn(...a),
-  startNewPersonaConversationContext: (...a: unknown[]) => startNewPersonaConversationContext(...a),
+  getSceneGenerationSnapshot: (...a: unknown[]) => getSceneGenerationSnapshot(...a),
   getLatestChatSummary: (...a: unknown[]) => getLatestChatSummary(...a),
   createChatSummary: (...a: unknown[]) => createChatSummary(...a),
   getRecentEmotionTrend: (...a: unknown[]) => getRecentEmotionTrend(...a),
@@ -70,7 +71,7 @@ vi.mock("./context-state", () => ({
     state: { userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} },
     history: await getMessagesByPersonaId(personaId, userId, limit),
   }),
-  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: () => Promise<unknown>) => work(),
+  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: (tx: typeof lockedTransaction) => Promise<unknown>) => work(lockedTransaction),
 }));
 vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
 vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
@@ -98,7 +99,7 @@ vi.mock("../_core/emotion", () => ({
   inferEmotionalState: (...a: unknown[]) => inferEmotionalState(...a),
 }));
 
-import { runConversation, composeMessages } from "./service";
+import { runConversation as runConversationWithDb, composeMessages } from "./service";
 
 function persona(overrides: Record<string, unknown> = {}) {
   return {
@@ -121,6 +122,21 @@ function persona(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+function installGenerationFixture() {
+  getPersonaById.mockImplementation(async (id: number, userId: number) => persona({ id, userId }));
+  getSceneGenerationSnapshot.mockImplementation(async (id: number, userId: number) => {
+    const current = await getPersonaById(id, userId);
+    const scene = current.activeSceneId == null ? null : await getSceneById(current.activeSceneId);
+    return { persona: current, scene, revision: 0 };
+  });
+}
+
+// 既有用例把角色覆盖值设为当前持久角色；过期快照用例单独传入不同值。
+function runConversation(options: Parameters<typeof runConversationWithDb>[0]) {
+  getPersonaById.mockResolvedValue({ ...options.persona });
+  return runConversationWithDb(options);
+}
+
 describe("runConversation", () => {
   beforeEach(() => {
     for (const fn of [
@@ -133,7 +149,7 @@ describe("runConversation", () => {
       getLastMessageAt, getMessageCountSince, getDailyChatCounts, invoke, invokeWithProvider,
       streamWithProvider, resolveProviderForUser, inferEmotionalState,
       getSceneMemoryStateSnapshot, getSceneConversationMessagesBySceneId,
-      recordSceneMemoryTurn, startNewPersonaConversationContext,
+      recordSceneMemoryTurn, getSceneGenerationSnapshot,
     ]) {
       fn.mockReset();
     }
@@ -151,7 +167,7 @@ describe("runConversation", () => {
     getSceneMemoryStateSnapshot.mockResolvedValue({ stateId: null, storyState: null, cache: null });
     getSceneConversationMessagesBySceneId.mockResolvedValue([]);
     recordSceneMemoryTurn.mockResolvedValue(0);
-    startNewPersonaConversationContext.mockResolvedValue(0);
+    installGenerationFixture();
     getLatestChatSummary.mockResolvedValue(undefined);
     getRecentEmotionTrend.mockResolvedValue([]);
     getMessageCountInRange.mockResolvedValue(0);
@@ -214,6 +230,8 @@ describe("runConversation", () => {
     expect(userCall[0].content).toBe("在吗");
     expect(assistantCall[0].role).toBe("assistant");
     expect(assistantCall[0].content).toContain("在的。");
+    expect(userCall[1]).toBe(lockedTransaction);
+    expect(assistantCall[1]).toBe(lockedTransaction);
 
     const done = events.find((e) => e.type === "done");
     expect(done).toBeDefined();
@@ -534,7 +552,7 @@ describe("runConversation", () => {
     expect(getSceneConversationMessagesBySceneId).toHaveBeenCalledWith(1, 1, 7, 200);
     expect(createMessage.mock.calls[0][0].sceneId).toBe(7);
     expect(createMessage.mock.calls[1][0].sceneId).toBe(7);
-    expect(recordSceneMemoryTurn).toHaveBeenCalledWith(1, 1, 7, "scene:7", [101, 102]);
+    expect(recordSceneMemoryTurn).toHaveBeenCalledWith(1, 1, 7, "scene:7", [101, 102], lockedTransaction);
     const sent = invokeWithProvider.mock.calls[0][1].messages as Array<{ role: string; content: unknown }>;
     const system = String(sent[0].content);
     expect(system).toContain("场景名称：山寺夜宿");
@@ -562,9 +580,32 @@ describe("runConversation", () => {
       // drain
     }
 
-    expect(startNewPersonaConversationContext).toHaveBeenCalledWith(1, 1);
+    expect(getSceneGenerationSnapshot).toHaveBeenCalledWith(1, 1, { startNewScene: true });
+    expect(getSceneGenerationSnapshot.mock.invocationCallOrder[0]).toBeLessThan(createMessage.mock.invocationCallOrder[0]);
     expect(createMessage.mock.calls[0][0].content).toContain("【开始】");
     expect(createMessage.mock.calls[0][0].sceneId).toBe(7);
+  });
+
+  it("重新读取数据库角色与当前场景，忽略调用方传入的旧场景快照", async () => {
+    getPersonaById.mockResolvedValue(persona({ name: "当前角色", activeSceneId: 7, emotionalState: "warm" }));
+    getSceneById.mockResolvedValue({
+      id: 7, userId: 1, isBuiltin: false, name: "当前场景", description: null,
+      systemPromptOverlay: null, contextSeed: null, continuationEnabled: true,
+      personaIdentityOverride: null, userIdentityOverride: null,
+    });
+    const stale = persona({ name: "过期角色名", activeSceneId: null, emotionalState: "sad" });
+    for await (const _ of runConversationWithDb({ persona: stale, userId: 1, message: "继续", mode: "once" })) {
+      // 消费整个回合。
+    }
+
+    expect(getSceneGenerationSnapshot).toHaveBeenCalledWith(1, 1, { startNewScene: false });
+    expect(getSceneConversationMessagesBySceneId).toHaveBeenCalledWith(1, 1, 7, 200);
+    expect(createMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      role: "user", sceneId: 7, emotionalState: "warm", content: "继续",
+    }), lockedTransaction);
+    const prompt = String(invokeWithProvider.mock.calls[0][1].messages[0].content);
+    expect(prompt).toContain("当前角色");
+    expect(prompt).not.toContain("过期角色名");
   });
 
   it("daily conversations never read or write scene tables", async () => {
@@ -586,6 +627,7 @@ describe("runConversation", () => {
 
 describe("composeMessages", () => {
   beforeEach(() => {
+    installGenerationFixture();
     getDefaultLlmConfig.mockResolvedValue(null);
     getMessagesByPersonaId.mockResolvedValue([]);
     getMemoriesByPersonaId.mockResolvedValue([]);

@@ -513,7 +513,7 @@ export default function SceneChatHistoryManager({
               <Trash2 className="w-5 h-5 text-destructive" />
               <div>
                 <h3 className="font-semibold text-foreground">清空该场景全部聊天记录？</h3>
-                <p className="text-xs text-muted-foreground">删除前会自动保存本地备份，场景记忆不会自动删除</p>
+                <p className="text-xs text-muted-foreground">删除前会自动保存本地备份，并重置剧情摘要与自动提炼事实；手工确认事实保留。</p>
               </div>
             </div>
             <div className="px-5 py-4 space-y-3">

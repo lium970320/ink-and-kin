@@ -150,6 +150,8 @@ export const roleplayChannels = pgTable("roleplay_channels", {
   runtimeDiagnostics: jsonb("runtimeDiagnostics"),
   /** 剧本导演线（arc）：模型生成的接下来几拍计划，可被用户引导改写，由 5B 生成侧写入。 */
   directorState: jsonb("directorState"),
+  /** 会改变生成上下文的编辑递增此版本，拒绝迟到的生成写入。 */
+  generationRevision: integer("generationRevision").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 }, table => ({
@@ -450,13 +452,14 @@ export type InsertScene = typeof scenes.$inferInsert;
  * 每个场景按 (personaId, userId, sceneId) 保存一份只属于该场景的剧情记忆，
  * 供再次进入场景时自动续写，而不是重新开场。读写函数由第 4 批 4B 实现。
  *
- * 账号/分身被删除时由数据库级联清理；场景删除由 `deleteScene` 显式清理。
+ * 账号、分身或场景被删除时由数据库级联清理。
  */
 export const sceneMemoryStates = pgTable("scene_memory_states", {
   id: serial("id").primaryKey(),
   personaId: integer("personaId").notNull().references(() => personas.id, { onDelete: "cascade" }),
   userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
-  sceneId: integer("sceneId").notNull(),
+  sceneId: integer("sceneId").notNull().references(() => scenes.id, { onDelete: "cascade" }),
+  startAfterMessageId: integer("startAfterMessageId").default(0).notNull(),
   storyState: jsonb("storyState"),
   cache: jsonb("cache"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

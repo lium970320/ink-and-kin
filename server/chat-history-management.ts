@@ -1,18 +1,14 @@
-/**
- * 删除聊天记录前的备份与关联记忆清理（移植自自用版/净化同源候选）。
- *
- * 书中人适配：
- * - messages.contextOverride / sceneId / mode 由手写迁移（0014_scene_state）建立，
- *   不再在运行时 ensure 建列；
- * - 书中人没有 persona_runtime_states（第 7 批才引入），resetRuntimeCaches 目前是
- *   记录型 no-op，等该表落地后在此接回；
- * - 备份目录沿用 INK_AND_KIN_CHAT_BACKUP_DIR，默认放到进程工作目录的 runtime/chat-backups。
- */
+/** Backup selected scene messages and their linked memories before deleting them. */
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { memories, messages } from "../drizzle/schema";
-import { getDb } from "./db";
+import { memoryReviewProvenance } from "../drizzle/memory-review-schema";
+import {
+  getDb, invalidateSceneMessageContext, lockChatContext, lockPersonaForSceneMessageChanges, lockSceneForContext,
+} from "./db";
+import { TRPCError } from "@trpc/server";
 
 function backupRoot(): string {
   const configured = process.env.INK_AND_KIN_CHAT_BACKUP_DIR?.trim();
@@ -35,82 +31,81 @@ export function memoryReferencesAnyMessage(
 export async function deleteChatMessagesWithBackup(options: {
   personaId: number;
   userId: number;
+  sceneId: number;
   messageIds?: number[];
   deleteLinkedMemories?: boolean;
   resetRuntimeCaches?: boolean;
-  sceneId?: number;
 }) {
   const database = await getDb();
   if (!database) throw new Error("DB not available");
-
+  const { userId, personaId, sceneId } = options;
   const requestedIds = options.messageIds
     ? Array.from(new Set(options.messageIds.filter(id => Number.isSafeInteger(id) && id > 0)))
-    : null;
-  const selectedMessages = await database.select().from(messages)
-    .where(and(
-      eq(messages.personaId, options.personaId),
-      eq(messages.userId, options.userId),
-      ...(requestedIds ? [inArray(messages.id, requestedIds)] : []),
-      ...(options.sceneId ? [eq(messages.sceneId, options.sceneId)] : []),
-    ))
-    .orderBy(messages.id);
-  if (selectedMessages.length === 0) {
+    : undefined;
+
+  return database.transaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId);
+    await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+    if (!await lockSceneForContext(tx, userId, sceneId)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在。" });
+    }
+    const scope = and(eq(messages.personaId, personaId), eq(messages.userId, userId),
+      eq(messages.sceneId, sceneId), eq(messages.mode, "scene"));
+    const selectedMessages = requestedIds?.length === 0 ? [] : await tx.select().from(messages)
+      .where(and(scope, requestedIds ? inArray(messages.id, requestedIds) : undefined))
+      .orderBy(messages.id).for("update");
+    if (selectedMessages.length === 0) {
+      // An empty clear-all still cancels generations that have not stored their first message.
+      if (requestedIds === undefined) await invalidateSceneMessageContext(tx, context, sceneId);
+      return { deletedMessages: 0, deletedMemories: 0, backupPath: null, backupFileName: null };
+    }
+
+    // Read links after locking the exact message rows that will be deleted.
+    const selectedIds = new Set(selectedMessages.map(message => message.id));
+    const messageIds = Array.from(selectedIds);
+    const provenance = options.deleteLinkedMemories ? await tx.select().from(memoryReviewProvenance)
+      .where(and(eq(memoryReviewProvenance.personaId, personaId), eq(memoryReviewProvenance.userId, userId))) : [];
+    const referencedMemoryIds = provenance.flatMap(row =>
+      row.memoryId !== null && Array.isArray(row.evidence) &&
+      row.evidence.some(ref => ref.type === "message" && selectedIds.has(ref.messageId))
+        ? [row.memoryId] : [],
+    );
+    const memoryScope = and(eq(memories.personaId, personaId), eq(memories.userId, userId));
+    const linkedMemories = options.deleteLinkedMemories ? await tx.select().from(memories)
+      .where(and(memoryScope, or(inArray(memories.messageId, messageIds),
+        referencedMemoryIds.length ? inArray(memories.id, referencedMemoryIds) : undefined)))
+      .orderBy(memories.id).for("update") : [];
+    const linkedIds = new Set(linkedMemories.map(row => row.id));
+
+    const root = backupRoot();
+    await fs.mkdir(root, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupFileName = `chat-delete-persona-${personaId}-${stamp}-${randomUUID()}.json`;
+    const backupPath = path.join(root, backupFileName);
+    await fs.writeFile(backupPath, JSON.stringify({
+      version: 1,
+      createdAt: new Date().toISOString(),
+      personaId,
+      userId,
+      sceneId,
+      options: {
+        deleteLinkedMemories: options.deleteLinkedMemories === true,
+        resetRuntimeCaches: options.resetRuntimeCaches === true,
+      },
+      messages: selectedMessages,
+      linkedMemories,
+      linkedProvenance: provenance.filter(row => row.memoryId !== null && linkedIds.has(row.memoryId)),
+    }, null, 2), { encoding: "utf8", flag: "wx" });
+
+    if (linkedIds.size) await tx.delete(memories).where(and(memoryScope, inArray(memories.id, Array.from(linkedIds))));
+    await tx.delete(messages).where(and(scope, inArray(messages.id, messageIds)));
+    await invalidateSceneMessageContext(tx, context, sceneId);
+
     return {
-      deletedMessages: 0,
-      deletedMemories: 0,
-      backupPath: null,
-      backupFileName: null,
+      deletedMessages: selectedMessages.length,
+      deletedMemories: linkedMemories.length,
+      backupPath,
+      backupFileName,
     };
-  }
-
-  const selectedIds = new Set(selectedMessages.map(message => message.id));
-  const personaMemories = options.deleteLinkedMemories
-    ? await database.select().from(memories)
-        .where(and(eq(memories.personaId, options.personaId), eq(memories.userId, options.userId)))
-    : [];
-  const linkedMemories = personaMemories.filter(memory => memoryReferencesAnyMessage(memory, selectedIds));
-
-  const root = backupRoot();
-  await fs.mkdir(root, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupFileName = `chat-delete-persona-${options.personaId}-${stamp}.json`;
-  const backupPath = path.join(root, backupFileName);
-  await fs.writeFile(backupPath, JSON.stringify({
-    version: 1,
-    createdAt: new Date().toISOString(),
-    personaId: options.personaId,
-    userId: options.userId,
-    options: {
-      deleteLinkedMemories: options.deleteLinkedMemories === true,
-      resetRuntimeCaches: options.resetRuntimeCaches === true,
-    },
-    messages: selectedMessages,
-    linkedMemories,
-  }, null, 2), "utf8");
-
-  await database.transaction(async tx => {
-    if (linkedMemories.length > 0) {
-      await tx.delete(memories).where(and(
-        eq(memories.personaId, options.personaId),
-        eq(memories.userId, options.userId),
-        inArray(memories.id, linkedMemories.map(memory => memory.id)),
-      ));
-    }
-    await tx.delete(messages).where(and(
-      eq(messages.personaId, options.personaId),
-      eq(messages.userId, options.userId),
-      inArray(messages.id, Array.from(selectedIds)),
-    ));
-    if (options.resetRuntimeCaches) {
-      // 书中人暂无 persona_runtime_states（第 7 批引入）：运行态缓存清理先作为
-      // no-op 保留接口位，避免调用方改参；第 7 批接表后在此补 tx.update。
-    }
   });
-
-  return {
-    deletedMessages: selectedMessages.length,
-    deletedMemories: linkedMemories.length,
-    backupPath,
-    backupFileName,
-  };
 }

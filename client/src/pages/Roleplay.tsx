@@ -664,7 +664,10 @@ export default function Roleplay() {
     onError: (error) => toast.error(error.message),
   });
 
-  const tickMutation = trpc.roleplay.tick.useMutation();
+  const tickMutation = trpc.roleplay.tick.useMutation({
+    // 传输断开时使用本次 mutate 的原参数重试，不再生成一拍。
+    retry: (failureCount, error) => failureCount === 0 && !error.data,
+  });
   const startWebAdvanceMutation = trpc.roleplay.startWebAdvance.useMutation();
   const finishWebAdvanceMutation = trpc.roleplay.finishWebAdvance.useMutation();
   const stopAdvanceMutation = trpc.roleplay.stopAdvance.useMutation();
@@ -772,6 +775,7 @@ export default function Roleplay() {
         const result = await tickMutation.mutateAsync({
           channelId,
           taskId: task.taskId,
+          operationId: crypto.randomUUID(),
           personaId,
           allowSilence,
         });
@@ -4639,11 +4643,11 @@ function ChannelDiagnosticsPanel({
                         <div className="w-7 h-7 rounded-lg bg-sky-500/12 text-sky-500 flex items-center justify-center">
                           <Gauge className="w-4 h-4" />
                         </div>
-                        <h4 className="text-xs font-bold text-foreground">频道专属 LLM 消耗与调用统计 (Channel Only)</h4>
+                        <h4 className="text-xs font-bold text-foreground">当前账号全部角色频道 · 模型用量</h4>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 font-medium border border-sky-500/20 font-mono">
-                          今日均耗 {(statsData?.llm?.avgDurationMs ? (statsData.llm.avgDurationMs / 1000).toFixed(1) : "—")}s
+                          账号今日平均耗时 {(statsData?.llm?.avgDurationMs ? (statsData.llm.avgDurationMs / 1000).toFixed(1) : "—")}s
                         </span>
                         <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-muted text-muted-foreground font-medium border border-border/50">
                           经济档位 {diagnostics?.economyLevel || "normal"}
@@ -4653,31 +4657,31 @@ function ChannelDiagnosticsPanel({
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                       <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">今日频道调用</span>
+                        <span className="text-[10px] text-muted-foreground font-medium">账号今日调用</span>
                         <p className="text-base font-bold text-foreground">{statsData?.llm?.todayCalls ?? 0} 次</p>
-                        <span className="text-[9.5px] text-muted-foreground">回合推演 + 反思 + 润色</span>
+                        <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
                       </div>
                       <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">今日 Token 消耗</span>
+                        <span className="text-[10px] text-muted-foreground font-medium">账号今日 Token</span>
                         <p className="text-base font-bold text-sky-600 dark:text-sky-400">{(statsData?.llm?.todayTokens ?? 0).toLocaleString()}</p>
                         <span className="text-[9.5px] text-muted-foreground">入 {(statsData?.llm?.todayInputTokens ?? 0).toLocaleString()} / 出 {(statsData?.llm?.todayOutputTokens ?? 0).toLocaleString()}</span>
                       </div>
                       <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">累计频道调用</span>
-                        <p className="text-base font-bold text-foreground">{statsData?.llm?.totalCalls ?? personaMessages.length} 次</p>
-                        <span className="text-[9.5px] text-muted-foreground">历史推演总轮次</span>
+                        <span className="text-[10px] text-muted-foreground font-medium">账号累计调用</span>
+                        <p className="text-base font-bold text-foreground">{statsData?.llm?.totalCalls ?? 0} 次</p>
+                        <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
                       </div>
                       <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">累计 Token 消耗</span>
+                        <span className="text-[10px] text-muted-foreground font-medium">账号累计 Token</span>
                         <p className="text-base font-bold text-foreground">{(statsData?.llm?.totalTokens ?? 0).toLocaleString()}</p>
-                        <span className="text-[9.5px] text-muted-foreground">仅限生活频道</span>
+                        <span className="text-[9.5px] text-muted-foreground">全部角色频道合计</span>
                       </div>
                     </div>
 
                     {/* 细分子链路调用与路由统计 */}
                     {statsData?.llm?.routes && statsData.llm.routes.length > 0 && (
                       <div className="space-y-2 pt-1">
-                        <span className="text-[11px] font-bold text-muted-foreground">子链路调用分布</span>
+                        <span className="text-[11px] font-bold text-muted-foreground">账号今日子链路调用分布</span>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           {statsData.llm.routes.map(r => {
                             const label = r.route.includes("reflection")

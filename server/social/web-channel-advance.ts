@@ -6,6 +6,8 @@ export type WebChannelAdvanceTask = {
   clientId: string;
   sequence: number;
   requestOrder: number;
+  generationRevision: number;
+  signal: AbortSignal;
   stopped: boolean;
 };
 
@@ -20,9 +22,17 @@ export class WebChannelAdvanceCancelledError extends Error {
 
 type ClientRun = { sequence: number; taskId: string; ended: boolean; touchedAt: number };
 type TurnLease = { task: WebChannelAdvanceTask; settled: Promise<void>; release: () => void };
+export type WebChannelAdvanceSave = <T>(write: () => Promise<T>) => Promise<T>;
+type SaveLease = { task: WebChannelAdvanceTask; promise: Promise<unknown> };
+type Operation = { fingerprint: string; result: Promise<unknown> };
 const activeTasks = new Map<string, WebChannelAdvanceTask>();
 const clientRuns = new Map<string, ClientRun>();
 const inFlightTurns = new Map<string, TurnLease>();
+const inFlightSaves = new Set<SaveLease>();
+const operationsByTask = new WeakMap<WebChannelAdvanceTask, Map<string, Operation>>();
+const abortControllers = new WeakMap<WebChannelAdvanceTask, AbortController>();
+// 页面一次最多推进 50 拍；不能淘汰旧操作后让同一编号再次生成。
+const MAX_OPERATIONS_PER_TASK = 100;
 const lastStartOrders = new Map<string, { order: number; touchedAt: number }>();
 let nextRequestOrder = 0;
 // 留下已结束编号，防止迟到的 start 请求复活旧任务；闲置页面的记录按需回收。
@@ -66,10 +76,11 @@ function endTask(task: WebChannelAdvanceTask): void {
     run.ended = true;
     run.touchedAt = Date.now();
   }
+  abortControllers.get(task)?.abort();
 }
 
 export function startWebChannelAdvance(params: {
-  channelId: number; userId: number; taskId: string;
+  channelId: number; userId: number; taskId: string; generationRevision: number;
 }, requestOrder = reserveWebChannelAdvanceOrder()): WebChannelAdvanceTask | null {
   pruneEndedRuns();
   const { clientId, sequence } = parseTaskId(params.taskId);
@@ -85,7 +96,9 @@ export function startWebChannelAdvance(params: {
   }
   const previousTask = activeTasks.get(key);
   if (previousTask) endTask(previousTask);
-  const task: WebChannelAdvanceTask = { ...params, clientId, sequence, requestOrder, stopped: false };
+  const controller = new AbortController();
+  const task: WebChannelAdvanceTask = { ...params, clientId, sequence, requestOrder, signal: controller.signal, stopped: false };
+  abortControllers.set(task, controller);
   lastStartOrders.set(key, { order: requestOrder, touchedAt: Date.now() });
   clientRuns.set(runKey, { sequence, taskId: params.taskId, ended: false, touchedAt: Date.now() });
   activeTasks.set(key, task);
@@ -140,13 +153,55 @@ export function finishWebChannelAdvance(params: {
   return stopWebChannelAdvance(params);
 }
 
+/** 同步终止旧任务，然后只等待该任务已进入的短写入；模型请求不参与等待。 */
+export async function stopWebChannelAdvanceAndWait(params: {
+  channelId: number; userId: number; taskId?: string;
+}): Promise<boolean> {
+  const stopped = stopWebChannelAdvance(params);
+  const writes = Array.from(inFlightSaves).filter(({ task }) =>
+    task.channelId === params.channelId && task.userId === params.userId
+    && (!params.taskId || task.taskId === params.taskId));
+  await Promise.allSettled(writes.map(({ promise }) => promise));
+  return stopped;
+}
+
+export function finishWebChannelAdvanceAndWait(params: {
+  channelId: number; userId: number; taskId: string;
+}): Promise<boolean> {
+  return stopWebChannelAdvanceAndWait(params);
+}
+
+/** 同一次逻辑拍共享进行中或已结束的结果，失败也不能用原编号重发模型。 */
+export async function runWebChannelAdvanceTurn<T>(
+  task: WebChannelAdvanceTask,
+  operationId: string,
+  fingerprint: string,
+  run: (shouldAbort: () => boolean, save: WebChannelAdvanceSave) => Promise<T>,
+): Promise<T> {
+  if (!isCurrentWebChannelAdvanceTask(task)) throw new WebChannelAdvanceCancelledError();
+  let operations = operationsByTask.get(task);
+  if (!operations) {
+    operations = new Map();
+    operationsByTask.set(task, operations);
+  }
+  const previous = operations.get(operationId);
+  if (previous) {
+    if (previous.fingerprint !== fingerprint) throw new Error("推进操作编号已用于不同参数");
+    return previous.result as Promise<T>;
+  }
+  if (operations.size >= MAX_OPERATIONS_PER_TASK) throw new Error("本次推进已达拍数上限，请重新开始");
+  const result = Promise.resolve().then(() => runWithTurnLease(task, run));
+  operations.set(operationId, { fingerprint, result });
+  return result;
+}
+
 /**
  * 旧模型请求只能在返回后丢弃结果；新网页任务等待它释放生成锁，避免停止后立即重开被误报繁忙。
  * 等待和 finally 都按实际调用持有的租约处理，旧任务不能释放新调用的锁。
  */
-export async function runWebChannelAdvanceTurn<T>(
+async function runWithTurnLease<T>(
   task: WebChannelAdvanceTask,
-  run: (shouldAbort: () => boolean) => Promise<T>,
+  run: (shouldAbort: () => boolean, save: WebChannelAdvanceSave) => Promise<T>,
 ): Promise<T> {
   const key = channelKey(task.channelId, task.userId);
   const assertCurrent = () => {
@@ -164,7 +219,21 @@ export async function runWebChannelAdvanceTurn<T>(
   inFlightTurns.set(key, lease);
   try {
     assertCurrent();
-    const result = await run(() => !isCurrentWebChannelAdvanceTask(task));
+    const save: WebChannelAdvanceSave = async write => {
+      assertCurrent();
+      const promise = Promise.resolve().then(() => {
+        assertCurrent();
+        return write();
+      });
+      const saveLease = { task, promise };
+      inFlightSaves.add(saveLease);
+      try {
+        return await promise;
+      } finally {
+        inFlightSaves.delete(saveLease);
+      }
+    };
+    const result = await run(() => !isCurrentWebChannelAdvanceTask(task), save);
     assertCurrent();
     return result;
   } finally {

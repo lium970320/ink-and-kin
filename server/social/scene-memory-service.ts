@@ -16,14 +16,21 @@ import {
 
 export const SCENE_MEMORY_SUMMARY_INTERVAL_TURNS = 6;
 
-/** 在调用模型前建立快照身份；模型返回后不得重建已被清空的记忆。 */
-async function readSceneMemorySnapshot(params: { personaId: number; userId: number; sceneId: number }) {
-  const snapshot = await db.getSceneMemoryStateSnapshot(params.personaId, params.userId, params.sceneId);
-  if (snapshot.stateId != null) return snapshot;
-  return await db.mutateSceneMemoryState(
-    params.personaId, params.userId, params.sceneId,
-    current => current.stateId == null ? {} : null,
-  ) ?? snapshot;
+type SceneRefreshParams = {
+  personaId: number;
+  userId: number;
+  sceneId: number;
+  expectedRevision?: number;
+  // 兼容现有调用；生成提示以事务内读取的场景设定为准。
+  sceneName?: string | null;
+  sceneDescription?: string | null;
+};
+type RefreshSnapshot = Awaited<ReturnType<typeof db.getSceneMemoryRefreshSnapshot>>;
+
+function readSceneMemorySnapshot(params: SceneRefreshParams) {
+  return db.getSceneMemoryRefreshSnapshot(
+    params.personaId, params.userId, params.sceneId, 24, params.expectedRevision,
+  );
 }
 
 /**
@@ -53,27 +60,13 @@ function isRefusalOutput(text: string): boolean {
 /**
  * 刷新场景滚动前情摘要，服务商拒绝时保持原缓存
  */
-export async function refreshSceneMemorySummary(params: {
-  userId: number;
-  personaId: number;
-  sceneId: number;
-  sceneName?: string | null;
-  sceneDescription?: string | null;
-}): Promise<string | null> {
+export async function refreshSceneMemorySummary(
+  params: SceneRefreshParams, captured?: RefreshSnapshot,
+): Promise<string | null> {
   try {
-    // 书中人没有私有 llm/economy 模块：不做 strict 降级；任何失败都静默返回 null。
-    const contextStartMessageId = await db.getPersonaConversationContextStartMessageId(params.personaId, params.userId);
-    const sceneMessages = await db.getSceneConversationMessagesBySceneId(
-      params.personaId,
-      params.userId,
-      params.sceneId,
-      24,
-    );
-    if (sceneMessages.length === 0) return null;
-
-    const snapshot = await readSceneMemorySnapshot(params);
-    if (snapshot.stateId == null) return null;
-    if (await db.getPersonaConversationContextStartMessageId(params.personaId, params.userId) !== contextStartMessageId) return null;
+    const snapshot = captured === undefined ? await readSceneMemorySnapshot(params) : captured;
+    if (!snapshot) return null;
+    const { history: sceneMessages, scene, stateId, revision } = snapshot;
 
     // 1. 系统提示词：明确虚构剧本文学语境与安全出版规范
     const systemPrompt = [
@@ -93,8 +86,8 @@ export async function refreshSceneMemorySummary(params: {
     });
 
     const userPrompt = [
-      params.sceneName?.trim() ? `【场景名称】：${params.sceneName.trim()}` : "",
-      params.sceneDescription?.trim() ? `【场景背景】：${params.sceneDescription.trim()}` : "",
+      scene.name.trim() ? `【场景名称】：${scene.name.trim()}` : "",
+      scene.description?.trim() ? `【场景背景】：${scene.description.trim()}` : "",
       "",
       "【最近的剧本对话记录】：",
       ...sanitizedMessages,
@@ -133,7 +126,7 @@ export async function refreshSceneMemorySummary(params: {
         summary,
         updatedAt: new Date().toISOString(),
       } }),
-      snapshot.stateId,
+      { stateId, revision },
     );
     return updated ? summary : null;
   } catch (error) {
@@ -146,27 +139,13 @@ export async function refreshSceneMemorySummary(params: {
  * 自动从场景对话中提炼「已确认事实」（重要时刻、里程碑、经常发生的事情、默契偏好）
  * 并自动去重沉淀到场景记忆缓存中。
  */
-export async function extractSceneConfirmedFacts(params: {
-  userId: number;
-  personaId: number;
-  sceneId: number;
-  sceneName?: string | null;
-  sceneDescription?: string | null;
-}): Promise<SceneMemoryPinnedFact[]> {
+export async function extractSceneConfirmedFacts(
+  params: SceneRefreshParams, captured?: RefreshSnapshot,
+): Promise<SceneMemoryPinnedFact[]> {
   try {
-    // 书中人没有私有 llm/economy 模块：不做 strict 降级；失败静默返回已有事实。
-    const contextStartMessageId = await db.getPersonaConversationContextStartMessageId(params.personaId, params.userId);
-    const sceneMessages = await db.getSceneConversationMessagesBySceneId(
-      params.personaId,
-      params.userId,
-      params.sceneId,
-      24,
-    );
-    if (sceneMessages.length < 3) return [];
-
-    const snapshot = await readSceneMemorySnapshot(params);
-    if (await db.getPersonaConversationContextStartMessageId(params.personaId, params.userId) !== contextStartMessageId) return [];
-    if (snapshot.stateId == null) return [];
+    const snapshot = captured === undefined ? await readSceneMemorySnapshot(params) : captured;
+    if (!snapshot || snapshot.history.length < 3) return [];
+    const { history: sceneMessages, scene, stateId, revision } = snapshot;
     const cache: SceneMemoryCache = snapshot.cache ?? buildInitialSceneMemoryCache();
     const existingFacts = cache.pinnedFacts ?? [];
 
@@ -189,8 +168,8 @@ export async function extractSceneConfirmedFacts(params: {
     });
 
     const userPrompt = [
-      params.sceneName?.trim() ? `【场景】：${params.sceneName.trim()}` : "",
-      params.sceneDescription?.trim() ? `【设定】：${params.sceneDescription.trim()}` : "",
+      scene.name.trim() ? `【场景】：${scene.name.trim()}` : "",
+      scene.description?.trim() ? `【设定】：${scene.description.trim()}` : "",
       existingFacts.length > 0
         ? `【已有事实（不要重复提炼类似内容）】：\n${existingFacts.map(f => `- ${f.fact}`).join("\n")}`
         : "",
@@ -272,7 +251,7 @@ export async function extractSceneConfirmedFacts(params: {
         }
         return { cache: { ...latestCache, pinnedFacts: mergedFacts, updatedAt: new Date().toISOString() } };
       },
-      snapshot.stateId,
+      { stateId, revision },
     );
     return updated?.cache?.pinnedFacts ?? [];
   } catch (error) {
@@ -284,17 +263,20 @@ export async function extractSceneConfirmedFacts(params: {
 /**
  * 组合刷新：同时更新摘要与自动沉淀事实
  */
-export async function refreshSceneMemoryAndFacts(params: {
-  userId: number;
-  personaId: number;
-  sceneId: number;
-  sceneName?: string | null;
-  sceneDescription?: string | null;
-}): Promise<{ summary: string | null; facts: SceneMemoryPinnedFact[] }> {
-  const [summary, facts] = await Promise.all([
-    refreshSceneMemorySummary(params),
-    extractSceneConfirmedFacts(params),
-  ]);
-  return { summary, facts };
+export async function refreshSceneMemoryAndFacts(
+  params: SceneRefreshParams,
+): Promise<{ summary: string | null; facts: SceneMemoryPinnedFact[] }> {
+  try {
+    const snapshot = await readSceneMemorySnapshot(params);
+    if (!snapshot) return { summary: null, facts: [] };
+    const [summary, facts] = await Promise.all([
+      refreshSceneMemorySummary(params, snapshot),
+      extractSceneConfirmedFacts(params, snapshot),
+    ]);
+    return { summary, facts };
+  } catch (error) {
+    console.warn("[SceneMemory] refresh snapshot failed", error);
+    return { summary: null, facts: [] };
+  }
 }
 

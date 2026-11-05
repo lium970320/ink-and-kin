@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
@@ -480,6 +481,14 @@ function isUserScoped(fn: DbFunction): boolean {
   return /eq\(\s*users\.id\s*,/.test(fn.body) && !/personaId|jobId|sceneId|memoryId/.test(fn.params);
 }
 
+/** 场景失效操作在调用方事务中运行，从已锁定的上下文继承归属。 */
+function usesLockedSceneContext(fn: DbFunction): boolean {
+  return fn.name === "invalidateSceneMessageContext"
+    && /^\s*tx:\s*DbTransaction,\s*context:\s*LockedChatContext,\s*sceneId:\s*number,?\s*$/.test(fn.params)
+    && /replaceSceneMemoryState\(\s*tx,\s*context\.personaId,\s*context\.userId,\s*sceneId,/.test(fn.body)
+    && /advanceContextRevision\(\s*tx,\s*context\s*\)/.test(fn.body);
+}
+
 describe("db helpers enforce ownership", () => {
   it("finds the exported functions", () => {
     expect(functions.length).toBeGreaterThan(50);
@@ -502,6 +511,7 @@ describe("db helpers enforce ownership", () => {
       .filter((fn) => !fn.params.includes("userId"))
       .filter((fn) => !isUserScoped(fn))
       .filter((fn) => !ID_ONLY_READ_EXCEPTIONS.has(fn.name))
+      .filter((fn) => !usesLockedSceneContext(fn))
       .map((fn) => `${fn.name}(${fn.params})`);
 
     expect(
@@ -514,6 +524,7 @@ describe("db helpers enforce ownership", () => {
     const withoutUserId = functions
       .filter((fn) => ID_PARAM.test(fn.params))
       .filter((fn) => !fn.params.includes("userId"))
+      .filter((fn) => !usesLockedSceneContext(fn))
       .map((fn) => fn.name)
       .sort();
 
@@ -531,6 +542,33 @@ describe("db helpers enforce ownership", () => {
       "updateUserPassword",
       "updateUserProfile",
     ]);
+  });
+
+  it("场景失效操作继承同一事务内已校验的角色归属和场景锁", () => {
+    expect(functions.filter(usesLockedSceneContext).map(fn => fn.name)).toEqual(["invalidateSceneMessageContext"]);
+
+    const overrideStart = db.indexOf("async function changeSceneMessageOverrides(");
+    const overrideEnd = db.indexOf("export async function setSceneMessagesContextOverride(", overrideStart);
+    expect(overrideStart).toBeGreaterThan(-1);
+    expect(overrideEnd).toBeGreaterThan(overrideStart);
+    const historyManagement = readFileSync(path.join(ROOT, "server", "chat-history-management.ts"), "utf-8");
+    const deletion = exportedFunctions(historyManagement).find(fn => fn.name === "deleteChatMessagesWithBackup");
+    expect(deletion).toBeDefined();
+
+    const paths = [
+      { body: db.slice(overrideStart, overrideEnd), callCount: 1, sceneGuard: /await requireSceneForContext\(tx, userId, sceneId\)/ },
+      { body: deletion!.body, callCount: 2, sceneGuard: /if\s*\(!await lockSceneForContext\(tx, userId, sceneId\)\)\s*\{\s*throw new TRPCError\(\{\s*code:\s*"NOT_FOUND"/ },
+    ];
+    for (const { body, callCount, sceneGuard } of paths) {
+      const calls = Array.from(body.matchAll(/\binvalidateSceneMessageContext\(([^)]*)\)/g));
+      expect(calls).toHaveLength(callCount);
+      for (const call of calls) {
+        const before = body.slice(0, call.index);
+        expect(before).toMatch(/const context = await lockChatContext\(tx, personaId, userId\)/);
+        expect(before).toMatch(sceneGuard);
+        expect(call[1]).toMatch(/^\s*tx,\s*context,\s*sceneId\s*$/);
+      }
+    }
   });
 
   it("filters the plan's named helpers by user", () => {
@@ -1019,12 +1057,12 @@ describe("a user cannot reach another user's roleplay channel", () => {
       () => callerB.roleplay.stopAdvance({ channelId: 10 }),
       () => callerB.roleplay.finishWebAdvance({ channelId: 10, taskId: "client-one:1" }),
       () => callerB.roleplay.advanceStatus({ channelId: 10 }),
-      () => callerB.roleplay.tick({ channelId: 10 }),
+      () => callerB.roleplay.tick({ operationId: randomUUID(), channelId: 10 }),
     ]) {
       await expect(action()).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
     // 带 taskId 的 tick 先看任务表：别人的任务在本用户命名空间下不存在，直接 cancelled 且不生成。
-    await expect(callerB.roleplay.tick({ channelId: 10, taskId: "client-one:1" }))
+    await expect(callerB.roleplay.tick({ operationId: randomUUID(), channelId: 10, taskId: "client-one:1" }))
       .resolves.toMatchObject({ cancelled: true });
     // 5B 等价边界：书中人没有 QQ 端服务端推进，归属本人时 advanceStatus 恒为 null。
     const callerA = appRouter.createCaller(ctxFor(1));

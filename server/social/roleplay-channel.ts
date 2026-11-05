@@ -5,6 +5,7 @@ import { cleanAssistantReply, isRepetitiveImmersiveReply } from "../_core/reply-
 import { buildChannelPersonaSystemPrompt, channelYouthToneRequested } from "./channel-persona-prompt";
 import { getPersonaLifeConfig } from "../_core/persona-life-config";
 import { hasProviderPolicyRefusal } from "./provider-policy-refusal";
+import type { WebChannelAdvanceSave } from "./web-channel-advance";
 import {
   buildDialogueQuotaInstruction,
   buildPersonShiftInstruction,
@@ -37,6 +38,7 @@ export type RoleplayTranscriptMessage = {
   speakerName: string;
   role: string;
   content: string;
+  contextOverride?: string | null;
   createdAt?: Date;
 };
 
@@ -56,6 +58,9 @@ export type RunRoleplayTurnOptions = {
   mode?: "channel" | "duet";
   /** 上层会话已切换时，终止尚未提交的生成；回调必须同步且无副作用。 */
   shouldAbort?: () => boolean;
+  generationRevision?: number;
+  save?: WebChannelAdvanceSave;
+  signal?: AbortSignal;
 };
 
 export class RoleplayTurnCancelledError extends Error {
@@ -63,6 +68,13 @@ export class RoleplayTurnCancelledError extends Error {
     super("频道会话已切换，本轮生成已取消");
     this.name = "RoleplayTurnCancelledError";
   }
+}
+
+/** 异步检查数据库快照后，紧贴模型调用再同步检查停止状态。 */
+type BeforeRoleplayModel = () => Promise<() => void>;
+
+function isGenerationChanged(error: unknown) {
+  return error instanceof Error && error.name === "RoleplayGenerationChangedError";
 }
 
 export type ChannelReflection = {
@@ -582,10 +594,13 @@ export async function auditChannelReplyPresence(params: {
   reply: string;
   allowedNames: string[];
   userId: number;
+  beforeInvoke?: BeforeRoleplayModel;
+  signal?: AbortSignal;
 }): Promise<ChannelPresenceAudit> {
   const text = String(params.reply || "").trim();
   if (!text) return { foreignNames: [], otherOnScene: false };
   try {
+    (await params.beforeInvoke?.())?.();
     const response = await llmService.invoke({
       messages: [
         { role: "system", content: "你只做两件事，只输出一个 JSON 对象，不要解释、不要 Markdown。" },
@@ -602,6 +617,7 @@ export async function auditChannelReplyPresence(params: {
         },
       ],
       options: {
+        signal: params.signal,
         temperature: 0,
         maxTokens: 300,
         usageContext: { userId: params.userId, purpose: "roleplay", route: "roleplay.channel_roster_audit" },
@@ -619,6 +635,7 @@ export async function auditChannelReplyPresence(params: {
       otherOnScene: audit.otherOnScene,
     };
   } catch (err) {
+    if (err instanceof RoleplayTurnCancelledError) throw err;
     console.warn("[RoleplayRoster] audit failed, skip check:", err);
     return { foreignNames: [], otherOnScene: false };
   }
@@ -742,6 +759,8 @@ const CHANNEL_FULL_QUALITY = true;
 
 async function invokeChannelAuxiliary(params: {
   label: string;
+  beforeInvoke?: BeforeRoleplayModel;
+  signal?: AbortSignal;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   options: {
     temperature: number;
@@ -752,15 +771,17 @@ async function invokeChannelAuxiliary(params: {
     usageContext: { userId: number; route: string; purpose: "roleplay" };
   };
 }): Promise<string> {
-  const first = await llmService.invoke({ messages: params.messages, options: params.options });
+  (await params.beforeInvoke?.())?.();
+  const first = await llmService.invoke({ messages: params.messages, options: { ...params.options, signal: params.signal } });
   if (String(first || "").trim()) return first;
   const retryTokens = Math.max(params.options.maxTokens * 2, 8000);
   console.warn(
     `[RoleplayAux] ${params.label} 首次返回空正文（maxTokens=${params.options.maxTokens}），按 ${retryTokens} 重试一次`
   );
+  (await params.beforeInvoke?.())?.();
   const second = await llmService.invoke({
     messages: params.messages,
-    options: { ...params.options, maxTokens: retryTokens },
+    options: { ...params.options, maxTokens: retryTokens, signal: params.signal },
   });
   if (!String(second || "").trim()) {
     console.warn(`[RoleplayAux] ${params.label} 重试后仍为空正文：本轮降级跳过该辅助步骤`);
@@ -774,6 +795,8 @@ async function invokeChannelAuxiliary(params: {
  */
 async function decorateReplyWithNarration(params: {
   channel: db.RoleplayChannelView;
+  beforeInvoke?: BeforeRoleplayModel;
+  signal?: AbortSignal;
   speakerName: string;
   reply: string;
   /** 本拍时空锚：补写的旁白必须落在这个地点与时段的延续里。 */
@@ -817,6 +840,8 @@ async function decorateReplyWithNarration(params: {
 
   try {
     const response = await invokeChannelAuxiliary({
+      beforeInvoke: params.beforeInvoke,
+      signal: params.signal,
       label: "旁白补写",
       messages: [
         { role: "system", content: "你是这段双人生活场景的电影级旁白润色者：补充细腻的动作、神态、肢体语言与触感描写，字数充足有镜头感；不改变台词内容与语气。" },
@@ -833,6 +858,8 @@ async function decorateReplyWithNarration(params: {
     // 上游偶发返回没有【】的内容或空：补写是这一拍唯一能拿到旁白的机会，再试一次更硬的指令。
     if (!hasNarrationBlock(out)) {
       const retry = await invokeChannelAuxiliary({
+        beforeInvoke: params.beforeInvoke,
+        signal: params.signal,
         label: "旁白补写(重试)",
         messages: [
           { role: "system", content: "你只做一件事：把给定台词改写成一整段中文生活场景正文，开头必须是【】旁白，只输出正文本身。" },
@@ -866,6 +893,7 @@ async function decorateReplyWithNarration(params: {
     }
     return out.slice(0, 1500);
   } catch (err) {
+    if (err instanceof RoleplayTurnCancelledError) throw err;
     console.warn("[RoleplayNarration] decorate failed, keep original:", err);
     return reply;
   }
@@ -882,6 +910,8 @@ async function decorateReplyWithNarration(params: {
  */
 async function planChannelStoryArc(params: {
   channel: db.RoleplayChannelView;
+  beforeInvoke?: BeforeRoleplayModel;
+  signal?: AbortSignal;
   userId: number;
   recentBeats: string[];
   userSteer: string | null;
@@ -895,6 +925,8 @@ async function planChannelStoryArc(params: {
 }): Promise<StoryDirectorState | null> {
   try {
     const raw = await invokeChannelAuxiliary({
+      beforeInvoke: params.beforeInvoke,
+      signal: params.signal,
       label: "导演线规划",
       messages: [
         { role: "system", content: "你只输出 JSON，不要任何解释、Markdown 或代码块标记。" },
@@ -922,6 +954,8 @@ async function planChannelStoryArc(params: {
       // 这里带着明确格式要求再要一次；仍不行就保留原状态，绝不让规划挡住出戏。
       console.warn("[RoleplayDirector] 规划返回无法解析，重试一次");
       const retryRaw = await invokeChannelAuxiliary({
+        beforeInvoke: params.beforeInvoke,
+        signal: params.signal,
         label: "导演线规划(重试)",
         messages: [
           { role: "system", content: "你只输出一个完整、闭合的 JSON 对象，不要任何解释、Markdown 或代码块标记，也不要中途截断。" },
@@ -967,6 +1001,7 @@ async function planChannelStoryArc(params: {
       turnCount: params.previousTurnCount ?? 0,
     };
   } catch (err) {
+    if (err instanceof RoleplayTurnCancelledError) throw err;
     console.warn("[RoleplayDirector] 规划失败:", err);
     return null;
   }
@@ -992,6 +1027,8 @@ export function countRecentIdentityBeats(
 
 export async function buildChannelReflection(params: {
   channel: db.RoleplayChannelView;
+  beforeInvoke?: BeforeRoleplayModel;
+  signal?: AbortSignal;
   transcript: string;
   recentMessages: RoleplayTranscriptMessage[];
   /** 上一拍持久化的时空锚；没有就由本拍反思确立一个。 */
@@ -1067,6 +1104,8 @@ export async function buildChannelReflection(params: {
   try {
     console.info(`[RoleplayReflection] running for channel=${params.channel.id} messages=${params.recentMessages.length}`);
     const response = await invokeChannelAuxiliary({
+      beforeInvoke: params.beforeInvoke,
+      signal: params.signal,
       label: "节奏反思",
       messages: [
         { role: "system", content: "你只输出一个 JSON 对象，作为频道对话节奏的幕后导演。不过度设计、不扩展剧情，只解决“下一拍怎么走”。" },
@@ -1087,6 +1126,8 @@ export async function buildChannelReflection(params: {
         `[RoleplayReflection] channel=${params.channel.id} 反思输出无法解析为 JSON（长度 ${String(response || "").length}），重试一次`
       );
       const retry = await invokeChannelAuxiliary({
+        beforeInvoke: params.beforeInvoke,
+        signal: params.signal,
         label: "节奏反思(重试)",
         messages: [
           { role: "system", content: "你只输出一个完整、闭合的 JSON 对象，不要任何解释、Markdown 或代码块标记。字段必须齐全。" },
@@ -1138,6 +1179,7 @@ export async function buildChannelReflection(params: {
         : (params.previousSceneAnchor?.trim() || null),
     };
   } catch (err) {
+    if (err instanceof RoleplayTurnCancelledError) throw err;
     console.warn("[RoleplayReflection] failed, fall back to normal turn:", err);
     return null;
   }
@@ -1405,11 +1447,14 @@ const runningRoleplayTurns = new Set<string>();
 /**
  * 频道运行诊断快照：每轮结束后写入 roleplay_channels.runtimeDiagnostics，
  * 供「频道运行诊断」面板展示最近一轮时间 / 节奏导演反思 / 回复策略 / 风险提示。
- * 失败仅告警，绝不影响主流程。
+ * 与发言一同提交时失败会回滚整拍；单独补充诊断时保留原有告警降级。
  */
 async function persistChannelDiagnostics(params: {
   channelId: number;
   userId: number;
+  revision: number;
+  memberIds: number[];
+  executor?: db.DbTransaction;
   spoken: boolean;
   personaId: number;
   speakerName: string;
@@ -1461,8 +1506,9 @@ async function persistChannelDiagnostics(params: {
       skippedReason: params.skippedReason ?? null,
       // 原地打转计数：连着几拍锚没变就累加，达到阈值后强制跳拍。
       stallStreak: Math.max(0, Math.floor(params.stallStreak ?? 0)),
-    });
+    }, params.revision, params.memberIds, params.executor);
   } catch (err) {
+    if (params.executor || isGenerationChanged(err)) throw err;
     console.warn("[RoleplayDiagnostics] persist failed:", err);
   }
 }
@@ -1498,8 +1544,13 @@ export async function invokeChannelTurnWithEmptyReplyRetry(params: {
 }
 
 export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): Promise<RunRoleplayTurnResult> {
+  const stopped = () => options.shouldAbort?.() === true || options.signal?.aborted === true;
   const assertCurrentTurn = () => {
-    if (options.shouldAbort?.()) throw new RoleplayTurnCancelledError();
+    if (stopped()) throw new RoleplayTurnCancelledError();
+  };
+  const save: WebChannelAdvanceSave = async write => {
+    assertCurrentTurn();
+    return options.save ? options.save(write) : write();
   };
   assertCurrentTurn();
   const lockKey = `${options.channelId}:${options.userId}`;
@@ -1507,10 +1558,24 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     throw new Error("该角色频道正在生成上一轮发言，请稍候再试");
   }
   runningRoleplayTurns.add(lockKey);
-  let persistCancelledSavedTurn: (() => Promise<void>) | null = null;
   try {
     const channel = await db.getRoleplayChannelById(options.channelId, options.userId);
-    if (!channel || !channel.isActive) throw new Error("角色频道不存在或已停用");
+    if (!channel?.isActive) {
+      if (options.generationRevision !== undefined) throw new RoleplayTurnCancelledError();
+      throw new Error("角色频道不存在或已停用");
+    }
+    const revision = channel.generationRevision;
+    if (options.generationRevision !== undefined && revision !== options.generationRevision) {
+      throw new RoleplayTurnCancelledError();
+    }
+    const enabledMemberIds = orderedEnabledRoleplayMembers(channel.members).map(member => member.personaId);
+    const beforeInvoke: BeforeRoleplayModel = async () => {
+      assertCurrentTurn();
+      if (!await db.isRoleplayGenerationCurrent(options.channelId, options.userId, revision)) {
+        throw new RoleplayTurnCancelledError();
+      }
+      return assertCurrentTurn;
+    };
     if (channel.members.length < 2) throw new Error("角色频道至少需要两个成员");
 
     // 代词兜底门控：仅当频道内全员为男性时才允许 她→他 改写。
@@ -1532,17 +1597,14 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     });
 
     // 取够 100 条上下文（旧值 40 条：转录窗口再大也拿不到更早的记录）。
-    const messages = await db.getRoleplayChannelMessages(
+    const messages = (await db.getRoleplayChannelMessages(
       options.channelId,
       options.userId,
       ROLEPLAY_TRANSCRIPT_MAX_MESSAGES + 20,
-    );
+    )).filter(message => message.contextOverride !== "excluded");
     const defaultConfig = await db.getDefaultLlmConfig(options.userId);
     const extra = (defaultConfig?.extraConfig as any) || {};
     assertCurrentTurn();
-
-    const excludeForContext = (list: RoleplayTranscriptMessage[]) =>
-      list.filter(message => (message as any).contextOverride !== "excluded");
 
     // 本回合内的实时上下文：同人续拍时第二拍必须看得见第一拍刚写的内容，
     // 否则两拍会拿着同一份过期记录各写一遍，直接变成车轱辘话。
@@ -1551,12 +1613,12 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
 
     // 转录分两份用：主生成要长上下文（约 100 条），反思只要最近几拍。
     const transcript = formatRoleplayTranscript(
-      excludeForContext(liveMessages),
+      liveMessages,
       ROLEPLAY_TRANSCRIPT_CHARS,
       ROLEPLAY_TRANSCRIPT_MAX_MESSAGES,
     );
     const reflectionTranscript = formatRoleplayTranscript(
-      excludeForContext(liveMessages),
+      liveMessages,
       ROLEPLAY_REFLECTION_TRANSCRIPT_CHARS,
       ROLEPLAY_REFLECTION_TRANSCRIPT_MESSAGES,
     );
@@ -1583,6 +1645,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     if (shouldReplanStoryArc(directorState, { userSteer: latestUserSteer })) {
       const planned = await planChannelStoryArc({
         channel,
+        beforeInvoke,
+        signal: options.signal,
         userId: options.userId,
         recentBeats: directorState?.recentBeats ?? [],
         userSteer: latestUserSteer,
@@ -1594,7 +1658,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       assertCurrentTurn();
       if (planned) {
         directorState = planned;
-        await db.setRoleplayChannelDirectorState(options.channelId, options.userId, planned as any);
+        await save(() => db.setRoleplayChannelDirectorState(options.channelId, options.userId, planned as any, revision, enabledMemberIds));
       }
     }
     const directorCue = buildStoryArcCue(directorState);
@@ -1622,6 +1686,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     assertCurrentTurn();
     const reflection = await buildChannelReflection({
       channel,
+      beforeInvoke,
+      signal: options.signal,
       transcript: reflectionTranscript,
       recentMessages: messages,
       previousSceneAnchor,
@@ -1653,7 +1719,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     let lastSkipReason: string | null = null;
     /** 成功插入消息时立即记下，续拍后续步骤失败也不能漏报已落库内容。 */
     const recordedBeats: RoleplayTurnBeat[] = [];
-    const postPersistWarnings: string[] = [];
+    const contextBeats: RoleplayTurnBeat[] = [];
 
     // 一拍可多条：把"生成并落库一条"抽成闭包，同人续拍时重用
     const generateOne = async (member: typeof candidates[number]): Promise<{
@@ -1670,7 +1736,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       lastTriedPersona = persona;
 
       const transcriptNow = formatRoleplayTranscript(
-        excludeForContext(liveMessages),
+        liveMessages,
         ROLEPLAY_TRANSCRIPT_CHARS,
       );
       const latestUserGuidance = [...liveMessages].reverse().find(m => m.role === "user")?.content || undefined;
@@ -1708,7 +1774,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
           stallStreak >= STALL_BREAK_THRESHOLD ? buildStallBreakInstruction(stallStreak) : "",
         ].filter(Boolean).join("\n\n");
         const invokeOnce = async (retryWithoutThinking = false) => {
-          assertCurrentTurn();
+          (await beforeInvoke())();
           const response = await llmService.invoke({
           messages: [
             {
@@ -1733,6 +1799,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
           ],
           options: {
             provider,
+            signal: options.signal,
             temperature: extra.temperature ?? 0.9,
             maxTokens: roleplayMaxTokens(extra.maxTokens),
             usageContext: {
@@ -1806,6 +1873,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       if (CHANNEL_FULL_QUALITY) {
         const decorated = await decorateReplyWithNarration({
           channel,
+          beforeInvoke,
+          signal: options.signal,
           speakerName: persona.name,
           reply: parsed.reply,
           sceneAnchor: reflection?.sceneAnchor ?? previousSceneAnchor,
@@ -1847,6 +1916,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
           : await auditChannelReplyPresence({
               reply: parsed.reply,
               allowedNames,
+              beforeInvoke,
+              signal: options.signal,
               userId: options.userId,
             });
         assertCurrentTurn();
@@ -1869,6 +1940,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
             const recheck = await auditChannelReplyPresence({
               reply: fixed.reply,
               allowedNames,
+              beforeInvoke,
+              signal: options.signal,
               userId: options.userId,
             });
             assertCurrentTurn();
@@ -1952,76 +2025,75 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         parsed.mood,
         computeEmotionalState(transcriptNow, parsed.reply, persona.emotionalState),
       );
+      const { message, beat } = await save(() => db.withRoleplayBeatTransaction(async executor => {
+        const saved = await db.createRoleplayMessage({
+          channelId: options.channelId,
+          userId: options.userId,
+          personaId: member.personaId,
+          speakerName: persona.name,
+          role: "persona",
+          content: parsed.reply,
+          innerThought: parsed.innerThought || null,
+          moodState: { emotionalState },
+          mode: options.mode ?? "channel",
+          ...(rosterViolationUnresolved ? { contextOverride: "excluded" as const } : {}),
+        }, revision, executor);
+        const beat = {
+          personaId: member.personaId,
+          speakerName: persona.name,
+          replyText: parsed.reply,
+          innerThought: parsed.innerThought,
+          emotionalState,
+          messageId: saved.id,
+        };
+        // 消息插入时已锁定频道；插话不能在消息和派生进度之间取得频道锁。
+        await db.updateRoleplayMemberCursor(options.channelId, options.userId, member.personaId, saved.id, revision, executor);
+        await persistSavedTurnProgress(stopped()
+          ? "本轮已停止；保留停止前实际保存的发言，后续未继续生成或交付。"
+          : null, { executor, beat, inContext: !rosterViolationUnresolved });
+        return { message: saved, beat };
+      }));
+      // 事务成功后才把这一拍计入返回结果和后续生成上下文。
+      recordedBeats.push(beat);
+      if (!rosterViolationUnresolved) contextBeats.push(beat);
+      else console.warn(`[RoleplayRoster] channel=${options.channelId} message=${message.id} 重写后仍有外来人名，已自动排除出上下文`);
       assertCurrentTurn();
-      const message = await db.createRoleplayMessage({
-        channelId: options.channelId,
-        userId: options.userId,
-        personaId: member.personaId,
-        speakerName: persona.name,
-        role: "persona",
-        content: parsed.reply,
-        innerThought: parsed.innerThought || null,
-        moodState: { emotionalState },
-        mode: options.mode ?? "channel",
-        // 人名重写后仍越界：这条照样给用户看，但自动排除出上下文，
-        // 避免编造出来的第三个人进入后续每一轮、被当成既成事实固化下来。
-        ...(rosterViolationUnresolved ? { contextOverride: "excluded" as const } : {}),
-      });
-      recordedBeats.push({
-        personaId: member.personaId,
-        speakerName: persona.name,
-        replyText: parsed.reply,
-        innerThought: parsed.innerThought,
-        emotionalState,
-        messageId: message.id,
-      });
-      if (rosterViolationUnresolved) {
-        console.warn(
-          `[RoleplayRoster] channel=${options.channelId} message=${message.id} 重写后仍有外来人名，已自动排除出上下文`
-        );
-      }
-
-      assertCurrentTurn();
-      try {
-        await db.updateRoleplayMemberCursor(
-          options.channelId,
-          options.userId,
-          member.personaId,
-          message.id,
-        );
-      } catch (err) {
-        // 消息已经落库，游标失败不能隐藏这一拍，也不能被标成生成失败。
-        postPersistWarnings.push(`第 ${recordedBeats.length} 拍已保存，但成员游标更新失败。`);
-        console.warn("[RoleplayCursor] message saved, cursor update failed:", err);
-      }
       // 把这一拍写进本回合的实时上下文：同人续拍的下一次 generateOne 会看到它，
       // 并通过 previousBeat 被明确要求承接而不是复述。
-      liveMessages.push({
-        personaId: member.personaId,
-        speakerName: persona.name,
-        role: "persona",
-        content: parsed.reply,
-      });
-      previousBeatText = parsed.reply;
+      if (!rosterViolationUnresolved) {
+        liveMessages.push({
+          personaId: member.personaId,
+          speakerName: persona.name,
+          role: "persona",
+          content: parsed.reply,
+        });
+        previousBeatText = parsed.reply;
+      }
 
       return { message, parsed, emotionalState, speakerName: persona.name };
     };
 
-    const persistSavedTurnProgress = async (skippedReason: string | null, checkCurrent: boolean) => {
-      const firstBeat = recordedBeats[0];
+    const persistSavedTurnProgress = async (skippedReason: string | null, pending?: {
+      executor: db.DbTransaction;
+      beat: RoleplayTurnBeat;
+      inContext: boolean;
+    }) => {
+      const beats = pending ? [...recordedBeats, pending.beat] : recordedBeats;
+      const firstBeat = beats[0];
       if (!firstBeat) return;
-      if (checkCurrent) assertCurrentTurn();
       await persistChannelDiagnostics({
         channelId: options.channelId,
         userId: options.userId,
+        revision,
+        memberIds: enabledMemberIds,
+        executor: pending?.executor,
         spoken: true,
         personaId: firstBeat.personaId,
         speakerName: firstBeat.speakerName,
         emotionalState: firstBeat.emotionalState,
         innerThought: firstBeat.innerThought,
         messageId: firstBeat.messageId,
-        beats: recordedBeats,
-        postPersistWarning: postPersistWarnings.length ? postPersistWarnings.join(" ") : null,
+        beats,
         reflection,
         economyLevel: "normal",
         stallStreak,
@@ -2030,8 +2102,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
 
       // 导演线推进：这一拍演完了 → 游标前进，并把"实际发生了什么"记进台账，
       // 下次重规划时模型能看到真实发生过的事（而不是只看得到最后 100 条消息）。
-      if (checkCurrent) assertCurrentTurn();
-      if (directorState) {
+      if (pending?.inContext && directorState) {
         const playedStep = currentArcStep(directorState);
         const nextDirectorState: StoryDirectorState = {
           ...directorState,
@@ -2039,26 +2110,17 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
           // 封顶后下一拍必然触发重规划，同时提示词仍沿用最后一拍。
           cursor: Math.min(directorState.cursor + 1, directorState.arc.length),
           stallStreak,
-          // 全局回合数：跨重规划不归零，让模型知道整段故事演了多久。
+          // 每拍都从本轮原始导演快照计算：续拍追加实际发言，但整轮只推进一次。
           turnCount: (directorState.turnCount ?? 0) + 1,
           recentBeats: [
             ...directorState.recentBeats,
-            ...recordedBeats.map((beat, index) => `${playedStep?.title ?? "推进"} · 第 ${index + 1} 拍 · ${beat.speakerName}：${String(beat.replyText).replace(/[【】\n]/g, " ").trim().slice(0, 90)}`),
+            ...[...contextBeats, pending.beat].map((beat, index) => `${playedStep?.title ?? "推进"} · 第 ${index + 1} 拍 · ${beat.speakerName}：${String(beat.replyText).replace(/[【】\n]/g, " ").trim().slice(0, 90)}`),
           ].slice(-8),
         };
-        try {
-          await db.setRoleplayChannelDirectorState(options.channelId, options.userId, nextDirectorState as any);
-          console.info(
-            `[RoleplayDirector] channel=${options.channelId} 推进到第 ${nextDirectorState.cursor}/${nextDirectorState.arc.length} 拍`
-          );
-        } catch (err) {
-          console.warn("[RoleplayDirector] 推进落库失败:", err);
-        }
+        await db.setRoleplayChannelDirectorState(options.channelId, options.userId, nextDirectorState as any, revision, enabledMemberIds, pending.executor);
       }
 
     };
-    persistCancelledSavedTurn = () => persistSavedTurnProgress("本轮已停止；保留停止前实际保存的发言，后续未继续生成或交付。", false);
-
     // 第一拍：按候选顺序（含反思的连说倾向）找一位能开口的
     let first: Awaited<ReturnType<typeof generateOne>> | null = null;
     let firstMember = candidates[0];
@@ -2081,15 +2143,15 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         try {
           await generateOne(firstMember);
         } catch (err) {
-          if (err instanceof RoleplayTurnCancelledError) throw err;
+          if (err instanceof RoleplayTurnCancelledError || isGenerationChanged(err) || stopped()) throw err;
           secondBeatFailed = true;
           console.warn("[RoleplayMultiBeat] second beat failed, keep first:", err);
         }
       }
       assertCurrentTurn();
-      await persistSavedTurnProgress(secondBeatFailed
-        ? "节奏导演判定同人连说，但续拍生成失败，保留第一拍。"
-        : null, true);
+      if (secondBeatFailed) {
+        await save(() => persistSavedTurnProgress("节奏导演判定同人连说，但续拍生成或保存失败，保留第一拍。"));
+      }
 
       assertCurrentTurn();
       return {
@@ -2110,9 +2172,11 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     const speakerName = fallbackPersona?.name ?? "同伴";
     const fallbackMood = normalizeMood(fallbackPersona?.emotionalState, "warm");
     assertCurrentTurn();
-    await persistChannelDiagnostics({
+    await save(() => persistChannelDiagnostics({
       channelId: options.channelId,
       userId: options.userId,
+      revision,
+      memberIds: enabledMemberIds,
       spoken: false,
       personaId: fallbackMember.personaId,
       speakerName,
@@ -2122,7 +2186,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       economyLevel: "normal",
       stallStreak,
       skippedReason: lastSkipReason ?? "本轮所有候选角色均未开口（沉默或生成失败），保持安静陪伴。",
-    });
+    }));
     assertCurrentTurn();
     return {
       spoken: false,
@@ -2135,9 +2199,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       skippedReason: lastSkipReason,
     };
   } catch (err) {
-    if (err instanceof RoleplayTurnCancelledError && persistCancelledSavedTurn) {
-      await persistCancelledSavedTurn();
-    }
+    if (isGenerationChanged(err) || stopped()) throw new RoleplayTurnCancelledError();
     throw err;
   } finally {
     runningRoleplayTurns.delete(lockKey);

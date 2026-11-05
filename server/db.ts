@@ -1,5 +1,6 @@
 import { eq, desc, and, or, sql, count, sum, gte, lte, ilike, asc, inArray, isNull, gt, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { TRPCError } from "@trpc/server";
 import type { UsageRecord, TokenSource } from "./llm/usage";
 import {
   InsertUser, users,
@@ -386,11 +387,20 @@ export async function deletePersona(id: number, userId: number) {
   if (!owned) throw new Error("Persona not found");
 
   await withTransaction(async (tx) => {
-    // 先记下人物在哪些频道里，删完成员后据此停用人手不足的频道。
-    const affectedRoleplayChannelIds = (await tx.select({ channelId: roleplayChannelMembers.channelId })
+    // 阻止并发添加新成员关系；先按编号锁频道，最后才删人物，避免与生成的外键锁反序。
+    await lockRoleplayMembershipChanges(tx, userId);
+    const memberChannels = await tx.selectDistinct({ channelId: roleplayChannelMembers.channelId })
       .from(roleplayChannelMembers)
-      .where(and(eq(roleplayChannelMembers.personaId, id), eq(roleplayChannelMembers.userId, userId))))
-      .map(row => row.channelId);
+      .where(and(eq(roleplayChannelMembers.personaId, id), eq(roleplayChannelMembers.userId, userId)));
+    const historyChannels = await tx.selectDistinct({ channelId: roleplayMessages.channelId })
+      .from(roleplayMessages)
+      .where(and(eq(roleplayMessages.personaId, id), eq(roleplayMessages.userId, userId)));
+    const affectedIds = Array.from(new Set([...memberChannels, ...historyChannels].map(row => row.channelId)));
+    const affectedRoleplayChannelIds = affectedIds.length === 0 ? [] : (await tx.select({ id: roleplayChannels.id })
+      .from(roleplayChannels)
+      .where(and(eq(roleplayChannels.userId, userId), inArray(roleplayChannels.id, affectedIds)))
+      .orderBy(asc(roleplayChannels.id))
+      .for("update")).map(row => row.id);
     await tx.delete(channelBindings).where(and(eq(channelBindings.personaId, id), eq(channelBindings.userId, userId)));
     await tx.delete(chatSummaries).where(and(eq(chatSummaries.personaId, id), eq(chatSummaries.userId, userId)));
     await tx.delete(collectedMessages).where(and(eq(collectedMessages.personaId, id), eq(collectedMessages.userId, userId)));
@@ -406,9 +416,12 @@ export async function deletePersona(id: number, userId: number) {
     await tx.delete(researchProfiles).where(and(eq(researchProfiles.personaId, id), eq(researchProfiles.userId, userId)));
     await tx.delete(safetyEvents).where(and(eq(safetyEvents.personaId, id), eq(safetyEvents.userId, userId)));
     await tx.delete(sceneMemoryStates).where(and(eq(sceneMemoryStates.personaId, id), eq(sceneMemoryStates.userId, userId)));
-    // 角色频道：先删人物在频道里的消息与成员关系，再停用只剩单人/空频道的频道。
+    // 角色频道：删掉人物发言与成员关系，重置所有受影响频道的派生状态与生成版本。
     await tx.delete(roleplayMessages).where(and(eq(roleplayMessages.personaId, id), eq(roleplayMessages.userId, userId)));
     await tx.delete(roleplayChannelMembers).where(and(eq(roleplayChannelMembers.personaId, id), eq(roleplayChannelMembers.userId, userId)));
+    for (const channelId of affectedRoleplayChannelIds) {
+      await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    }
     await deactivateRoleplayChannelsWithTooFewMembers(tx, userId, affectedRoleplayChannelIds);
     await tx.delete(skillJobs).where(and(eq(skillJobs.personaId, id), eq(skillJobs.userId, userId)));
     await tx.delete(wechatBindings).where(and(eq(wechatBindings.personaId, id), eq(wechatBindings.userId, userId)));
@@ -435,8 +448,8 @@ export async function getFilesByPersonaId(personaId: number, userId: number) {
 
 // ─── Message helpers ────────────────────────────────────────────────────────
 
-export async function createMessage(data: InsertMessage) {
-  const db = await getDb();
+export async function createMessage(data: InsertMessage, tx?: DbTransaction) {
+  const db = tx ?? await getDb();
   if (!db) throw new Error("DB not available");
   // 消息模式由归属推导：带 sceneId 的是场景消息，其余是日常消息。
   // 日常上下文只读 mode='daily'，场景上下文只读 sceneId，二者互不串线。
@@ -1313,616 +1326,487 @@ export async function updateScene(id: number, userId: number, data: Partial<Inse
   return row || null;
 }
 
-/**
- * Deletes a custom scene and everything that hangs off it.
- *
- * Returns false when nothing was deleted — the scene belongs to somebody
- * else, or it is a built-in one. The caller turns that into a refusal
- * rather than reporting a success that did not happen. The cleanup runs in
- * one transaction with the delete, mirroring the self-use build: the scene
- * memory rows go, and any persona that was standing in the scene is put
- * back to daily chat instead of pointing at a scene that no longer exists.
- */
+// ─── Scene lifecycle, memory and conversation context ──────────────────────
+
+const personaOwner = (personaId: number, userId: number) =>
+  and(eq(personas.id, personaId), eq(personas.userId, userId));
+const chatContextOwner = (personaId: number, userId: number) =>
+  and(eq(chatContextStates.personaId, personaId), eq(chatContextStates.userId, userId));
+const sceneMemoryOwner = (personaId: number, userId: number, sceneId: number) =>
+  and(eq(sceneMemoryStates.personaId, personaId), eq(sceneMemoryStates.userId, userId),
+    eq(sceneMemoryStates.sceneId, sceneId));
+const sceneMessageOwner = (personaId: number, userId: number, sceneId: number) =>
+  and(eq(messages.personaId, personaId), eq(messages.userId, userId),
+    eq(messages.sceneId, sceneId), eq(messages.mode, "scene"));
+const accessibleScene = (sceneId: number, userId: number) =>
+  and(eq(scenes.id, sceneId), or(eq(scenes.isBuiltin, true), eq(scenes.userId, userId)));
+
+type SceneConnection = NonNullable<Awaited<ReturnType<typeof getDb>>> | DbTransaction;
+type LockedChatContext = typeof chatContextStates.$inferSelect;
+
+/** All context mutations lock this row before any scene, message or memory row. */
+export async function lockChatContext(
+  tx: DbTransaction, personaId: number, userId: number, lock: "share" | "update" = "update",
+): Promise<LockedChatContext> {
+  const owner = personaOwner(personaId, userId);
+  const scope = chatContextOwner(personaId, userId);
+  const [persona] = await tx.select({ id: personas.id }).from(personas).where(owner).limit(1);
+  if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
+  const read = () => tx.select().from(chatContextStates).where(scope).limit(1).for(lock);
+  const [existing] = await read();
+  if (existing) return existing;
+  await tx.insert(chatContextStates).values({ personaId, userId }).onConflictDoNothing();
+  const [created] = await read();
+  if (!created) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
+  return created;
+}
+
+async function advanceContextRevision(tx: DbTransaction, context: LockedChatContext) {
+  const revision = context.revision + 1;
+  await tx.update(chatContextStates).set({ revision, updatedAt: new Date() })
+    .where(eq(chatContextStates.id, context.id));
+  return revision;
+}
+
+/** Review accepts lock the persona before evidence messages; bulk edits use the same order. */
+export async function lockPersonaForSceneMessageChanges(tx: DbTransaction, personaId: number, userId: number) {
+  const [persona] = await tx.select({ id: personas.id }).from(personas)
+    .where(personaOwner(personaId, userId)).limit(1).for("no key update");
+  if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
+}
+
+/** Call after locking the persona's context. The scene cannot disappear before commit. */
+export async function lockSceneForContext(tx: DbTransaction, userId: number, sceneId: number) {
+  const [scene] = await tx.select().from(scenes).where(accessibleScene(sceneId, userId))
+    .limit(1).for("share");
+  return scene ?? null;
+}
+
+async function requireSceneForContext(tx: DbTransaction, userId: number, sceneId: number) {
+  const scene = await lockSceneForContext(tx, userId, sceneId);
+  if (!scene) throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在。" });
+  return scene;
+}
+
+/** Only activation and deletion take this lock, before either touches context rows. */
+async function lockSceneLifecycle(tx: DbTransaction, userId: number) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-lifecycle'), ${userId})`);
+}
+
 export async function deleteScene(id: number, userId: number): Promise<boolean> {
-  const db = await getDb();
-  if (!db) return false;
-  return withTransaction(async (tx) => {
-    const ownedScene = and(
-      eq(scenes.id, id),
-      eq(scenes.isBuiltin, false),
-      eq(scenes.userId, userId),
-    );
-    const [scene] = await tx.select({ id: scenes.id }).from(scenes)
-      .where(ownedScene).limit(1).for("update");
+  return withTransaction(async tx => {
+    await lockSceneLifecycle(tx, userId);
+    const owned = and(eq(scenes.id, id), eq(scenes.isBuiltin, false), eq(scenes.userId, userId));
+    const [existing] = await tx.select({ id: scenes.id }).from(scenes).where(owned).limit(1);
+    if (!existing) return false;
+
+    const attached = await tx.select({ id: personas.id }).from(personas)
+      .where(and(eq(personas.userId, userId), eq(personas.activeSceneId, id)))
+      .orderBy(asc(personas.id));
+    const contexts = [];
+    for (const { id: personaId } of attached) contexts.push(await lockChatContext(tx, personaId, userId));
+
+    // Scene deletion cascades into review candidates, including those of inactive personas.
+    // Drain their review transactions before locking the scene or the candidate cascade can deadlock.
+    await tx.select({ id: personas.id }).from(personas).where(eq(personas.userId, userId))
+      .orderBy(asc(personas.id)).for("no key update");
+    const [scene] = await tx.select({ id: scenes.id }).from(scenes).where(owned).limit(1).for("update");
     if (!scene) return false;
-    await tx.delete(sceneMemoryStates).where(and(
-      eq(sceneMemoryStates.sceneId, id),
-      eq(sceneMemoryStates.userId, userId),
-    ));
+    for (const context of contexts) await advanceContextRevision(tx, context);
     await tx.update(personas).set({ activeSceneId: null, updatedAt: new Date() })
       .where(and(eq(personas.userId, userId), eq(personas.activeSceneId, id)));
-    await tx.delete(scenes).where(ownedScene);
+    await tx.delete(scenes).where(owned); // The foreign key also removes all scene memory states.
     return true;
   });
 }
 
-/**
- * Attaches a scene to a persona.
- *
- * Only the persona's owner may change this, and only their own scenes (or a
- * built-in one) may be attached — otherwise a user could graft another
- * user's scene prompt onto their persona.
- *
- * 场景记忆与剧情进度的读写属于第 4 批 4B；本函数只负责切换人物的当前场景。
- */
 export async function activateScene(personaId: number, sceneId: number | null, userId: number) {
-  const db = await getDb();
-  if (!db) return;
-
-  if (sceneId != null) {
-    // 归属校验留在数据层：内置场景或本人创建的场景才允许挂到人物上。
-    const [scene] = await db.select({ id: scenes.id }).from(scenes)
-      .where(and(
-        eq(scenes.id, sceneId),
-        or(eq(scenes.isBuiltin, true), eq(scenes.userId, userId)),
-      ))
-      .limit(1);
-    if (!scene) throw new Error("Scene not found");
-  }
-
-  await db.update(personas).set({ activeSceneId: sceneId, updatedAt: new Date() })
-    .where(and(eq(personas.id, personaId), eq(personas.userId, userId)));
-
-  // 切换/退出场景后让在途回合失效：与日常「对话上下文已变化」共用同一 revision 语义。
-  await bumpChatContextRevision(personaId, userId);
-
-  if (sceneId === null) return;
-
-  // continuationEnabled=false 的场景每次进入都从新故事开始（与自用版一致）；
-  // 默认 true 时保留该场景的摘要、事实与回合，实现「再次进入自动续写」。
-  const [sceneRow] = await db.select({ continuationEnabled: scenes.continuationEnabled }).from(scenes)
-    .where(eq(scenes.id, sceneId))
-    .limit(1);
-  if (sceneRow?.continuationEnabled === false) {
-    await clearSceneMemoryState(personaId, userId, sceneId);
-    await resetPersonaSceneStoryState(personaId, userId, sceneId);
-  }
+  await withTransaction(async tx => {
+    await lockSceneLifecycle(tx, userId);
+    const context = await lockChatContext(tx, personaId, userId);
+    await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+    const scene = sceneId === null ? null : await requireSceneForContext(tx, userId, sceneId);
+    if (scene?.continuationEnabled === false) {
+      await advanceSceneBoundary(tx, personaId, userId, scene.id, false);
+    }
+    await tx.update(personas).set({ activeSceneId: sceneId, updatedAt: new Date() })
+      .where(personaOwner(personaId, userId));
+    await advanceContextRevision(tx, context);
+  });
 }
 
-// ─── Scene memory & scene conversation context ──────────────────────────────
-
-/**
- * 场景记忆缓存与场景会话上下文（第 4 批 4B）。
- *
- * 数据落在 scene_memory_states（4A 迁移建表）与 messages 的
- * contextOverride / sceneId / mode 三列；日常上下文的边界与手动覆盖仍由
- * chat_context_states（第 3 批）持有，这里只读取它的 startAfterMessageId，
- * 保证「日常」和「场景」两条上下文用同一条会话起点。
- *
- * 移植自自用版 db.ts 的场景区段，做了三处书中人适配：
- * 1. 不再在运行时 ensure 建表/建列（schema 由手写迁移维护）；
- * 2. 自用版放在 persona_runtime_states 的剧情进度，合并进 scene_memory_states.storyState，
- *    回合数按「该场景会话起点之后的助手回复数」校准；
- * 3. 清空/重建用 stateId 做乐观锁，清空后迟到的摘要/事实任务写不回来。
- */
+/** Binds the current scene and revision in one short transaction before generation. */
+export async function getSceneGenerationSnapshot(
+  personaId: number, userId: number, options: { startNewScene?: boolean } = {},
+) {
+  return withTransaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId, options.startNewScene ? "update" : "share");
+    const [persona] = await tx.select().from(personas).where(personaOwner(personaId, userId)).limit(1);
+    if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
+    if (options.startNewScene && persona.activeSceneId != null) {
+      await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+    }
+    const scene = persona.activeSceneId == null ? null : await lockSceneForContext(tx, userId, persona.activeSceneId);
+    let revision = context.revision;
+    if (scene && options.startNewScene) {
+      await advanceSceneBoundary(tx, personaId, userId, scene.id, true);
+      revision = await advanceContextRevision(tx, context);
+    }
+    return { persona, scene, revision };
+  });
+}
 
 export type SceneMemoryStateSnapshot = {
-  /** 用于拒绝清空/重建前启动的后台任务；不是客户端可修改字段。 */
   stateId?: number | null;
   storyState: SceneMemoryStoryState | null;
   cache: SceneMemoryCache | null;
 };
 
-/**
- * 当前会话（日常与场景共用）的上下文起点。
- * 与 chat/context-state 的 chat_context_states.startAfterMessageId 保持同一口径。
- */
-export async function getPersonaConversationContextStartMessageId(
-  personaId: number,
-  userId: number,
-): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const [state] = await db.select({ boundary: chatContextStates.startAfterMessageId })
-    .from(chatContextStates)
-    .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
-    .limit(1);
-  const boundary = state?.boundary;
-  return typeof boundary === "number" && Number.isSafeInteger(boundary) && boundary > 0
-    ? boundary
-    : 0;
+async function readSceneMemoryRow(
+  connection: SceneConnection, personaId: number, userId: number, sceneId: number,
+) {
+  const [row] = await connection.select().from(sceneMemoryStates)
+    .where(sceneMemoryOwner(personaId, userId, sceneId)).limit(1);
+  return row;
 }
 
-/** 场景会话起点之后的助手回复数，等于该段剧情的回复回合数。 */
-export async function countSceneAssistantMessages(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
-  const [row] = await db.select({ count: count() }).from(messages)
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-      eq(messages.role, "assistant"),
-      gt(messages.id, startAfterMessageId),
-    ));
+function sceneSnapshot(row: Awaited<ReturnType<typeof readSceneMemoryRow>> | undefined): SceneMemoryStateSnapshot {
+  return {
+    stateId: row?.id ?? null,
+    storyState: normalizeSceneMemoryStoryState(row?.storyState),
+    cache: normalizeSceneMemoryCache(row?.cache),
+  };
+}
+
+async function sceneAssistantMessageCount(
+  connection: SceneConnection, personaId: number, userId: number, sceneId: number, boundary: number,
+) {
+  const [row] = await connection.select({ count: count() }).from(messages)
+    .where(and(sceneMessageOwner(personaId, userId, sceneId), eq(messages.role, "assistant"),
+      gt(messages.id, boundary), sql`${messages.contextOverride} IS DISTINCT FROM false`));
   return Number(row?.count ?? 0);
 }
 
+/** Daily history keeps its own boundary; scene reads never fall back to it. */
+export async function getPersonaConversationContextStartMessageId(personaId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const [state] = await db.select({ boundary: chatContextStates.startAfterMessageId })
+    .from(chatContextStates).where(chatContextOwner(personaId, userId)).limit(1);
+  return state?.boundary ?? 0;
+}
+
+export async function countSceneAssistantMessages(personaId: number, userId: number, sceneId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const row = await readSceneMemoryRow(db, personaId, userId, sceneId);
+  return sceneAssistantMessageCount(db, personaId, userId, sceneId, row?.startAfterMessageId ?? 0);
+}
+
 export async function getSceneMemoryStateSnapshot(
-  personaId: number,
-  userId: number,
-  sceneId: number,
+  personaId: number, userId: number, sceneId: number,
 ): Promise<SceneMemoryStateSnapshot> {
   const db = await getDb();
-  if (!db) return { storyState: null, cache: null };
-  const [row] = await db.select().from(sceneMemoryStates)
-    .where(and(
-      eq(sceneMemoryStates.personaId, personaId),
-      eq(sceneMemoryStates.userId, userId),
-      eq(sceneMemoryStates.sceneId, sceneId),
-    ))
-    .limit(1);
-  const storyState = normalizeSceneMemoryStoryState(row?.storyState);
-  const cache = normalizeSceneMemoryCache(row?.cache);
-
-  // 回合数校准：以场景会话起点之后实际落库的助手回复数为准。
-  if (storyState) {
-    const messageTurns = await countSceneAssistantMessages(personaId, userId, sceneId);
-    if (messageTurns > 0 && storyState.turn !== messageTurns) storyState.turn = messageTurns;
+  const row = db ? await readSceneMemoryRow(db, personaId, userId, sceneId) : undefined;
+  const snapshot = sceneSnapshot(row);
+  if (db && row && snapshot.storyState) {
+    snapshot.storyState.turn = await sceneAssistantMessageCount(db, personaId, userId, sceneId, row.startAfterMessageId);
   }
+  return snapshot;
+}
 
-  return { stateId: row?.id ?? null, storyState, cache };
+type SceneMemoryPatch = {
+  storyState?: SceneMemoryStoryState | null;
+  cache?: SceneMemoryCache | null;
+};
+
+async function writeSceneMemoryState(
+  tx: DbTransaction, personaId: number, userId: number, sceneId: number,
+  existing: Awaited<ReturnType<typeof readSceneMemoryRow>> | undefined,
+  patch: SceneMemoryPatch,
+): Promise<SceneMemoryStateSnapshot> {
+  const storyState = normalizeSceneMemoryStoryState(
+    patch.storyState === undefined ? existing?.storyState : patch.storyState,
+  ) ?? buildInitialSceneMemoryStoryState("scene:" + sceneId);
+  const cache = normalizeSceneMemoryCache(patch.cache === undefined ? existing?.cache : patch.cache)
+    ?? buildInitialSceneMemoryCache();
+  if (existing) {
+    await tx.update(sceneMemoryStates).set({ storyState, cache, updatedAt: new Date() })
+      .where(eq(sceneMemoryStates.id, existing.id));
+    return { stateId: existing.id, storyState, cache };
+  }
+  const [created] = await tx.insert(sceneMemoryStates).values({ personaId, userId, sceneId, storyState, cache })
+    .returning({ id: sceneMemoryStates.id });
+  return { stateId: created.id, storyState, cache };
 }
 
 export async function upsertSceneMemoryState(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  data: {
-    storyState?: SceneMemoryStoryState | null;
-    cache?: SceneMemoryCache | null;
-  },
+  personaId: number, userId: number, sceneId: number, data: SceneMemoryPatch,
 ): Promise<void> {
   await mutateSceneMemoryState(personaId, userId, sceneId, () => data);
 }
 
-/**
- * 在短事务内锁定并读取最新快照，再应用局部修改。
- * 同一人物/场景的首次插入由事务级 advisory lock 串行化；锁内不跑模型。
- * expectedStateId 防止后台结果在用户清空或重建记忆后重新灌入旧内容。
- */
+/** The model runs outside the transaction; delayed results need the original revision and row ID. */
 export async function mutateSceneMemoryState(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  mutate: (current: SceneMemoryStateSnapshot) => {
-    storyState?: SceneMemoryStoryState | null;
-    cache?: SceneMemoryCache | null;
-  } | null,
-  expectedStateId?: number,
+  personaId: number, userId: number, sceneId: number,
+  mutate: (current: SceneMemoryStateSnapshot) => SceneMemoryPatch | null,
+  expected?: number | { stateId: number; revision: number },
 ): Promise<SceneMemoryStateSnapshot | null> {
-  const db = await getDb();
-  if (!db) throw new Error("DB not available");
   return withTransaction(async tx => {
-    const lockKey = userId + ":" + personaId + ":" + sceneId;
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-memory'), hashtext(${lockKey}))`);
-    const [existing] = await tx.select().from(sceneMemoryStates)
-      .where(and(
-        eq(sceneMemoryStates.personaId, personaId),
-        eq(sceneMemoryStates.userId, userId),
-        eq(sceneMemoryStates.sceneId, sceneId),
-      ))
-      .limit(1)
-      .for("update");
-    if (expectedStateId !== undefined && existing?.id !== expectedStateId) return null;
-    const current: SceneMemoryStateSnapshot = {
-      stateId: existing?.id ?? null,
-      storyState: normalizeSceneMemoryStoryState(existing?.storyState),
-      cache: normalizeSceneMemoryCache(existing?.cache),
-    };
-    const data = mutate(current);
-    if (data === null) return current;
-    const storyState = normalizeSceneMemoryStoryState(
-      data.storyState === undefined ? current.storyState : data.storyState,
-    ) ?? buildInitialSceneMemoryStoryState("scene:" + sceneId);
-    const cache = normalizeSceneMemoryCache(
-      data.cache === undefined ? current.cache : data.cache,
-    ) ?? buildInitialSceneMemoryCache();
-    let stateId = existing?.id;
-    if (existing) {
-      await tx.update(sceneMemoryStates)
-        .set({ storyState, cache, updatedAt: new Date() })
-        .where(eq(sceneMemoryStates.id, existing.id));
-    } else {
-      const [created] = await tx.insert(sceneMemoryStates).values({
-        personaId, userId, sceneId, storyState, cache,
-      }).returning({ id: sceneMemoryStates.id });
-      stateId = created.id;
+    const context = await lockChatContext(tx, personaId, userId);
+    if (typeof expected === "object" && context.revision !== expected.revision) return null;
+    const scene = await lockSceneForContext(tx, userId, sceneId);
+    if (!scene) {
+      if (expected !== undefined) return null;
+      throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在。" });
     }
-    return { stateId, storyState, cache };
+    const existing = await readSceneMemoryRow(tx, personaId, userId, sceneId);
+    const expectedId = typeof expected === "object" ? expected.stateId : expected;
+    if (expectedId !== undefined && existing?.id !== expectedId) return null;
+    const current = sceneSnapshot(existing);
+    const patch = mutate(current);
+    if (patch === null) return current;
+    const snapshot = await writeSceneMemoryState(tx, personaId, userId, sceneId, existing, patch);
+    if (expected === undefined) await advanceContextRevision(tx, context);
+    return snapshot;
   });
 }
 
-export async function clearSceneMemoryState(
-  personaId: number,
-  userId: number,
-  sceneId: number,
+/** Call under the context and scene locks, after any message mutations. */
+async function replaceSceneMemoryState(
+  tx: DbTransaction, personaId: number, userId: number, sceneId: number,
+  options: { boundary?: number; preserveManualFacts: boolean; resetStory: boolean },
+) {
+  const existing = await readSceneMemoryRow(tx, personaId, userId, sceneId);
+  const boundary = options.boundary ?? existing?.startAfterMessageId ?? 0;
+  const snapshot = sceneSnapshot(existing);
+  const facts = options.preserveManualFacts
+    ? (snapshot.cache?.pinnedFacts ?? []).filter(fact => fact.source === "user") : [];
+  const storyState = options.resetStory || !snapshot.storyState
+    ? buildInitialSceneMemoryStoryState("scene:" + sceneId) : {
+      ...snapshot.storyState,
+      turn: await sceneAssistantMessageCount(tx, personaId, userId, sceneId, boundary),
+      lastMessageId: null,
+      updatedAt: new Date().toISOString(),
+    };
+  // Replacing the row also invalidates refreshes that started before this change.
+  if (existing) await tx.delete(sceneMemoryStates).where(eq(sceneMemoryStates.id, existing.id));
+  await tx.insert(sceneMemoryStates).values({
+    personaId, userId, sceneId, startAfterMessageId: boundary, storyState,
+    cache: { ...buildInitialSceneMemoryCache(), pinnedFacts: facts },
+  });
+}
+
+async function advanceSceneBoundary(
+  tx: DbTransaction, personaId: number, userId: number, sceneId: number, preserveManualFacts: boolean,
+) {
+  const scope = sceneMessageOwner(personaId, userId, sceneId);
+  const [latest] = await tx.select({ id: messages.id }).from(messages).where(scope)
+    .orderBy(desc(messages.id)).limit(1);
+  const boundary = Math.max(latest?.id ?? 0,
+    (await readSceneMemoryRow(tx, personaId, userId, sceneId))?.startAfterMessageId ?? 0);
+  await tx.update(messages).set({ contextOverride: null }).where(and(scope,
+    lte(messages.id, boundary), sql`${messages.contextOverride} IS NOT NULL`));
+  await replaceSceneMemoryState(tx, personaId, userId, sceneId, {
+    boundary, preserveManualFacts, resetStory: true,
+  });
+  return boundary;
+}
+
+export async function clearSceneMemoryState(personaId: number, userId: number, sceneId: number): Promise<void> {
+  await withTransaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId);
+    await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+    await requireSceneForContext(tx, userId, sceneId);
+    await advanceSceneBoundary(tx, personaId, userId, sceneId, false);
+    await advanceContextRevision(tx, context);
+  });
+}
+
+/** Invalidate after a deletion in the transaction that locked context and scene first. */
+export async function invalidateSceneMessageContext(
+  tx: DbTransaction, context: LockedChatContext, sceneId: number,
 ): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(sceneMemoryStates).where(and(
-    eq(sceneMemoryStates.personaId, personaId),
-    eq(sceneMemoryStates.userId, userId),
-    eq(sceneMemoryStates.sceneId, sceneId),
-  ));
+  await replaceSceneMemoryState(tx, context.personaId, context.userId, sceneId, {
+    preserveManualFacts: true, resetStory: false,
+  });
+  await advanceContextRevision(tx, context);
 }
 
-/** 删除某场景的记忆；传 userId 时只清该用户的关联（删除他人场景时绝不越权）。 */
-export async function deleteSceneMemoryStatesForScene(
-  sceneId: number,
-  userId?: number,
-): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(sceneMemoryStates).where(userId === undefined
-    ? eq(sceneMemoryStates.sceneId, sceneId)
-    : and(eq(sceneMemoryStates.sceneId, sceneId), eq(sceneMemoryStates.userId, userId)));
-}
-
-export async function deleteSceneMemoryStatesForPersona(
-  personaId: number,
-  userId: number,
-): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(sceneMemoryStates).where(and(
-    eq(sceneMemoryStates.personaId, personaId),
-    eq(sceneMemoryStates.userId, userId),
-  ));
-}
-
-export async function deleteSceneMemoryStatesForUser(userId: number): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(sceneMemoryStates).where(eq(sceneMemoryStates.userId, userId));
-}
-
-/**
- * 场景回合成功后推进剧情进度并记录本轮消息。
- * 返回该场景当前回合数，供调用方决定是否触发滚动摘要。
- */
+/** A reply's message and turn can be committed together using the caller's locked transaction. */
 export async function recordSceneMemoryTurn(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  sceneKey: string,
-  messageIds: number[],
+  personaId: number, userId: number, sceneId: number, sceneKey: string, messageIds: number[],
+  tx?: DbTransaction,
 ): Promise<number> {
-  const now = new Date().toISOString();
-  const messageTurns = await countSceneAssistantMessages(personaId, userId, sceneId);
-  const messageIdList = messageIds.filter(id => Number.isSafeInteger(id) && id > 0);
-  let resultTurn = messageTurns;
-  await mutateSceneMemoryState(personaId, userId, sceneId, snapshot => {
-    const previous = snapshot.storyState;
-    const turn = Math.max(messageTurns, previous?.turn ?? 0);
-    resultTurn = turn;
-    return {
+  const record = async (transaction: DbTransaction) => {
+    const existing = await readSceneMemoryRow(transaction, personaId, userId, sceneId);
+    const previous = sceneSnapshot(existing);
+    const now = new Date().toISOString();
+    const turn = await sceneAssistantMessageCount(transaction, personaId, userId, sceneId, existing?.startAfterMessageId ?? 0);
+    const ids = messageIds.filter(id => Number.isSafeInteger(id) && id > 0);
+    await writeSceneMemoryState(transaction, personaId, userId, sceneId, existing, {
       storyState: {
-        sceneKey: sceneKey || previous?.sceneKey || "scene:" + sceneId,
+        sceneKey: sceneKey || previous.storyState?.sceneKey || "scene:" + sceneId,
         turn,
-        startedAt: previous?.startedAt || now,
+        startedAt: previous.storyState?.startedAt || now,
         updatedAt: now,
-        lastMessageId: messageIdList.at(-1) ?? previous?.lastMessageId ?? null,
-        lastExitAt: previous?.lastExitAt ?? null,
+        lastMessageId: ids.at(-1) ?? previous.storyState?.lastMessageId ?? null,
+        lastExitAt: previous.storyState?.lastExitAt ?? null,
       },
-      cache: appendSceneMemoryRecentMessages(
-        snapshot.cache ?? buildInitialSceneMemoryCache(now),
-        messageIdList,
-        now,
-      ),
-    };
+      cache: appendSceneMemoryRecentMessages(previous.cache ?? buildInitialSceneMemoryCache(now), ids, now),
+    });
+    return turn;
+  };
+  if (tx) return record(tx); // Caller already holds the exclusive context lock and the scene lock.
+  return withTransaction(async transaction => {
+    await lockChatContext(transaction, personaId, userId);
+    await requireSceneForContext(transaction, userId, sceneId);
+    return record(transaction);
   });
-  return resultTurn;
 }
 
-/** 清空剧情进度；传 sceneId 只重置该场景，不传则重置该人物全部场景。 */
-export async function resetPersonaSceneStoryState(
-  personaId: number,
-  userId: number,
-  sceneId?: number,
-): Promise<void> {
-  if (sceneId !== undefined) {
-    await mutateSceneMemoryState(personaId, userId, sceneId, () => ({
-      storyState: buildInitialSceneMemoryStoryState("scene:" + sceneId),
-    }));
-    return;
-  }
-  const db = await getDb();
-  if (!db) return;
-  await db.update(sceneMemoryStates)
-    .set({ storyState: null, updatedAt: new Date() })
-    .where(and(
-      eq(sceneMemoryStates.personaId, personaId),
-      eq(sceneMemoryStates.userId, userId),
-    ));
+export async function startNewPersonaConversationContext(personaId: number, userId: number) {
+  const result = await startNewActiveConversationContext(personaId, userId);
+  return result.startAfterMessageId;
 }
 
-/**
- * 开始新一段对话（场景「开始」标记 / 日常新对话按钮共用）。
- *
- * 与自用版 startNewPersonaConversationContext 等价：把会话起点推进到最新消息，
- * 清掉边界前的手动上下文标记与滚动摘要；若人物正处在场景中，同时清空该场景的
- * 摘要/待续线索/最近消息，但保留「已确认事实」，并把剧情回合归零。
- * 删除再插入记忆行会换掉 stateId，使清空前启动的摘要任务在返回时写不进来。
- */
-export async function startNewPersonaConversationContext(
-  personaId: number,
-  userId: number,
-): Promise<number> {
+/** The chat menu starts a new segment in the mode that is active under the context lock. */
+export async function startNewActiveConversationContext(personaId: number, userId: number) {
   return withTransaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId);
     const [persona] = await tx.select({ activeSceneId: personas.activeSceneId }).from(personas)
-      .where(and(eq(personas.id, personaId), eq(personas.userId, userId)))
-      .limit(1);
-    const activeSceneId = persona?.activeSceneId ?? null;
-    if (activeSceneId !== null) {
-      const lockKey = userId + ":" + personaId + ":" + activeSceneId;
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-memory'), hashtext(${lockKey}))`);
-    }
-    const [latestMessage] = await tx.select({ id: messages.id }).from(messages)
-      .where(and(eq(messages.personaId, personaId), eq(messages.userId, userId)))
-      .orderBy(desc(messages.id))
-      .limit(1);
-    const startAfterMessageId = latestMessage?.id ?? 0;
-    await tx.update(messages)
-      .set({ contextOverride: null })
-      .where(and(
-        eq(messages.personaId, personaId),
-        eq(messages.userId, userId),
-        lte(messages.id, startAfterMessageId),
-      ));
-
-    const [existing] = await tx.select().from(chatContextStates)
-      .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
-      .limit(1)
-      .for("update");
-    if (existing) {
-      await tx.update(chatContextStates)
-        .set({
-          startAfterMessageId,
-          overrides: {},
-          revision: existing.revision + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(chatContextStates.id, existing.id));
-    } else {
-      await tx.insert(chatContextStates).values({
-        userId,
-        personaId,
-        startAfterMessageId,
-        overrides: {},
-        revision: 1,
-      });
-    }
-
-    await tx.delete(chatSummaries).where(and(
-      eq(chatSummaries.personaId, personaId),
-      eq(chatSummaries.userId, userId),
-    ));
-
-    if (activeSceneId !== null) {
-      const [oldMemory] = await tx.select().from(sceneMemoryStates)
-        .where(and(
-          eq(sceneMemoryStates.personaId, personaId),
-          eq(sceneMemoryStates.userId, userId),
-          eq(sceneMemoryStates.sceneId, activeSceneId),
-        ))
-        .limit(1)
-        .for("update");
-      if (oldMemory) {
-        const pinnedFacts = normalizeSceneMemoryCache(oldMemory.cache)?.pinnedFacts ?? [];
-        await tx.delete(sceneMemoryStates).where(eq(sceneMemoryStates.id, oldMemory.id));
-        await tx.insert(sceneMemoryStates).values({
-          personaId,
-          userId,
-          sceneId: activeSceneId,
-          storyState: buildInitialSceneMemoryStoryState("scene:" + activeSceneId),
-          cache: { ...buildInitialSceneMemoryCache(), pinnedFacts },
-        });
+      .where(personaOwner(personaId, userId)).limit(1);
+    if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
+    if (persona.activeSceneId !== null) {
+      await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+      const scene = await lockSceneForContext(tx, userId, persona.activeSceneId);
+      if (scene) {
+        const startAfterMessageId = await advanceSceneBoundary(tx, personaId, userId, scene.id, true);
+        const revision = await advanceContextRevision(tx, context);
+        return { startAfterMessageId, revision };
       }
     }
-
-    return startAfterMessageId;
-  });
-}
-
-/** 让当前人物的在途生成失效（切换/退出场景、清空场景记忆时使用）。 */
-export async function bumpChatContextRevision(
-  personaId: number,
-  userId: number,
-): Promise<number> {
-  return withTransaction(async tx => {
-    const [existing] = await tx.select({ id: chatContextStates.id, revision: chatContextStates.revision })
-      .from(chatContextStates)
-      .where(and(eq(chatContextStates.userId, userId), eq(chatContextStates.personaId, personaId)))
-      .limit(1)
-      .for("update");
-    if (!existing) {
-      const [created] = await tx.insert(chatContextStates)
-        .values({ userId, personaId, revision: 1 })
-        .returning({ revision: chatContextStates.revision });
-      return created.revision;
-    }
-    const [updated] = await tx.update(chatContextStates)
-      .set({ revision: existing.revision + 1, updatedAt: new Date() })
-      .where(eq(chatContextStates.id, existing.id))
-      .returning({ revision: chatContextStates.revision });
-    return updated.revision;
+    const [latest] = await tx.select({ id: messages.id }).from(messages)
+      .where(and(eq(messages.personaId, personaId), eq(messages.userId, userId), eq(messages.mode, "daily")))
+      .orderBy(desc(messages.id)).limit(1);
+    const startAfterMessageId = Math.max(context.startAfterMessageId, latest?.id ?? 0);
+    const revision = context.revision + 1;
+    await tx.update(chatContextStates).set({ startAfterMessageId, revision, overrides: {}, updatedAt: new Date() })
+      .where(eq(chatContextStates.id, context.id));
+    await tx.delete(chatSummaries).where(and(eq(chatSummaries.personaId, personaId), eq(chatSummaries.userId, userId)));
+    return { startAfterMessageId, revision };
   });
 }
 
 export function isMessageIncludedInContext(
-  messageId: number,
-  contextOverride: boolean | null,
-  startAfterMessageId: number,
+  messageId: number, contextOverride: boolean | null, startAfterMessageId: number,
 ): boolean {
-  if (contextOverride === true) return true;
-  if (contextOverride === false) return false;
-  return messageId > startAfterMessageId;
+  return contextOverride ?? messageId > startAfterMessageId;
 }
 
-/**
- * 供场景模式下模型生成使用的剧本会话窗口。
- * 场景模式按剧本独立回放：只取当前场景（sceneId）内且位于会话起点之后的消息；
- * 显式排除（contextOverride === false）的消息不入上下文，显式纳入（true）优先入选。
- */
+async function readSceneMessages(
+  connection: SceneConnection, personaId: number, userId: number, sceneId: number,
+  boundary: number, limit: number,
+) {
+  const rows = await connection.select().from(messages)
+    .where(and(sceneMessageOwner(personaId, userId, sceneId),
+      or(eq(messages.contextOverride, true), and(isNull(messages.contextOverride), gt(messages.id, boundary)))))
+    .orderBy(desc(sql`COALESCE(${messages.contextOverride}, false)`), desc(messages.createdAt), desc(messages.id))
+    .limit(Math.max(1, Math.trunc(limit)));
+  return rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id - right.id)
+    .map(message => message.messageType === "image" && message.role === "assistant"
+      ? { ...message, content: "[图片]" } : message);
+}
+
+/** Captures the exact message window, scene and both write guards before the model is called. */
+export async function getSceneMemoryRefreshSnapshot(
+  personaId: number, userId: number, sceneId: number, limit = 24, expectedRevision?: number,
+) {
+  return withTransaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId);
+    if (expectedRevision !== undefined && expectedRevision !== context.revision) return null;
+    const scene = await lockSceneForContext(tx, userId, sceneId);
+    if (!scene) return null;
+    const row = await readSceneMemoryRow(tx, personaId, userId, sceneId);
+    const history = await readSceneMessages(tx, personaId, userId, sceneId, row?.startAfterMessageId ?? 0, limit);
+    if (!history.length) return null;
+    const snapshot = row ? sceneSnapshot(row) : await writeSceneMemoryState(tx, personaId, userId, sceneId, row, {});
+    if (snapshot.stateId == null) return null;
+    return { scene, history, cache: snapshot.cache, revision: context.revision, stateId: snapshot.stateId };
+  });
+}
+
 export async function getSceneConversationMessagesBySceneId(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  limit = 50,
+  personaId: number, userId: number, sceneId: number, limit = 50,
 ) {
   const db = await getDb();
   if (!db) return [];
-  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
-  const boundedLimit = Math.max(1, Math.trunc(limit));
-
-  const forcedRows = await db.select().from(messages)
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-      eq(messages.contextOverride, true),
-    ))
-    .orderBy(desc(messages.createdAt))
-    .limit(boundedLimit);
-
-  const automaticLimit = Math.max(0, boundedLimit - forcedRows.length);
-  const automaticRows = automaticLimit > 0
-    ? await db.select().from(messages)
-      .where(and(
-        eq(messages.personaId, personaId),
-        eq(messages.userId, userId),
-        eq(messages.sceneId, sceneId),
-        isNull(messages.contextOverride),
-        gt(messages.id, startAfterMessageId),
-      ))
-      .orderBy(desc(messages.createdAt))
-      .limit(automaticLimit)
-    : [];
-
-  return [...forcedRows, ...automaticRows]
-    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id - right.id)
-    .map(message => message.messageType === "image" && message.role === "assistant"
-      ? { ...message, content: "[图片]" }
-      : message);
+  const row = await readSceneMemoryRow(db, personaId, userId, sceneId);
+  return readSceneMessages(db, personaId, userId, sceneId, row?.startAfterMessageId ?? 0, limit);
 }
 
-/** 场景配图导演模型使用的剧情上下文，与人物正文共用场景窗口与纳入/排除规则。 */
 export async function getSceneMessagesForImageContext(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  limit = 10,
+  personaId: number, userId: number, sceneId: number, limit = 10,
 ) {
-  const boundedLimit = Math.max(1, Math.min(20, Math.trunc(limit)));
-  return getSceneConversationMessagesBySceneId(personaId, userId, sceneId, boundedLimit);
+  return getSceneConversationMessagesBySceneId(personaId, userId, sceneId,
+    Math.max(1, Math.min(20, Math.trunc(limit))));
 }
 
-/** 场景聊天记录管理：只返回某个场景内的消息，并附带「是否进入模型上下文」状态。 */
 export async function getSceneMessageContextManagement(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  limit = 300,
+  personaId: number, userId: number, sceneId: number, limit = 300,
 ) {
   const db = await getDb();
-  if (!db) return { startAfterMessageId: 0, messages: [] as Array<Record<string, unknown>> };
-  const startAfterMessageId = await getPersonaConversationContextStartMessageId(personaId, userId);
-  const rows = await db.select().from(messages)
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-    ))
-    .orderBy(desc(messages.createdAt))
-    .limit(Math.max(1, Math.min(500, Math.trunc(limit))));
-  return {
-    startAfterMessageId,
-    messages: rows.reverse().map(message => ({
-      ...message,
-      // 图片消息的 content 只是内部占位；管理界面也归一化显示，避免展示原始文件路径。
-      content: message.messageType === "image" && message.role === "assistant"
-        ? "[图片]"
-        : message.content,
-      effectiveInContext: message.contextOverride === true
-        || (message.contextOverride !== false && message.id > startAfterMessageId),
-    })),
-  };
+  if (!db) return { startAfterMessageId: 0, messages: [] };
+  return db.transaction(async tx => {
+    await lockChatContext(tx, personaId, userId, "share");
+    await requireSceneForContext(tx, userId, sceneId);
+    const row = await readSceneMemoryRow(tx, personaId, userId, sceneId);
+    const startAfterMessageId = row?.startAfterMessageId ?? 0;
+    const rows = await tx.select().from(messages).where(sceneMessageOwner(personaId, userId, sceneId))
+      .orderBy(desc(messages.createdAt), desc(messages.id)).limit(Math.max(1, Math.min(500, Math.trunc(limit))));
+    return {
+      startAfterMessageId,
+      messages: rows.reverse().map(message => ({
+        ...message,
+        content: message.messageType === "image" && message.role === "assistant" ? "[图片]" : message.content,
+        effectiveInContext: isMessageIncludedInContext(message.id, message.contextOverride, startAfterMessageId),
+      })),
+    };
+  });
+}
+
+async function changeSceneMessageOverrides(
+  personaId: number, userId: number, sceneId: number, included: boolean | null, ids?: number[],
+): Promise<number> {
+  return withTransaction(async tx => {
+    const context = await lockChatContext(tx, personaId, userId);
+    await lockPersonaForSceneMessageChanges(tx, personaId, userId);
+    await requireSceneForContext(tx, userId, sceneId);
+    const updated = await tx.update(messages).set({ contextOverride: included })
+      .where(and(sceneMessageOwner(personaId, userId, sceneId),
+        ids ? inArray(messages.id, ids) : undefined,
+        sql`${messages.contextOverride} IS DISTINCT FROM ${included}`))
+      .returning({ id: messages.id });
+    if (updated.length) await invalidateSceneMessageContext(tx, context, sceneId);
+    return updated.length;
+  });
 }
 
 export async function setSceneMessagesContextOverride(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  messageIds: number[],
-  included: boolean | null,
+  personaId: number, userId: number, sceneId: number, messageIds: number[], included: boolean | null,
 ): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error("DB not available");
   const ids = Array.from(new Set(messageIds.filter(id => Number.isSafeInteger(id) && id > 0)));
-  if (ids.length === 0) return 0;
-  const updated = await db.update(messages)
-    .set({ contextOverride: included })
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-      inArray(messages.id, ids),
-    ))
-    .returning({ id: messages.id });
-  return updated.length;
+  return ids.length ? changeSceneMessageOverrides(personaId, userId, sceneId, included, ids) : 0;
 }
 
-/** 清空某个场景内所有消息的手动上下文标记，恢复跟随会话起点。 */
-export async function clearSceneMessagesContextOverride(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(messages)
-    .set({ contextOverride: null })
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-    ));
+export async function clearSceneMessagesContextOverride(personaId: number, userId: number, sceneId: number) {
+  await changeSceneMessageOverrides(personaId, userId, sceneId, null);
 }
 
-/** 批量设置某个场景内全部消息的上下文标记（true=全部强制加入，false=全部排除，null=跟随起点）。 */
 export async function setAllSceneMessagesContextOverride(
-  personaId: number,
-  userId: number,
-  sceneId: number,
-  included: boolean | null,
+  personaId: number, userId: number, sceneId: number, included: boolean | null,
 ): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const updated = await db.update(messages)
-    .set({ contextOverride: included })
-    .where(and(
-      eq(messages.personaId, personaId),
-      eq(messages.userId, userId),
-      eq(messages.sceneId, sceneId),
-    ))
-    .returning({ id: messages.id });
-  return updated.length;
+  return changeSceneMessageOverrides(personaId, userId, sceneId, included);
 }
 
 // ─── Export helpers ─────────────────────────────────────────────────────────
@@ -2007,8 +1891,8 @@ export async function setGraduationStatus(
 
 // ─── Conversation summary helpers ──────────────────────────────────────────
 
-export async function createChatSummary(data: InsertChatSummary) {
-  const db = await getDb();
+export async function createChatSummary(data: InsertChatSummary, tx?: DbTransaction) {
+  const db = tx ?? await getDb();
   if (!db) throw new Error("DB not available");
   const [result] = await db.insert(chatSummaries).values(data).returning({ id: chatSummaries.id });
   return result.id;
@@ -2593,10 +2477,91 @@ export type RoleplayChannelView = {
   runtimeDiagnostics: unknown | null;
   /** 剧本导演线（arc），生成侧解析；没有时为空。 */
   directorState: unknown | null;
+  generationRevision: number;
   createdAt: Date;
   updatedAt: Date;
   members: RoleplayChannelMemberView[];
 };
+
+function roleplayChannelScope(channelId: number, userId: number) {
+  return and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId));
+}
+
+function roleplayMemberScope(channelId: number, userId: number) {
+  return and(eq(roleplayChannelMembers.channelId, channelId), eq(roleplayChannelMembers.userId, userId));
+}
+
+function roleplayMessageScope(channelId: number, userId: number) {
+  return and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId));
+}
+
+/** 与删除人物共用；只串行成员写入，普通生成和消息编辑仍按频道行锁并发。 */
+async function lockRoleplayMembershipChanges(tx: DbTransaction, userId: number) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:roleplay-membership'), ${userId})`);
+}
+
+function resetRoleplayGeneration(resetDerived = true) {
+  return {
+    generationRevision: sql`${roleplayChannels.generationRevision} + 1`,
+    updatedAt: new Date(),
+    ...(resetDerived ? { directorState: null, runtimeDiagnostics: null } : {}),
+  };
+}
+
+/** 所有频道写入先锁同一所属频道行，再碰消息或成员，防止插入与清空/改员交错。 */
+async function lockRoleplayChannel(tx: DbTransaction, channelId: number, userId: number) {
+  const [channel] = await tx.select({
+    id: roleplayChannels.id,
+    isActive: roleplayChannels.isActive,
+    generationRevision: roleplayChannels.generationRevision,
+  }).from(roleplayChannels).where(roleplayChannelScope(channelId, userId)).limit(1).for("update");
+  return channel;
+}
+
+async function resetRoleplayHistoryDerivatives(tx: DbTransaction, channelId: number, userId: number) {
+  await tx.update(roleplayChannels).set(resetRoleplayGeneration()).where(roleplayChannelScope(channelId, userId));
+  await tx.update(roleplayChannelMembers).set({ lastReadMessageId: 0 })
+    .where(roleplayMemberScope(channelId, userId));
+}
+
+export class RoleplayGenerationChangedError extends Error {
+  constructor() {
+    super("角色频道上下文已变化，请重新开始推进");
+    this.name = "RoleplayGenerationChangedError";
+  }
+}
+
+async function assertRoleplayGeneration(
+  tx: DbTransaction, channelId: number, userId: number, revision: number, personaIds: number[],
+) {
+  const channel = await lockRoleplayChannel(tx, channelId, userId);
+  if (!channel?.isActive || channel.generationRevision !== revision) throw new RoleplayGenerationChangedError();
+  const ids = Array.from(new Set(personaIds));
+  if (!ids.length) return;
+  const members = await tx.select({ personaId: roleplayChannelMembers.personaId })
+    .from(roleplayChannelMembers)
+    .innerJoin(personas, eq(roleplayChannelMembers.personaId, personas.id))
+    .where(and(
+      roleplayMemberScope(channelId, userId),
+      inArray(roleplayChannelMembers.personaId, ids),
+      eq(roleplayChannelMembers.speakingEnabled, true),
+      eq(personas.userId, userId),
+      eq(personas.analysisStatus, "ready"),
+    ));
+  if (members.length !== ids.length) throw new RoleplayGenerationChangedError();
+}
+
+/** 辅助模型重试前检查快照，生成写入仍会在行锁内重新校验。 */
+export async function isRoleplayGenerationCurrent(channelId: number, userId: number, revision: number) {
+  const db = await getDb();
+  if (!db) return false;
+  const [row] = await db.select({ id: roleplayChannels.id }).from(roleplayChannels).where(and(
+    roleplayChannelScope(channelId, userId),
+    eq(roleplayChannels.isActive, true),
+    eq(roleplayChannels.generationRevision, revision),
+  )).limit(1);
+  return Boolean(row);
+}
 
 /**
  * 创建频道并一次性写入成员。
@@ -2612,6 +2577,7 @@ export async function createRoleplayChannel(data: InsertRoleplayChannel, memberP
   if (!db) throw new Error("DB not available");
 
   return withTransaction(async (tx) => {
+    await lockRoleplayMembershipChanges(tx, data.userId);
     const [channel] = await tx.insert(roleplayChannels).values(data).returning();
     const memberRows: InsertRoleplayChannelMember[] = uniquePersonaIds.map((personaId, index) => ({
       channelId: channel.id,
@@ -2636,21 +2602,17 @@ export async function updateRoleplayChannel(
   data: Partial<InsertRoleplayChannel>,
   memberPersonaIds?: number[],
 ) {
-  const db = await getDb();
-  if (!db) throw new Error("DB not available");
-
-  await db.update(roleplayChannels)
-    .set({
-      ...data,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
-
-  if (memberPersonaIds && memberPersonaIds.length >= 2) {
-    const uniquePersonaIds = Array.from(new Set(memberPersonaIds));
-    await withTransaction(async (tx) => {
+  const uniquePersonaIds = memberPersonaIds && Array.from(new Set(memberPersonaIds));
+  if (uniquePersonaIds && uniquePersonaIds.length < 2) throw new Error("roleplay channel requires at least two personas");
+  await withTransaction(async (tx) => {
+    if (uniquePersonaIds) await lockRoleplayMembershipChanges(tx, userId);
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return;
+    await tx.update(roleplayChannels)
+      .set({ ...data, ...resetRoleplayGeneration() })
+      .where(roleplayChannelScope(channelId, userId));
+    if (uniquePersonaIds) {
       await tx.delete(roleplayChannelMembers)
-        .where(and(eq(roleplayChannelMembers.channelId, channelId), eq(roleplayChannelMembers.userId, userId)));
+        .where(roleplayMemberScope(channelId, userId));
       const memberRows: InsertRoleplayChannelMember[] = uniquePersonaIds.map((personaId, index) => ({
         channelId,
         userId,
@@ -2658,8 +2620,8 @@ export async function updateRoleplayChannel(
         displayOrder: index,
       }));
       await tx.insert(roleplayChannelMembers).values(memberRows);
-    });
-  }
+    }
+  });
 }
 
 /** 用户全部频道（按最近更新排序），每个频道带上成员视图。 */
@@ -2699,12 +2661,16 @@ export async function updateRoleplayChannelDiagnostics(
   channelId: number,
   userId: number,
   diagnostics: Record<string, unknown>,
+  revision: number,
+  personaIds: number[],
+  executor?: DbTransaction,
 ) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(roleplayChannels)
-    .set({ runtimeDiagnostics: diagnostics })
-    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+  const write = async (tx: DbTransaction) => {
+    await assertRoleplayGeneration(tx, channelId, userId, revision, personaIds);
+    await tx.update(roleplayChannels).set({ runtimeDiagnostics: diagnostics })
+      .where(roleplayChannelScope(channelId, userId));
+  };
+  return executor ? write(executor) : withTransaction(write);
 }
 
 /** 读取频道的导演线状态（原始 JSON，解析交给生成侧）。 */
@@ -2726,12 +2692,15 @@ export async function setRoleplayChannelDirectorState(
   channelId: number,
   userId: number,
   directorState: Record<string, unknown> | null,
+  revision: number,
+  personaIds: number[],
+  executor?: DbTransaction,
 ): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(roleplayChannels)
-    .set({ directorState })
-    .where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+  const write = async (tx: DbTransaction) => {
+    await assertRoleplayGeneration(tx, channelId, userId, revision, personaIds);
+    await tx.update(roleplayChannels).set({ directorState }).where(roleplayChannelScope(channelId, userId));
+  };
+  return executor ? write(executor) : withTransaction(write);
 }
 
 /**
@@ -2776,36 +2745,48 @@ export async function getRoleplayChannelMessages(channelId: number, userId: numb
   return rows.reverse();
 }
 
-/**
- * 写入一条频道消息，并把频道的 updatedAt 推到当前时间（列表按它排序）。
- *
- * data 里必须带 channelId/userId；调用方（路由/生成侧）负责先校验频道归属。
- */
-export async function createRoleplayMessage(data: InsertRoleplayMessage) {
+/** 不自动重试包含消息 INSERT 的事务，避免应答丢失后重复已提交的拍。 */
+export async function withRoleplayBeatTransaction<T>(write: (tx: DbTransaction) => Promise<T>): Promise<T> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const payload = {
-    ...data,
-    mode: data.mode ?? "channel",
+  return db.transaction(write);
+}
+
+/**
+ * 写入一条频道消息，并刷新频道 updatedAt。
+ * 用户消息使正在生成的快照失效；角色消息仅允许由当前版本的生成任务提交。
+ */
+export async function createRoleplayMessage(
+  data: InsertRoleplayMessage, generationRevision?: number, executor?: DbTransaction,
+) {
+  const { channelId, userId } = data;
+  const write = async (tx: DbTransaction) => {
+    if (data.role === "persona") {
+      if (generationRevision === undefined || !data.personaId) throw new RoleplayGenerationChangedError();
+      await assertRoleplayGeneration(tx, channelId, userId, generationRevision, [data.personaId]);
+    } else if (!await lockRoleplayChannel(tx, channelId, userId)) {
+      throw new Error("角色频道不存在");
+    }
+    const [result] = await tx.insert(roleplayMessages).values({ ...data, mode: data.mode ?? "channel" }).returning();
+    await tx.update(roleplayChannels)
+      .set(data.role === "persona" ? { updatedAt: new Date() } : resetRoleplayGeneration(false))
+      .where(roleplayChannelScope(channelId, userId));
+    return result;
   };
-  const [result] = await db.insert(roleplayMessages).values(payload).returning();
-  await db.update(roleplayChannels)
-    .set({ updatedAt: new Date() })
-    .where(and(eq(roleplayChannels.id, data.channelId), eq(roleplayChannels.userId, data.userId)));
-  return result;
+  return executor ? write(executor) : withRoleplayBeatTransaction(write);
 }
 
 /** 更新某个人物在某频道的已读游标（生成侧每轮推进后调用）。 */
-export async function updateRoleplayMemberCursor(channelId: number, userId: number, personaId: number, lastReadMessageId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("DB not available");
-  await db.update(roleplayChannelMembers)
-    .set({ lastReadMessageId })
-    .where(and(
-      eq(roleplayChannelMembers.channelId, channelId),
-      eq(roleplayChannelMembers.userId, userId),
-      eq(roleplayChannelMembers.personaId, personaId),
-    ));
+export async function updateRoleplayMemberCursor(
+  channelId: number, userId: number, personaId: number, lastReadMessageId: number, revision: number,
+  executor?: DbTransaction,
+) {
+  const write = async (tx: DbTransaction) => {
+    await assertRoleplayGeneration(tx, channelId, userId, revision, [personaId]);
+    await tx.update(roleplayChannelMembers).set({ lastReadMessageId })
+      .where(and(roleplayMemberScope(channelId, userId), eq(roleplayChannelMembers.personaId, personaId)));
+  };
+  return executor ? write(executor) : withTransaction(write);
 }
 
 /** 删除频道及其消息、成员；全部按 userId 收窄，删别人的频道不会命中任何行。 */
@@ -2813,9 +2794,10 @@ export async function deleteRoleplayChannel(channelId: number, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
   await withTransaction(async (tx) => {
-    await tx.delete(roleplayMessages).where(and(eq(roleplayMessages.channelId, channelId), eq(roleplayMessages.userId, userId)));
-    await tx.delete(roleplayChannelMembers).where(and(eq(roleplayChannelMembers.channelId, channelId), eq(roleplayChannelMembers.userId, userId)));
-    await tx.delete(roleplayChannels).where(and(eq(roleplayChannels.id, channelId), eq(roleplayChannels.userId, userId)));
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return;
+    await tx.delete(roleplayMessages).where(roleplayMessageScope(channelId, userId));
+    await tx.delete(roleplayChannelMembers).where(roleplayMemberScope(channelId, userId));
+    await tx.delete(roleplayChannels).where(roleplayChannelScope(channelId, userId));
   });
 }
 
@@ -2834,14 +2816,14 @@ export async function setRoleplayMessageContextInclusion(
   const db = await getDb();
   if (!db || messageIds.length === 0) return { updated: 0 };
   const override = status === "auto" ? null : status;
-  await db.update(roleplayMessages)
-    .set({ contextOverride: override })
-    .where(and(
-      eq(roleplayMessages.channelId, channelId),
-      eq(roleplayMessages.userId, userId),
-      inArray(roleplayMessages.id, messageIds),
-    ));
-  return { updated: messageIds.length };
+  return withTransaction(async tx => {
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return { updated: 0 };
+    const rows = await tx.update(roleplayMessages).set({ contextOverride: override })
+      .where(and(roleplayMessageScope(channelId, userId), inArray(roleplayMessages.id, messageIds)))
+      .returning({ id: roleplayMessages.id });
+    if (rows.length) await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    return { updated: rows.length };
+  });
 }
 
 /** 设置频道内全部消息的上下文包含状态。 */
@@ -2853,13 +2835,13 @@ export async function setAllRoleplayMessagesContextInclusion(
   const db = await getDb();
   if (!db) return { updated: 0 };
   const override = status === "auto" ? null : status;
-  await db.update(roleplayMessages)
-    .set({ contextOverride: override })
-    .where(and(
-      eq(roleplayMessages.channelId, channelId),
-      eq(roleplayMessages.userId, userId),
-    ));
-  return { updated: 1 };
+  return withTransaction(async tx => {
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return { updated: 0 };
+    const rows = await tx.update(roleplayMessages).set({ contextOverride: override })
+      .where(roleplayMessageScope(channelId, userId)).returning({ id: roleplayMessages.id });
+    if (rows.length) await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    return { updated: rows.length };
+  });
 }
 
 /** 删除频道内指定消息（只删本频道 + 本人的行）。 */
@@ -2870,13 +2852,14 @@ export async function deleteRoleplayMessages(
 ) {
   const db = await getDb();
   if (!db || messageIds.length === 0) return { deletedMessages: 0 };
-  await db.delete(roleplayMessages)
-    .where(and(
-      eq(roleplayMessages.channelId, channelId),
-      eq(roleplayMessages.userId, userId),
-      inArray(roleplayMessages.id, messageIds),
-    ));
-  return { deletedMessages: messageIds.length };
+  return withTransaction(async tx => {
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return { deletedMessages: 0 };
+    const rows = await tx.delete(roleplayMessages)
+      .where(and(roleplayMessageScope(channelId, userId), inArray(roleplayMessages.id, messageIds)))
+      .returning({ id: roleplayMessages.id });
+    if (rows.length) await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    return { deletedMessages: rows.length };
+  });
 }
 
 /** 编辑一条频道消息的内容（频道 + 用户 + 消息 id 三重收窄）。 */
@@ -2888,21 +2871,20 @@ export async function updateRoleplayMessageContent(
 ) {
   const db = await getDb();
   if (!db) return null;
-  await db.update(roleplayMessages)
-    .set({ content })
-    .where(and(
-      eq(roleplayMessages.id, messageId),
-      eq(roleplayMessages.channelId, channelId),
-      eq(roleplayMessages.userId, userId),
-    ));
-  return { success: true };
+  return withTransaction(async tx => {
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return { success: false };
+    const rows = await tx.update(roleplayMessages).set({ content })
+      .where(and(roleplayMessageScope(channelId, userId), eq(roleplayMessages.id, messageId)))
+      .returning({ id: roleplayMessages.id });
+    if (rows.length) await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    return { success: rows.length > 0 };
+  });
 }
 
 /**
  * 清空频道全部消息。
  *
- * 同时清掉运行诊断里的时空锚（runtimeDiagnostics）：否则下一拍会拿着旧剧情
- * 的地点/道具继续演，清空后剧情直接接不上（自用版踩过的坑）。
+ * 同一事务清掉导演线、运行诊断与成员游标，并使所有旧生成快照失效。
  */
 export async function clearAllRoleplayMessages(
   channelId: number,
@@ -2910,21 +2892,16 @@ export async function clearAllRoleplayMessages(
 ) {
   const db = await getDb();
   if (!db) return { deletedMessages: 0 };
-  await db.delete(roleplayMessages)
-    .where(and(
-      eq(roleplayMessages.channelId, channelId),
-      eq(roleplayMessages.userId, userId),
-    ));
-  await db.update(roleplayChannels)
-    .set({ runtimeDiagnostics: null, updatedAt: new Date() })
-    .where(and(
-      eq(roleplayChannels.id, channelId),
-      eq(roleplayChannels.userId, userId),
-    ));
-  return { deletedMessages: 1 };
+  return withTransaction(async tx => {
+    if (!await lockRoleplayChannel(tx, channelId, userId)) return { deletedMessages: 0 };
+    const rows = await tx.delete(roleplayMessages).where(roleplayMessageScope(channelId, userId))
+      .returning({ id: roleplayMessages.id });
+    await resetRoleplayHistoryDerivatives(tx, channelId, userId);
+    return { deletedMessages: rows.length };
+  });
 }
 
-/** 频道统计（诊断面板）：消息/上下文计数、各角色发言数、频道专属 LLM 消耗。 */
+/** 诊断面板：消息与上下文按当前频道，模型用量按当前账号全部角色频道。 */
 export type RoleplayChannelStats = {
   totalMessages: number;
   includedMessages: number;
@@ -2944,6 +2921,7 @@ export type RoleplayChannelStats = {
     isolationMode: string;
   };
   llm: {
+    scope: "account_roleplay";
     todayCalls: number;
     todayTokens: number;
     todayInputTokens: number;
@@ -2955,7 +2933,7 @@ export type RoleplayChannelStats = {
   };
 };
 
-/** 频道进度诊断数据：真实总消息数、上下文包含/排除统计、各角色发言数、频道专属记忆与 LLM 消耗。 */
+/** 当前频道的消息与记忆统计，以及当前账号全部角色频道的模型用量。 */
 export async function getRoleplayChannelStats(
   channelId: number,
   userId: number,
@@ -3012,7 +2990,7 @@ export async function getRoleplayChannelStats(
     .orderBy(desc(roleplayMessages.id))
     .limit(1);
 
-  // 频道专属 LLM 调用与 Token 统计（书中人的用量表记 purpose/route，按 UTC 日切）。
+  // 用量表只记录账号及用途，按 UTC 日切，无法拆到单一频道。
   const now = new Date();
   const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
@@ -3089,6 +3067,7 @@ export async function getRoleplayChannelStats(
       isolationMode: "原著人物隔离 · 纯当下生活情景",
     },
     llm: {
+      scope: "account_roleplay",
       todayCalls: Number(llmTodayRow?.calls ?? 0),
       todayTokens: Number(llmTodayRow?.totalTokens ?? 0),
       todayInputTokens: Number(llmTodayRow?.inputTokens ?? 0),

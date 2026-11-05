@@ -1,5 +1,5 @@
 import { sourceLibraryService } from "../source-library";
-import { getContextHistory, getContextState, withContextRevision } from './context-state';
+import { getContextHistory, withContextRevision } from './context-state';
 /**
  * The conversation pipeline.
  *
@@ -143,13 +143,13 @@ async function maybeCompactHistory(params: {
     const trimmed = (summary || "").trim();
     if (!trimmed) return "";
 
-    await withContextRevision(params.userId, params.persona.id, params.contextRevision, async () => db.createChatSummary({
+    await withContextRevision(params.userId, params.persona.id, params.contextRevision, tx => db.createChatSummary({
       personaId: params.persona.id,
       userId: params.userId,
       summary: trimmed,
       fromMessageId: evicted[0]?.id ?? null,
       toMessageId: evicted[evicted.length - 1]?.id ?? null,
-    }));
+    }, tx));
 
     return trimmed;
   } catch (e) {
@@ -199,17 +199,13 @@ export async function composeMessages(params: {
   signal?: AbortSignal;
   /** 本轮用户消息 id：场景模式下，导演指令只追加在这一条用户消息上。 */
   userMessageId?: number;
+  generation?: Awaited<ReturnType<typeof db.getSceneGenerationSnapshot>>;
 }): Promise<LLMMessage[]> {
   const now = params.now ?? new Date();
   const contextLimit = Math.max(4, params.contextLimit);
-  const contextState = await getContextState(params.userId, params.persona.id);
-
-  const sceneRow = params.persona.activeSceneId
-    ? await db.getSceneById(params.persona.activeSceneId)
-    : null;
-  // activeSceneId 只在激活时校验过归属；这里再兜一次，避免历史脏数据把
-  // 别人的 systemPromptOverlay 注入本用户的对话。
-  const scene = sceneRow && (sceneRow.isBuiltin || sceneRow.userId === params.userId) ? sceneRow : null;
+  const { scene, revision } = params.generation
+    ?? await db.getSceneGenerationSnapshot(params.persona.id, params.userId);
+  await withContextRevision(params.userId, params.persona.id, revision, async () => undefined);
   const activeSceneId = scene?.id ?? null;
 
   // 场景模式按场景精确回放：只取当前场景的消息，绝不混入日常或别的场景（A/B 不串）。
@@ -240,7 +236,7 @@ export async function composeMessages(params: {
       userId: params.userId,
       history: history as any,
       keepCount: contextLimit - 1,
-      contextRevision: contextState.revision,
+      contextRevision: revision,
       providerName: params.providerName,
       signal: params.signal,
       now,
@@ -290,7 +286,7 @@ export async function composeMessages(params: {
     const evidence: LLMMessage = { role: "user", content: sourceContext.evidence };
     recent.splice(Math.max(0, recent.length - 1), 0, evidence);
   }
-  await withContextRevision(params.userId, params.persona.id, contextState.revision, async () => undefined);
+  await withContextRevision(params.userId, params.persona.id, revision, async () => undefined);
   const sceneHeader = scenePromptSections.length > 0 ? "\n\n" + scenePromptSections.join("\n\n") : "";
   return [{ role: "system", content: systemPrompt + sceneHeader + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
 }
@@ -306,25 +302,16 @@ export async function* runConversation(
   options: ConversationOptions & { mode: ChatMode },
 ): AsyncGenerator<ChatEvent> {
   options.signal?.throwIfAborted();
-  const { persona, userId, message } = options;
+  const { userId, message } = options;
   const now = options.now ?? new Date();
   const locale = options.locale ?? "zh";
 
-  // 场景模式：入口就是 persona.activeSceneId（不额外加入参）。归属再兜一次，
-  // 避免历史脏数据把别人的场景当成本人的场景。
-  const sceneRow = persona.activeSceneId
-    ? await db.getSceneById(persona.activeSceneId)
-    : null;
-  const activeScene = sceneRow && (sceneRow.isBuiltin || sceneRow.userId === userId) ? sceneRow : null;
+  // 场景和版本号一并读取；「开始」也在同一事务内推进当前场景的起点。
+  const generation = await db.getSceneGenerationSnapshot(options.persona.id, userId, {
+    startNewScene: isSceneStoryStartMarker(message),
+  });
+  const { persona, scene: activeScene, revision: generationRevision } = generation;
   const activeSceneId = activeScene?.id ?? null;
-  // 【开始】是用户主动声明的新故事边界：先把会话起点推到当前最新消息，
-  // 清空该场景的摘要/待续线索（保留已确认事实）并让在途旧任务失效，
-  // 再保存这条标记消息，确保本轮仍能被模型看到（与自用版一致）。
-  if (activeScene && isSceneStoryStartMarker(message)) {
-    await db.startNewPersonaConversationContext(persona.id, userId);
-  }
-
-  const generationRevision = (await getContextState(userId, persona.id)).revision;
 
   const defaultConfig = await db.getDefaultLlmConfig(userId);
   const extraConfig = (defaultConfig?.extraConfig as any) ?? {};
@@ -339,7 +326,7 @@ export async function* runConversation(
   // 场景消息带 sceneId（db.createMessage 据此把 mode 记为 scene），日常消息不带。
   let userMessageId: number | null = null;
   if (!options.alreadyPersisted) {
-    userMessageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
+    userMessageId = await withContextRevision(userId, persona.id, generationRevision, tx => db.createMessage({
       personaId: persona.id,
       userId,
       role: "user",
@@ -349,14 +336,14 @@ export async function* runConversation(
       messageType: options.media?.type ?? "text",
       mediaUrl: options.media?.url ?? null,
       sceneId: activeSceneId,
-    }));
+    }, tx), { sceneId: activeSceneId });
   }
 
   // Crisis handling short-circuits the model entirely.
   const crisis = detectCrisis(message);
   if (crisis.crisis) {
     const replyText = buildCrisisResponse(persona.name, locale);
-    const messageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
+    const messageId = await withContextRevision(userId, persona.id, generationRevision, tx => db.createMessage({
       personaId: persona.id,
       userId,
       role: "assistant",
@@ -364,7 +351,7 @@ export async function* runConversation(
       emotionalState: persona.emotionalState,
       channel: options.channel ?? "web",
       sceneId: activeSceneId,
-    }));
+    }, tx), { sceneId: activeSceneId });
     await db.createSafetyEvent({
       userId,
       personaId: persona.id,
@@ -400,6 +387,7 @@ export async function* runConversation(
     extraConfig,
     signal: options.signal,
     userMessageId: userMessageId ?? undefined,
+    generation,
   });
   options.signal?.throwIfAborted();
 
@@ -485,40 +473,36 @@ export async function* runConversation(
   const appended = [gentleCheckIn, careNote?.text].filter((part): part is string => !!part);
   const finalText = appended.length > 0 ? `${baseText}\n\n${appended.join("\n\n")}` : baseText;
 
-  const messageId = await withContextRevision(userId, persona.id, generationRevision, async () => db.createMessage({
-    personaId: persona.id,
-    userId,
-    role: "assistant",
-    content: finalText,
-    emotionalState: persona.emotionalState,
-    channel: options.channel ?? "web",
-    sceneId: activeSceneId,
-  }));
+  const { messageId, turn } = await withContextRevision(
+    userId, persona.id, generationRevision, async tx => {
+      const messageId = await db.createMessage({
+        personaId: persona.id,
+        userId,
+        role: "assistant",
+        content: finalText,
+        emotionalState: persona.emotionalState,
+        channel: options.channel ?? "web",
+        sceneId: activeSceneId,
+      }, tx);
+      const turn = activeSceneId === null ? 0 : await db.recordSceneMemoryTurn(
+        persona.id,
+        userId,
+        activeSceneId,
+        "scene:" + activeSceneId,
+        [userMessageId, messageId].filter((id): id is number => typeof id === "number"),
+        tx,
+      );
+      return { messageId, turn };
+    }, { sceneId: activeSceneId, exclusive: activeSceneId !== null },
+  );
 
-  // 场景回合簿记：推进剧情进度、记录本轮消息，并按固定间隔异步刷新场景摘要/事实。
-  // 切换/清空场景会提升 revision，迟到的写入在这里被拒绝（与日常上下文同一语义）。
-  if (activeSceneId !== null && activeScene) {
-    try {
-      const turn = await withContextRevision(userId, persona.id, generationRevision, async () =>
-        db.recordSceneMemoryTurn(
-          persona.id,
-          userId,
-          activeSceneId,
-          "scene:" + activeSceneId,
-          [userMessageId, messageId].filter((id): id is number => typeof id === "number"),
-        ));
-      if (turn > 0 && turn % SCENE_MEMORY_SUMMARY_INTERVAL_TURNS === 0) {
-        void refreshSceneMemoryAndFacts({
-          userId,
-          personaId: persona.id,
-          sceneId: activeSceneId,
-          sceneName: activeScene.name,
-          sceneDescription: activeScene.description,
-        });
-      }
-    } catch (e) {
-      console.warn("[Chat] Scene memory turn failed:", (e as Error).message);
-    }
+  if (activeScene && turn > 0 && turn % SCENE_MEMORY_SUMMARY_INTERVAL_TURNS === 0) {
+    void refreshSceneMemoryAndFacts({
+      userId,
+      personaId: persona.id,
+      sceneId: activeScene.id,
+      expectedRevision: generationRevision,
+    });
   }
 
   const emotion = failed ? { state: persona.emotionalState, source: "heuristic" as const, reason: undefined } : await inferEmotionalState({

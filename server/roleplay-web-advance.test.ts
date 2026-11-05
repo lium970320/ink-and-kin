@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -75,7 +76,7 @@ describe("网页推进服务端合同", () => {
     const caller = appRouter.createCaller(makeCtx());
     expect(await caller.roleplay.startWebAdvance({ channelId, taskId: "client-one:1" }))
       .toEqual({ started: true, cancelled: false });
-    const result = await caller.roleplay.tick({ channelId, taskId: "client-one:1" });
+    const result = await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId: "client-one:1" });
     expect(result.spoken).toBe(true);
     expect(result.replyText).toBe(reply.replyText);
     expect(runRoleplayChannelTurn).toHaveBeenCalledTimes(1);
@@ -96,7 +97,7 @@ describe("网页推进服务端合同", () => {
       () => caller.roleplay.stopAdvance({ channelId, taskId: "client-one:1" }),
       () => caller.roleplay.finishWebAdvance({ channelId, taskId: "client-one:1" }),
       () => caller.roleplay.advanceStatus({ channelId }),
-      () => caller.roleplay.tick({ channelId }),
+      () => caller.roleplay.tick({ operationId: randomUUID(), channelId }),
     ]) {
       await expect(action()).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
@@ -120,12 +121,12 @@ describe("网页推进服务端合同", () => {
       return { ...result, channelId };
     });
     expect(await caller.roleplay.startWebAdvance({ channelId, taskId })).toEqual({ started: true, cancelled: false });
-    const pending = caller.roleplay.tick({ channelId, taskId });
+    const pending = caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId });
     await vi.waitFor(() => expect(runRoleplayChannelTurn).toHaveBeenCalledTimes(1));
     expect(await caller.roleplay.stopAdvance({ channelId, taskId })).toEqual({ stopped: true });
     model.resolve({ ...reply, channelId });
     expect(await pending).toMatchObject({ spoken: false, cancelled: true, channelId, beats: [] });
-    expect(await caller.roleplay.tick({ channelId, taskId })).toMatchObject({ cancelled: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId })).toMatchObject({ cancelled: true });
     expect(runRoleplayChannelTurn).toHaveBeenCalledTimes(1);
   });
 
@@ -140,7 +141,7 @@ describe("网页推进服务端合同", () => {
     access.resolve({ id: channelId });
     expect(await oldStart).toEqual({ started: false, cancelled: true });
     await caller.roleplay.finishWebAdvance({ channelId, taskId: "client-one:1" });
-    expect(await caller.roleplay.tick({ channelId, taskId: "client-one:2" })).toMatchObject({ spoken: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId: "client-one:2" })).toMatchObject({ spoken: true });
   });
 
   it("停止先于慢 start 权限查询返回时，该任务不能开始", async () => {
@@ -153,7 +154,7 @@ describe("网页推进服务端合同", () => {
     await caller.roleplay.stopAdvance({ channelId, taskId });
     access.resolve({ id: channelId });
     expect(await start).toEqual({ started: false, cancelled: true });
-    expect(await caller.roleplay.tick({ channelId, taskId })).toMatchObject({ cancelled: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId })).toMatchObject({ cancelled: true });
     expect(runRoleplayChannelTurn).not.toHaveBeenCalled();
   });
 
@@ -168,8 +169,8 @@ describe("网页推进服务端合同", () => {
     await caller.roleplay.startWebAdvance({ channelId, taskId: "client-two:1" });
     // 停止第一批（页面一）；页面二在另一个频道的任务仍在。
     expect(await caller.roleplay.stopAdvance({ channelId })).toEqual({ stopped: true });
-    expect(await caller.roleplay.tick({ channelId, taskId })).toMatchObject({ cancelled: true });
-    expect(await otherCaller.roleplay.tick({ channelId: otherChannelId, taskId })).toMatchObject({ spoken: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId })).toMatchObject({ cancelled: true });
+    expect(await otherCaller.roleplay.tick({ operationId: randomUUID(), channelId: otherChannelId, taskId })).toMatchObject({ spoken: true });
   });
 
   it("跨页面慢旧 start 不能覆盖后来已开始的另一页面任务", async () => {
@@ -182,7 +183,7 @@ describe("网页推进服务端合同", () => {
       .toMatchObject({ started: true });
     access.resolve({ id: channelId });
     expect(await oldStart).toMatchObject({ started: false });
-    expect(await caller.roleplay.tick({ channelId, taskId: "client-two:1" })).toMatchObject({ spoken: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId: "client-two:1" })).toMatchObject({ spoken: true });
   });
 
   it("不带 taskId 的旧单轮接口也受停止约束，不能绕过生成门", async () => {
@@ -193,7 +194,7 @@ describe("网页推进服务端合同", () => {
       if (options.shouldAbort?.()) throw new RoleplayTurnCancelledError();
       return { ...result, channelId };
     });
-    const pending = caller.roleplay.tick({ channelId });
+    const pending = caller.roleplay.tick({ operationId: randomUUID(), channelId });
     await vi.waitFor(() => expect(runRoleplayChannelTurn).toHaveBeenCalledTimes(1));
     await caller.roleplay.stopAdvance({ channelId });
     model.resolve({ ...reply, channelId });
@@ -204,7 +205,7 @@ describe("网页推进服务端合同", () => {
     const caller = appRouter.createCaller(makeCtx());
     const access = deferred<any>();
     vi.mocked(db.getRoleplayChannelById).mockReturnValueOnce(access.promise);
-    const pending = caller.roleplay.tick({ channelId });
+    const pending = caller.roleplay.tick({ operationId: randomUUID(), channelId });
     await vi.waitFor(() => expect(db.getRoleplayChannelById).toHaveBeenCalledTimes(1));
     await caller.roleplay.stopAdvance({ channelId });
     access.resolve({ id: channelId });
@@ -217,8 +218,8 @@ describe("网页推进服务端合同", () => {
     const taskId = "client-one:1";
     await caller.roleplay.startWebAdvance({ channelId, taskId });
     await caller.roleplay.finishWebAdvance({ channelId, taskId });
-    expect(await caller.roleplay.tick({ channelId, taskId })).toMatchObject({ cancelled: true });
-    expect(await caller.roleplay.tick({ channelId, taskId: "client-one:9" })).toMatchObject({ cancelled: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId })).toMatchObject({ cancelled: true });
+    expect(await caller.roleplay.tick({ operationId: randomUUID(), channelId, taskId: "client-one:9" })).toMatchObject({ cancelled: true });
     expect(runRoleplayChannelTurn).not.toHaveBeenCalled();
   });
 

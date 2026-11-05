@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
-import { getDb, startNewPersonaConversationContext } from '../db';
+import { getDb, lockChatContext, lockSceneForContext, startNewActiveConversationContext, type DbTransaction } from '../db';
 import { personas, messages, memories, chatSummaries } from '../../drizzle/schema';
 import { chatContextStates as states, chatDeletionBackups as backups } from '../../drizzle/chat-context-schema';
 import { memoryReviewProvenance as provenance } from '../../drizzle/memory-review-schema';
@@ -23,8 +23,7 @@ export async function getContextState(userId:number,personaId:number) {
  * 日常对话的生成窗口。
  *
  * 只取 mode='daily' 的消息：场景消息按 sceneId 单独回放（见 db.getSceneConversationMessagesBySceneId），
- * 二者共用一个会话起点（startAfterMessageId）但绝不互相进入对方的上下文——
- * 这是「场景消息不进日常对话上下文」的落点，也是场景 A/B 不串的前提。
+ * 日常与各场景分别保有起点与手动覆盖。
  */
 export async function getContextHistory(userId:number,personaId:number,limit=200) {
   const db=await database(userId,personaId);
@@ -36,11 +35,18 @@ export async function getContextHistory(userId:number,personaId:number,limit=200
     return {state,history:rows.reverse()};
   });
 }
-export async function withContextRevision<T>(userId:number,personaId:number,revision:number,work:(tx:any)=>Promise<T>):Promise<T> {
-  const db=await database(userId,personaId);
+export async function withContextRevision<T>(
+  userId: number, personaId: number, revision: number, work: (tx: DbTransaction) => Promise<T>,
+  options: { sceneId?: number | null; exclusive?: boolean } = {},
+): Promise<T> {
+  const db = await getDb();
+  if (!db) throw new TRPCError({code:'INTERNAL_SERVER_ERROR',message:'数据库暂不可用。'});
   return db.transaction(async tx=>{
-    const state=(await tx.select().from(states).where(scope(userId,personaId)).for('share'))[0];
+    const state = await lockChatContext(tx, personaId, userId, options.exclusive ? 'update' : 'share');
     if(state.revision!==revision) throw new TRPCError({code:'CONFLICT',message:'对话上下文已变化，请重新发送。'});
+    if (options.sceneId != null && !await lockSceneForContext(tx, userId, options.sceneId)) {
+      throw new TRPCError({code:'CONFLICT',message:'场景已变化，请重新发送。'});
+    }
     return work(tx);
   });
 }
@@ -51,13 +57,9 @@ export async function contextOverview(userId:number,personaId:number,limit:numbe
   return {...state,messages:rows.map(row=>({...row,contextOverride:state.overrides[String(row.id)]??null,effectiveInContext:isIncluded(state,row.id)}))};
 }
 export async function changeContext(userId:number,personaId:number,action:'start'|'restore'|'include'|'delete'|'clear',input:{messageIds?:number[];included?:boolean|null;deleteLinkedMemories?:boolean}={}) {
-  // 「开始新对话」与场景「开始」标记共用同一实现（db.startNewPersonaConversationContext）：
-  // 推进会话起点、清空边界前的手动标记与滚动摘要，场景中保留已确认事实并把剧情回合归零。
-  // revision 与 scene_memory_states.stateId 一起让切换/清空之前启动的迟到的生成与摘要失效。
   if (action === 'start') {
-    const startAfterMessageId = await startNewPersonaConversationContext(personaId, userId);
-    const state = await getContextState(userId, personaId);
-    return { updated: 0, deletedMessages: 0, deletedMemories: 0, backupId: null, startAfterMessageId, revision: state.revision };
+    const context = await startNewActiveConversationContext(personaId, userId);
+    return { updated: 0, deletedMessages: 0, deletedMemories: 0, backupId: null, ...context };
   }
   const db=await database(userId,personaId);
   return db.transaction(async tx=>{

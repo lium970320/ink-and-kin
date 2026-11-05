@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { memories, messages, personas, scenes } from "../../drizzle/schema";
+import { chatContextStates } from "../../drizzle/chat-context-schema";
 import { sourceLibraryChunks, sourceLibraryDocuments } from "../../drizzle/source-library-schema";
 import { memoryReviewCandidates as candidates, memoryReviewOperations as operations, memoryReviewProvenance as provenance } from "../../drizzle/memory-review-schema";
 import { factFingerprint, MemoryReviewError, type EvidenceReference, type MemoryProvenance, type ReviewCandidate, type ReviewEvidence, type StoredReviewResult } from "./core";
@@ -77,17 +78,30 @@ function currentMemoryFingerprint(memory: typeof memories.$inferSelect): string 
 
 export function createMemoryReviewRepository(): MemoryReviewRepository {
   return {
-    async transaction(userId, personaId, operationId, work) {
+    async transaction(userId, personaId, operationId, work, deferContextLock = false) {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId)) throw new MemoryReviewError("BAD_REQUEST", "请提供有效的操作编号。");
       const operationKey = operationId.toLowerCase();
       const db = await database();
       return db.transaction(async tx => {
-        const owner = await tx.select({ id: personas.id }).from(personas)
-          .where(and(eq(personas.id, personaId), eq(personas.userId, userId))).limit(1).for("share");
+        const ownerScope = and(eq(personas.id, personaId), eq(personas.userId, userId));
+        const owner = await tx.select({ id: personas.id }).from(personas).where(ownerScope).limit(1);
         if (!owner.length) throw new MemoryReviewError("NOT_FOUND", "角色不存在或不属于当前账号。");
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:memory-review-operation'), hashtext(${`${userId}:${operationKey}`}))`);
-
+        let lockedRevision: number | undefined;
+        async function assertContextRevision(revision?: number) {
+          if (lockedRevision === undefined) {
+            await tx.insert(chatContextStates).values({userId,personaId}).onConflictDoNothing();
+            const [state] = await tx.select().from(chatContextStates)
+              .where(and(eq(chatContextStates.userId,userId),eq(chatContextStates.personaId,personaId))).for('share');
+            const [lockedOwner] = await tx.select({id:personas.id}).from(personas).where(ownerScope).limit(1).for('share');
+            if (!state || !lockedOwner) throw new MemoryReviewError('NOT_FOUND','角色不存在或不属于当前账号。');
+            lockedRevision = state.revision;
+          }
+          if (revision !== undefined && lockedRevision !== revision) throw new MemoryReviewError('CONFLICT','对话上下文已变化，请重新提取。');
+        }
+        if (!deferContextLock) await assertContextRevision();
         const unit: ReviewTransaction = {
+          assertContextRevision,
           async getOperation() {
             const rows = await tx.select().from(operations).where(and(eq(operations.userId, userId), eq(operations.operationId, operationKey))).limit(1);
             if (rows[0] && rows[0].personaId !== personaId) throw new MemoryReviewError("CONFLICT", "此操作编号已用于另一个角色，请使用新的操作编号。");

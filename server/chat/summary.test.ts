@@ -14,15 +14,18 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 const getMessagesByPersonaId = vi.fn();
 const getMemoriesByPersonaId = vi.fn();
 const getSceneById = vi.fn();
+const getSceneGenerationSnapshot = vi.fn();
 const getLatestChatSummary = vi.fn();
 const createChatSummary = vi.fn();
 const getDefaultLlmConfig = vi.fn();
 const touchMemoryRecalled = vi.fn();
+const lockedTransaction = Object.freeze({ fixture: "context-transaction" });
 
 vi.mock("../db", () => ({
   getMessagesByPersonaId: (...a: unknown[]) => getMessagesByPersonaId(...a),
   getMemoriesByPersonaId: (...a: unknown[]) => getMemoriesByPersonaId(...a),
   getSceneById: (...a: unknown[]) => getSceneById(...a),
+  getSceneGenerationSnapshot: (...a: unknown[]) => getSceneGenerationSnapshot(...a),
   getLatestChatSummary: (...a: unknown[]) => getLatestChatSummary(...a),
   createChatSummary: (...a: unknown[]) => createChatSummary(...a),
   getDefaultLlmConfig: (...a: unknown[]) => getDefaultLlmConfig(...a),
@@ -36,7 +39,7 @@ vi.mock("./context-state", () => ({
     state: { userId, personaId, revision: 0, startAfterMessageId: 0, overrides: {} },
     history: await getMessagesByPersonaId(personaId, userId, limit),
   }),
-  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: () => Promise<unknown>) => work(),
+  withContextRevision: async (_userId: number, _personaId: number, _revision: number, work: (tx: typeof lockedTransaction) => Promise<unknown>) => work(lockedTransaction),
 }));
 vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
 vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
@@ -119,6 +122,7 @@ describe("composeMessages — history compaction", () => {
       getMessagesByPersonaId,
       getMemoriesByPersonaId,
       getSceneById,
+      getSceneGenerationSnapshot,
       getLatestChatSummary,
       createChatSummary,
       getDefaultLlmConfig,
@@ -134,6 +138,11 @@ describe("composeMessages — history compaction", () => {
     getDefaultLlmConfig.mockResolvedValue(null);
     getMemoriesByPersonaId.mockResolvedValue([]);
     getSceneById.mockResolvedValue(null);
+    getSceneGenerationSnapshot.mockImplementation(async (id: number, userId: number) => {
+      const current = persona({ id, userId });
+      const scene = current.activeSceneId == null ? null : await getSceneById(current.activeSceneId);
+      return { persona: current, scene, revision: 0 };
+    });
     getLatestChatSummary.mockResolvedValue(undefined);
     createChatSummary.mockResolvedValue(1);
     touchMemoryRecalled.mockResolvedValue(undefined);
@@ -178,6 +187,9 @@ describe("composeMessages — history compaction", () => {
     expect(systemPrompt).toContain("【以往对话摘要】");
     expect(systemPrompt).toContain("他们最近常聊旅行计划。");
     expect(createChatSummary).toHaveBeenCalledTimes(1);
+    expect(createChatSummary).toHaveBeenCalledWith({
+      personaId: 1, userId: 1, summary: "他们最近常聊旅行计划。", fromMessageId: 1, toMessageId: 11,
+    }, lockedTransaction);
   });
 
   it("still composes the conversation when the summarisation fails", async () => {

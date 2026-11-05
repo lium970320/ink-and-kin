@@ -8,6 +8,7 @@ export type CurrentEvidence = { text: string; role?: string };
 
 /** Transaction signatures match the frozen review implementation. */
 export interface ReviewTransaction {
+  assertContextRevision(revision?: number): Promise<void>;
   getOperation(): Promise<{ requestHash: string; result: StoredReviewResult } | null>;
   saveOperation(requestHash: string, result: StoredReviewResult): Promise<void>;
   getCandidate(id: number): Promise<ReviewCandidate | null>;
@@ -21,7 +22,7 @@ export interface ReviewTransaction {
 }
 
 export interface MemoryReviewRepository {
-  transaction<T>(userId: number, personaId: number, operationId: string, work: (transaction: ReviewTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(userId: number, personaId: number, operationId: string, work: (transaction: ReviewTransaction) => Promise<T>, deferContextLock?: boolean): Promise<T>;
   list(userId: number, personaId: number, status?: ReviewCandidate["status"]): Promise<ReviewCandidate[]>;
   provenance(userId: number, personaId: number, memoryIds: number[]): Promise<MemoryProvenance[]>;
   reviewedFacts(userId: number, personaId: number, kind: "source_fact" | "story_event", sceneId?: number): Promise<ReviewCandidate[]>;
@@ -143,7 +144,7 @@ export class MemoryReviewService {
 
   /** The lock covers generation; a completed extraction replays without invoking generation again. */
   async generateBatch(
-    userId: number, input: { personaId: number; operationId: string }, generate: () => Promise<CandidateFields[]>,
+    userId: number, input: { personaId: number; operationId: string }, generate: (tx: ReviewTransaction) => Promise<CandidateFields[]>,
   ): Promise<ReviewBatchResult> {
     assertOperation(userId, input.personaId, input.operationId);
     const requestHash = hashValue({ action: "extract", personaId: input.personaId });
@@ -153,7 +154,8 @@ export class MemoryReviewService {
         if (replay.requestHash !== requestHash || !("candidates" in replay.result)) throw new MemoryReviewError("CONFLICT", "该操作 UUID 已用于其他请求，请刷新后重新操作。");
         return replay.result;
       }
-      const generated = await generate();
+      const generated = await generate(tx);
+      await tx.assertContextRevision();
       if (!Array.isArray(generated) || generated.length > 5) throw new MemoryReviewError("BAD_REQUEST", "每次提取最多返回 5 条候选，也可以返回空结果。");
       const fields = generated.map(candidate => validateFields(candidate));
       const candidates: ReviewCandidate[] = [];
@@ -161,7 +163,7 @@ export class MemoryReviewService {
       const result = { candidates };
       await tx.saveOperation(requestHash, result);
       return result;
-    });
+    }, true);
   }
 
   async perform(userId: number, command: ReviewCommand): Promise<ReviewResult> {

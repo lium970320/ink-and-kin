@@ -8,12 +8,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   getRoleplayChannelById: vi.fn(),
+  isRoleplayGenerationCurrent: vi.fn(),
   getPersonasByUserId: vi.fn(),
   getPersonaById: vi.fn(),
   getRoleplayChannelMessages: vi.fn(),
   getDefaultLlmConfig: vi.fn(),
   getRoleplayChannelDirectorState: vi.fn(),
   setRoleplayChannelDirectorState: vi.fn(),
+  withRoleplayBeatTransaction: vi.fn(),
   createRoleplayMessage: vi.fn(),
   updateRoleplayMemberCursor: vi.fn(),
   updateRoleplayChannelDiagnostics: vi.fn(),
@@ -22,12 +24,14 @@ const h = vi.hoisted(() => ({
 vi.mock("../llm", () => ({ llmService: { invoke: h.invoke } }));
 vi.mock("../db", () => ({
   getRoleplayChannelById: h.getRoleplayChannelById,
+  isRoleplayGenerationCurrent: h.isRoleplayGenerationCurrent,
   getPersonasByUserId: h.getPersonasByUserId,
   getPersonaById: h.getPersonaById,
   getRoleplayChannelMessages: h.getRoleplayChannelMessages,
   getDefaultLlmConfig: h.getDefaultLlmConfig,
   getRoleplayChannelDirectorState: h.getRoleplayChannelDirectorState,
   setRoleplayChannelDirectorState: h.setRoleplayChannelDirectorState,
+  withRoleplayBeatTransaction: h.withRoleplayBeatTransaction,
   createRoleplayMessage: h.createRoleplayMessage,
   updateRoleplayMemberCursor: h.updateRoleplayMemberCursor,
   updateRoleplayChannelDiagnostics: h.updateRoleplayChannelDiagnostics,
@@ -44,6 +48,7 @@ const CHANNEL = {
   description: "两位角色讨论路线",
   scenePrompt: "清晨，图书室里摊着一张地图。",
   isActive: true,
+  generationRevision: 4,
   channelKind: "channel",
   runtimeDiagnostics: null,
   members: [
@@ -91,18 +96,28 @@ function latestDiagnostics() {
   return h.updateRoleplayChannelDiagnostics.mock.calls.at(-1)?.[2];
 }
 
+const committedBeatTransactions: object[] = [];
+
 describe("频道主生成链路：空正文降级重试 + 【】旁白保留", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     calledRoutes.length = 0;
     turnPrompts.length = 0;
+    committedBeatTransactions.length = 0;
     h.getRoleplayChannelById.mockResolvedValue(CHANNEL);
+    h.isRoleplayGenerationCurrent.mockResolvedValue(true);
     h.getPersonasByUserId.mockResolvedValue(PERSONAS);
     h.getPersonaById.mockImplementation(async (id: number) => PERSONAS.find(p => p.id === id));
     h.getRoleplayChannelMessages.mockResolvedValue(MESSAGES);
     h.getDefaultLlmConfig.mockResolvedValue({ extraConfig: {} });
     h.getRoleplayChannelDirectorState.mockResolvedValue(null);
     h.setRoleplayChannelDirectorState.mockResolvedValue(undefined);
+    h.withRoleplayBeatTransaction.mockImplementation(async (write: (executor: object) => Promise<unknown>) => {
+      const executor = {};
+      const result = await write(executor);
+      committedBeatTransactions.push(executor);
+      return result;
+    });
     h.createRoleplayMessage.mockResolvedValue({ id: 99 });
     h.updateRoleplayMemberCursor.mockResolvedValue(undefined);
     h.updateRoleplayChannelDiagnostics.mockResolvedValue(undefined);
@@ -205,7 +220,7 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
     expect(latestDiagnostics().skippedReason).toContain("续拍");
   });
 
-  it("第二拍已落库但游标更新失败时，仍把两条已落库消息完整返回", async () => {
+  it("第二拍游标更新失败时回滚第二拍，只返回已提交的第一拍", async () => {
     let turnCount = 0;
     h.invoke.mockImplementation(async (params: any) => {
       const route = params?.options?.usageContext?.route;
@@ -219,22 +234,41 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
     const result = await runRoleplayChannelTurn({ channelId: 11, userId: 1 });
 
     expect(h.createRoleplayMessage).toHaveBeenCalledTimes(2);
-    expect(result.beats?.map(beat => beat.messageId)).toEqual([100, 101]);
+    expect(committedBeatTransactions).toHaveLength(1);
+    expect(result.beats?.map(beat => beat.messageId)).toEqual([100]);
     expect(result.messageId).toBe(100);
-    expect(latestDiagnostics().messageId).toBe(101);
-    expect(latestDiagnostics().postPersistWarning).toContain("第 2 拍已保存");
-    expect(latestDiagnostics().skippedReason).toBeNull();
+    expect(latestDiagnostics().messageId).toBe(100);
+    expect(latestDiagnostics().skippedReason).toContain("续拍生成或保存失败");
   });
 
-  it("第一拍已保存但成员游标失败，仍返回发言并单独诊断游标问题", async () => {
+  it("第一拍成员游标失败时回滚发言，不写后续诊断或导演进度", async () => {
     mockTurnReplies([GOOD_REPLY]);
     h.createRoleplayMessage.mockResolvedValueOnce({ id: 100 });
     h.updateRoleplayMemberCursor.mockRejectedValueOnce(new Error("游标写入失败"));
-    const result = await runRoleplayChannelTurn({ channelId: 11, userId: 1 });
-    expect(result.spoken).toBe(true);
-    expect(result.beats?.map(beat => beat.messageId)).toEqual([100]);
-    expect(latestDiagnostics().postPersistWarning).toContain("第 1 拍已保存");
-    expect(latestDiagnostics().skippedReason).toBeNull();
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1 })).rejects.toThrow("游标写入失败");
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+    expect(committedBeatTransactions).toHaveLength(0);
+    expect(h.updateRoleplayChannelDiagnostics).not.toHaveBeenCalled();
+    expect(h.setRoleplayChannelDirectorState).not.toHaveBeenCalled();
+  });
+
+  it("发言、游标、诊断和导演进度共享同一事务；导演失败时整拍不提交", async () => {
+    h.getRoleplayChannelDirectorState.mockResolvedValue({
+      arc: [{ title: "窗边", goal: "看雨" }], cursor: 0,
+      lastUserSteer: MESSAGES[0].content, stallStreak: 0, recentBeats: [],
+      plannedAtTurn: 0, turnCount: 0, storySummary: "", pinnedFacts: [],
+    });
+    mockTurnReplies([GOOD_REPLY]);
+    h.setRoleplayChannelDirectorState.mockRejectedValueOnce(new Error("导演写入失败"));
+
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1 })).rejects.toThrow("导演写入失败");
+    expect(h.withRoleplayBeatTransaction).toHaveBeenCalledTimes(1);
+    const executor = h.createRoleplayMessage.mock.calls[0][2];
+    expect(executor).toBeTruthy();
+    expect(h.updateRoleplayMemberCursor.mock.calls[0][5]).toBe(executor);
+    expect(h.updateRoleplayChannelDiagnostics.mock.calls[0][5]).toBe(executor);
+    expect(h.setRoleplayChannelDirectorState.mock.calls[0][5]).toBe(executor);
+    expect(committedBeatTransactions).toHaveLength(0);
   });
 
   it("导演记录保留两拍顺序，回合只增加一次，下一次规划能看到第二拍", async () => {
@@ -388,7 +422,8 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
     const state = h.setRoleplayChannelDirectorState.mock.calls.at(-1)?.[2];
     expect(state.recentBeats).toHaveLength(stopAtBeat);
     expect(state.turnCount).toBe(1);
-    expect(h.updateRoleplayMemberCursor).toHaveBeenCalledTimes(stopAtBeat - 1);
+    expect(h.updateRoleplayMemberCursor).toHaveBeenCalledTimes(stopAtBeat);
+    expect(committedBeatTransactions).toHaveLength(stopAtBeat);
   });
 
   it("用户插话被尊重：最近一条用户消息作为【用户本轮创作方向】进入主生成提示词", async () => {
@@ -398,6 +433,102 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
 
     expect(turnPrompts[0].user).toContain("【用户本轮创作方向】");
     expect(turnPrompts[0].user).toContain("继续，写具体一点");
+  });
+
+  it("首拍写入后停止仍在等待的续拍：导演与诊断已记录首拍，停止后没有补写", async () => {
+    let stopped = false;
+    let turnCount = 0;
+    let signalSecond!: () => void;
+    let releaseSecond!: (reply: string) => void;
+    const secondStarted = new Promise<void>(resolve => { signalSecond = resolve; });
+    const secondReply = new Promise<string>(resolve => { releaseSecond = resolve; });
+    h.getRoleplayChannelDirectorState.mockResolvedValue({
+      arc: [{ title: "窗边", goal: "看雨" }], cursor: 0,
+      lastUserSteer: MESSAGES[0].content, stallStreak: 0, recentBeats: [],
+      plannedAtTurn: 4, turnCount: 4, storySummary: "", pinnedFacts: [],
+    });
+    h.invoke.mockImplementation(async params => {
+      const route = params.options.usageContext.route;
+      if (route === "roleplay.channel_reflection") return '{"nextSpeakerHint":"same","mood":"warm"}';
+      if (route !== "roleplay.channel_turn") return "";
+      if (turnCount++ === 0) return GOOD_REPLY;
+      signalSecond();
+      return secondReply;
+    });
+
+    const run = runRoleplayChannelTurn({ channelId: 11, userId: 1, shouldAbort: () => stopped }).catch(error => error);
+    await secondStarted;
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+    expect(h.updateRoleplayMemberCursor).toHaveBeenCalledTimes(1);
+    expect(latestDiagnostics().beats.map((beat: any) => beat.messageId)).toEqual([99]);
+    expect(h.setRoleplayChannelDirectorState.mock.calls.at(-1)?.[2]).toMatchObject({
+      cursor: 1, turnCount: 5, recentBeats: [expect.stringContaining("台灯")],
+    });
+    const diagnosticsWrites = h.updateRoleplayChannelDiagnostics.mock.calls.length;
+    const directorWrites = h.setRoleplayChannelDirectorState.mock.calls.length;
+    stopped = true;
+    releaseSecond(SECOND_REPLY);
+    expect(await run).toBeInstanceOf(RoleplayTurnCancelledError);
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+    expect(h.updateRoleplayChannelDiagnostics).toHaveBeenCalledTimes(diagnosticsWrites);
+    expect(h.setRoleplayChannelDirectorState).toHaveBeenCalledTimes(directorWrites);
+  });
+
+  it("排除的用户插话不进入导演、反思或正文提示", async () => {
+    const excluded = "不要把这个测试标记带入剧情";
+    h.getRoleplayChannelMessages.mockResolvedValue([
+      ...MESSAGES, { ...MESSAGES[0], id: 2, content: excluded, contextOverride: "excluded" },
+    ]);
+    mockTurnReplies([GOOD_REPLY]);
+
+    await runRoleplayChannelTurn({ channelId: 11, userId: 1, generationRevision: 4 });
+
+    for (const route of ["roleplay.channel_director_arc", "roleplay.channel_reflection", "roleplay.channel_turn"]) {
+      const calls = h.invoke.mock.calls.map(([params]) => params).filter(params => params.options.usageContext.route === route);
+      expect(calls.length).toBeGreaterThan(0);
+      const prompt = JSON.stringify(calls.map(params => params.messages));
+      expect(prompt).toContain(MESSAGES[0].content);
+      expect(prompt).not.toContain(excluded);
+    }
+  });
+
+  it("停止时辅助模型返回空正文，不再发起重试或写入", async () => {
+    let stopped = false;
+    const routes: string[] = [];
+    h.invoke.mockImplementation(async params => {
+      const route = params.options.usageContext.route;
+      routes.push(route);
+      if (route === "roleplay.channel_director_arc") stopped = true;
+      return "";
+    });
+
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1, shouldAbort: () => stopped }))
+      .rejects.toBeInstanceOf(RoleplayTurnCancelledError);
+    expect(routes).toEqual(["roleplay.channel_director_arc"]);
+    expect(h.createRoleplayMessage).not.toHaveBeenCalled();
+    expect(h.updateRoleplayChannelDiagnostics).not.toHaveBeenCalled();
+    expect(h.setRoleplayChannelDirectorState).not.toHaveBeenCalled();
+  });
+
+  it("上下文版本已改变时取消旧任务，未调用模型或保存", async () => {
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1, generationRevision: 3 }))
+      .rejects.toBeInstanceOf(RoleplayTurnCancelledError);
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.createRoleplayMessage).not.toHaveBeenCalled();
+  });
+
+  it("生成已返回但行锁内的快照校验失败：不更新游标、诊断或导演进度", async () => {
+    mockTurnReplies([GOOD_REPLY]);
+    h.createRoleplayMessage.mockRejectedValueOnce(Object.assign(new Error("频道已被清空"), {
+      name: "RoleplayGenerationChangedError",
+    }));
+
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1, generationRevision: 4 }))
+      .rejects.toBeInstanceOf(RoleplayTurnCancelledError);
+    expect(h.createRoleplayMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "persona" }), 4, expect.any(Object));
+    expect(h.updateRoleplayMemberCursor).not.toHaveBeenCalled();
+    expect(h.updateRoleplayChannelDiagnostics).not.toHaveBeenCalled();
+    expect(h.setRoleplayChannelDirectorState).not.toHaveBeenCalled();
   });
 
   it("重启恢复：runtimeDiagnostics 的时空锚与已存导演线会被下一拍带回来（不重规划）", async () => {

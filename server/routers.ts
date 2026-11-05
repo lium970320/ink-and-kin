@@ -49,8 +49,6 @@ import {
   getSceneMemoryStateSnapshot,
   mutateSceneMemoryState,
   clearSceneMemoryState,
-  resetPersonaSceneStoryState,
-  bumpChatContextRevision,
   getSceneMessageContextManagement,
   setSceneMessagesContextOverride,
   clearSceneMessagesContextOverride,
@@ -59,7 +57,6 @@ import {
 import {
   buildInitialSceneMemoryCache,
   normalizeSceneMemoryCache,
-  removeSceneMemoryMessageIds,
 } from "./social/scene-memory";
 import {
   getRoleplayChannels,
@@ -79,20 +76,20 @@ import {
 import {
   WEB_ADVANCE_TASK_ID_PATTERN,
   WebChannelAdvanceCancelledError,
-  finishWebChannelAdvance,
+  finishWebChannelAdvanceAndWait,
   getCurrentWebChannelAdvanceTask,
   getWebChannelAdvanceTask,
   reserveWebChannelAdvanceOrder,
   runWebChannelAdvanceTurn,
   startWebChannelAdvance,
-  stopWebChannelAdvance,
+  stopWebChannelAdvanceAndWait,
 } from "./social/web-channel-advance";
 import {
   RoleplayTurnCancelledError,
   runRoleplayChannelTurn,
   type RunRoleplayTurnResult,
 } from "./social/roleplay-channel";
-import { extractSceneConfirmedFacts, refreshSceneMemorySummary } from "./social/scene-memory-service";
+import { extractSceneConfirmedFacts, refreshSceneMemoryAndFacts } from "./social/scene-memory-service";
 import { deleteChatMessagesWithBackup } from "./chat-history-management";
 import { nanoid } from "nanoid";
 import path from "path";
@@ -2193,12 +2190,6 @@ export const appRouter = router({
           resetRuntimeCaches: input.resetRuntimeCaches,
           sceneId: input.sceneId,
         });
-        // 被删除的消息不能继续留在场景记忆的「最近消息」里，否则下次摘要会读到已删内容。
-        if (result.deletedMessages > 0) {
-          await mutateSceneMemoryState(input.personaId, ctx.user.id, input.sceneId, snapshot =>
-            snapshot.cache ? { cache: removeSceneMemoryMessageIds(snapshot.cache, input.messageIds) } : null,
-          );
-        }
         return result;
       }),
 
@@ -2218,11 +2209,6 @@ export const appRouter = router({
           resetRuntimeCaches: input.resetRuntimeCaches,
           sceneId: input.sceneId,
         });
-        if (result.deletedMessages > 0) {
-          await mutateSceneMemoryState(input.personaId, ctx.user.id, input.sceneId, snapshot =>
-            snapshot.cache ? { cache: removeSceneMemoryMessageIds(snapshot.cache, snapshot.cache.recentMessageIds) } : null,
-          );
-        }
         return result;
       }),
 
@@ -2287,22 +2273,13 @@ export const appRouter = router({
         if (!scene || (!scene.isBuiltin && scene.userId !== ctx.user.id)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
-        const [summary] = await Promise.all([
-          refreshSceneMemorySummary({
-            userId: ctx.user.id,
-            personaId: input.personaId,
-            sceneId: input.sceneId,
-            sceneName: scene.name,
-            sceneDescription: scene.description,
-          }),
-          extractSceneConfirmedFacts({
-            userId: ctx.user.id,
-            personaId: input.personaId,
-            sceneId: input.sceneId,
-            sceneName: scene.name,
-            sceneDescription: scene.description,
-          }).catch(() => []),
-        ]);
+        const { summary } = await refreshSceneMemoryAndFacts({
+          userId: ctx.user.id,
+          personaId: input.personaId,
+          sceneId: input.sceneId,
+          sceneName: scene.name,
+          sceneDescription: scene.description,
+        });
         if (!summary) throw new TRPCError({ code: "BAD_REQUEST", message: "暂时没有足够的场景消息可以生成摘要" });
         return { success: true, summary };
       }),
@@ -2336,9 +2313,6 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND" });
         }
         await clearSceneMemoryState(input.personaId, ctx.user.id, input.sceneId);
-        await resetPersonaSceneStoryState(input.personaId, ctx.user.id, input.sceneId);
-        // 清空记忆后，正在生成/摘要中的旧任务必须失效，不允许把旧内容写回来。
-        await bumpChatContextRevision(input.personaId, ctx.user.id);
         return { success: true };
       }),
   }),
@@ -2558,6 +2532,7 @@ export const appRouter = router({
           channelId: input.channelId,
           userId: ctx.user.id,
           taskId: input.taskId,
+          generationRevision: channel.generationRevision,
         }, requestOrder);
         return { started: task !== null, cancelled: task === null };
       }),
@@ -2572,7 +2547,7 @@ export const appRouter = router({
         const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
         if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
         return {
-          finished: finishWebChannelAdvance({
+          finished: await finishWebChannelAdvanceAndWait({
             channelId: input.channelId,
             userId: ctx.user.id,
             taskId: input.taskId,
@@ -2590,7 +2565,7 @@ export const appRouter = router({
         const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
         if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
         return {
-          stopped: stopWebChannelAdvance({
+          stopped: await stopWebChannelAdvanceAndWait({
             channelId: input.channelId,
             userId: ctx.user.id,
             ...(input.taskId ? { taskId: input.taskId } : {}),
@@ -2611,6 +2586,7 @@ export const appRouter = router({
     tick: protectedProcedure
       .input(z.object({
         channelId: z.number(),
+        operationId: z.string().uuid(),
         personaId: z.number().optional(),
         allowSilence: z.boolean().optional(),
         taskId: z.string().max(100).regex(WEB_ADVANCE_TASK_ID_PATTERN).optional(),
@@ -2635,7 +2611,8 @@ export const appRouter = router({
           task = startWebChannelAdvance({
             channelId: input.channelId,
             userId: ctx.user.id,
-            taskId: `legacy-${nanoid()}:1`,
+            taskId: `legacy-${input.operationId}:1`,
+            generationRevision: channel.generationRevision,
           }, requestOrder);
           if (!task) return cancelledRoleplayTurn(input.channelId, input.personaId);
         }
@@ -2643,12 +2620,17 @@ export const appRouter = router({
         if (!task) return cancelledRoleplayTurn(input.channelId, input.personaId);
         const activeTask = task;
         try {
-          return await runWebChannelAdvanceTurn(activeTask, shouldAbort => runRoleplayChannelTurn({
+          return await runWebChannelAdvanceTurn(activeTask, input.operationId,
+            JSON.stringify([input.personaId ?? null, input.allowSilence === true]),
+            (shouldAbort, save) => runRoleplayChannelTurn({
             channelId: input.channelId,
             userId: ctx.user.id,
             personaId: input.personaId,
             allowSilence: input.allowSilence,
             shouldAbort,
+            save,
+            generationRevision: activeTask.generationRevision,
+            signal: activeTask.signal,
           }));
         } catch (err) {
           if (err instanceof RoleplayTurnCancelledError || err instanceof WebChannelAdvanceCancelledError) {
@@ -2660,7 +2642,7 @@ export const appRouter = router({
           });
         } finally {
           if (!input.taskId && activeTask) {
-            finishWebChannelAdvance({
+            await finishWebChannelAdvanceAndWait({
               channelId: input.channelId,
               userId: ctx.user.id,
               taskId: activeTask.taskId,

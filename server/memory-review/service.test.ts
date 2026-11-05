@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryReviewService, type CurrentEvidence, type MemoryReviewRepository, type ReviewTransaction } from "./service";
 import {
   filterRealityMemories, MemoryReviewError, validateFields,
@@ -38,6 +38,7 @@ function setup() {
   };
   let failProvenance = false;
   let queue = Promise.resolve();
+  const assertContextRevision = vi.fn(async (_revision?: number) => {});
   const repository: MemoryReviewRepository = {
     async transaction(userId, personaId, operation, work) {
       const previous = queue;
@@ -53,6 +54,7 @@ function setup() {
         };
         const owned = (row: { userId: number; personaId: number }) => row.userId === userId && row.personaId === personaId;
         const tx: ReviewTransaction = {
+          assertContextRevision,
           getOperation: async () => clone(state.operations.get(`${userId}:${operation}`) ?? null),
           saveOperation: async (requestHash, result) => { state.operations.set(`${userId}:${operation}`, clone({ requestHash, result })); },
           getCandidate: async id => { const row = state.candidates.get(id); return row && owned(row) ? clone(row) : null; },
@@ -117,7 +119,7 @@ function setup() {
     action: "accept", personaId: 11, candidateId: candidate.id, expectedRevision: candidate.revision,
     operationId: operationId(operation), confirmWithoutEvidence,
   });
-  return { service, state, messages, sources, create, accept, failNextProvenance: () => { failProvenance = true; } };
+  return { service, state, messages, sources, create, accept, assertContextRevision, failNextProvenance: () => { failProvenance = true; } };
 }
 
 describe("审阅字段与事实种类边界", () => {
@@ -252,12 +254,17 @@ describe("修订、幂等与事务结果", () => {
   it("提取锁覆盖模型回调，并发同 UUID 只生成一次，空结果也可重放", async () => {
     const f = setup();
     let generationCalls = 0;
-    const generate = async () => { generationCalls++; return [fields()]; };
+    const generate = async (tx: ReviewTransaction) => {
+      expect(tx.assertContextRevision).toBe(f.assertContextRevision);
+      generationCalls++;
+      return [fields()];
+    };
     const input = { personaId: 11, operationId: operationId(1) };
     const [first, replay] = await Promise.all([
       f.service.generateBatch(1, input, generate), f.service.generateBatch(1, input, generate),
     ]);
     expect(generationCalls).toBe(1);
+    expect(f.assertContextRevision).toHaveBeenCalledTimes(1);
     expect(replay).toEqual(first);
     expect(f.state.candidates.size).toBe(1);
     const emptyInput = { personaId: 11, operationId: operationId(2) };

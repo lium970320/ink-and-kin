@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let runtime: typeof import("./web-channel-advance");
-const base = { channelId: 11, userId: 7 };
+const base = { channelId: 11, userId: 7, generationRevision: 4 };
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(res => { resolve = res; });
@@ -53,15 +53,16 @@ describe("网页推进任务身份", () => {
   it("旧生成未返回时新任务等候，旧结果不交付，释放后仅新任务继续", async () => {
     const oldModel = deferred<string>();
     const first = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:1" })!;
-    const oldRun = runtime.runWebChannelAdvanceTurn(first, async shouldAbort => {
+    const oldRun = runtime.runWebChannelAdvanceTurn(first, "old", "", async shouldAbort => {
       const reply = await oldModel.promise;
       if (shouldAbort()) throw new runtime.WebChannelAdvanceCancelledError();
       return reply;
     }).catch(error => error);
+    await Promise.resolve();
     runtime.stopWebChannelAdvance({ ...base, taskId: first.taskId });
     const second = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:2" })!;
     const generateNew = vi.fn().mockResolvedValue("新回复");
-    const newRun = runtime.runWebChannelAdvanceTurn(second, generateNew);
+    const newRun = runtime.runWebChannelAdvanceTurn(second, "new", "", generateNew);
     await Promise.resolve();
     expect(generateNew).not.toHaveBeenCalled();
     oldModel.resolve("旧回复");
@@ -74,14 +75,65 @@ describe("网页推进任务身份", () => {
   it("排队等待的任务也能停止，不调用其生成函数", async () => {
     const oldModel = deferred<string>();
     const first = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:1" })!;
-    const oldRun = runtime.runWebChannelAdvanceTurn(first, () => oldModel.promise).catch(error => error);
+    const oldRun = runtime.runWebChannelAdvanceTurn(first, "old", "", () => oldModel.promise).catch(error => error);
+    await Promise.resolve();
     const second = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:2" })!;
     const generateNew = vi.fn().mockResolvedValue("不应生成");
-    const newRun = runtime.runWebChannelAdvanceTurn(second, generateNew).catch(error => error);
+    const newRun = runtime.runWebChannelAdvanceTurn(second, "new", "", generateNew).catch(error => error);
     runtime.stopWebChannelAdvance({ ...base, taskId: second.taskId });
     oldModel.resolve("旧回复");
     await oldRun;
     expect(await newRun).toBeInstanceOf(runtime.WebChannelAdvanceCancelledError);
     expect(generateNew).not.toHaveBeenCalled();
+  });
+
+  it("同任务同操作并发与完成后重试共享结果；同编号改参数拒绝，新编号独立生成", async () => {
+    const task = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:1" })!;
+    const model = deferred<string>();
+    const generate = vi.fn(() => model.promise);
+    const duplicate = vi.fn().mockResolvedValue("不应生成");
+    const first = runtime.runWebChannelAdvanceTurn(task, "beat-one", "[1,false]", generate);
+    const concurrent = runtime.runWebChannelAdvanceTurn(task, "beat-one", "[1,false]", duplicate);
+    await expect(runtime.runWebChannelAdvanceTurn(task, "beat-one", "[2,false]", duplicate)).rejects.toThrow("不同参数");
+    model.resolve("第一拍");
+    expect(await first).toBe("第一拍");
+    expect(await concurrent).toBe("第一拍");
+    expect(await runtime.runWebChannelAdvanceTurn(task, "beat-one", "[1,false]", duplicate)).toBe("第一拍");
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(duplicate).not.toHaveBeenCalled();
+    expect(await runtime.runWebChannelAdvanceTurn(task, "beat-two", "[1,false]", () => Promise.resolve("第二拍"))).toBe("第二拍");
+  });
+
+  it("停止只等待已经进入的写入，不等待模型，返回后拒绝任何迟到的写入", async () => {
+    const task = runtime.startWebChannelAdvance({ ...base, taskId: "client-one:1" })!;
+    const entered = deferred<void>();
+    const insert = deferred<void>();
+    const model = deferred<void>();
+    const written = vi.fn();
+    const lateWrite = vi.fn().mockResolvedValue(undefined);
+    const run = runtime.runWebChannelAdvanceTurn(task, "beat", "", async (_shouldAbort, save) => {
+      await save(async () => {
+        entered.resolve();
+        await insert.promise;
+        written();
+      });
+      await model.promise;
+      await save(lateWrite);
+    }).catch(error => error);
+    await entered.promise;
+    let stopReturned = false;
+    const stop = runtime.stopWebChannelAdvanceAndWait({ ...base, taskId: task.taskId }).then(value => {
+      stopReturned = true;
+      return value;
+    });
+    expect(task.signal.aborted).toBe(true);
+    await Promise.resolve();
+    expect(stopReturned).toBe(false);
+    insert.resolve();
+    expect(await stop).toBe(true);
+    expect(written).toHaveBeenCalledTimes(1);
+    model.resolve();
+    expect(await run).toBeInstanceOf(runtime.WebChannelAdvanceCancelledError);
+    expect(lateWrite).not.toHaveBeenCalled();
   });
 });
