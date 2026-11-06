@@ -10,6 +10,8 @@ export type QqDeliveryPart = {
   qqMessageId?: string;
   attempts: number;
   error?: string;
+  /** 早先有未确认尝试，后来确认也不能排除重复投递。 */
+  duplicateRisk?: boolean;
 };
 
 export type QqDeliverySummary = {
@@ -32,6 +34,10 @@ export type QqDeliveryBatch = {
   updatedAt: string;
   parts: QqDeliveryPart[];
   summary: QqDeliverySummary;
+  /** 持久批次的修订号；旧只读预览不带此字段。 */
+  version?: number;
+  /** 归属或原发言失效时只保留历史，不再参与推进阻挡或人工重发。 */
+  retryable?: boolean;
 };
 
 export function summarizeQqDeliveryParts(parts: QqDeliveryPart[]): QqDeliverySummary {

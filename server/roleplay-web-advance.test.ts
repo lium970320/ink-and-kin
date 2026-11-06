@@ -4,13 +4,13 @@ import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import * as db from "./db";
 import { RoleplayTurnCancelledError, runRoleplayChannelTurn } from "./social/roleplay-channel";
+import { qqRoleplayService } from "./channels/qq";
 
 /**
  * 网页推进服务端合同（书中人第 5 批 5B）。
  *
- * 自用版这份测试还包含 QQ 镜像断言；书中人没有 QQ 交付，这里只保留网页生成链路：
- * 任务身份、归属校验、停止/取消、慢 start 竞争、旧单轮兼容，以及 advanceStatus
- * 在"没有 QQ 服务端推进"时的等价边界（归属校验后返回 null）。
+ * 本组隔离 QQ 传输，核验网页任务身份、归属、取消、竞争与逐拍钩子接线。
+ * QQ 交付仓储和实际传输由 channels/qq 下的定向用例核验。
  *
  * 任务表是 web-channel-advance 的模块级内存状态：每个用例换一个 channelId，
  * 避免上一条用例的任务串到下一条（与自用版测试同一做法）。
@@ -53,6 +53,7 @@ function deferred<T>() {
 }
 
 let nextChannelId = 1000;
+const prepareQqTurn = vi.spyOn(qqRoleplayService, "prepareTurn");
 let channelId: number;
 const reply = {
   spoken: true,
@@ -66,6 +67,7 @@ const reply = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  prepareQqTurn.mockResolvedValue(null);
   channelId = ++nextChannelId;
   vi.mocked(db.getRoleplayChannelById).mockResolvedValue({ id: channelId } as any);
   vi.mocked(runRoleplayChannelTurn).mockResolvedValue({ ...reply, channelId });
@@ -105,7 +107,7 @@ describe("网页推进服务端合同", () => {
     expect(runRoleplayChannelTurn).not.toHaveBeenCalled();
   });
 
-  it("advanceStatus 在归属校验后返回 null（书中人无 QQ 服务端推进）", async () => {
+  it("没有活动 QQ 任务时 advanceStatus 在归属校验后返回 null", async () => {
     const caller = appRouter.createCaller(makeCtx());
     expect(await caller.roleplay.advanceStatus({ channelId })).toBeNull();
     expect(db.getRoleplayChannelById).toHaveBeenCalledWith(channelId, 1);

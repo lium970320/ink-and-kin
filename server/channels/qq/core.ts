@@ -78,7 +78,7 @@ function messageId(value: unknown): string | null {
   return text.replace(/^(-?)0+(?=\d)/, "$1").replace(/^-0$/, "0");
 }
 
-export function parseInbound(raw: Buffer, config: QqConfig): { messageId: string; text: string } {
+export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = false): { messageId: string; text: string; unsupportedMedia?: boolean } {
   if (raw.length > QQ_MAX_BODY) throw new QqError("BAD_REQUEST", "事件体积超过上限。");
   let event: Record<string, unknown>;
   try {
@@ -96,6 +96,12 @@ export function parseInbound(raw: Buffer, config: QqConfig): { messageId: string
   }
   const id = messageId(event.message_id);
   if (id == null) throw new QqError("BAD_REQUEST", "事件缺少有效消息编号。");
+  if (acceptMediaNotice && Array.isArray(event.message) && event.message.length > 0
+    && event.message.every(part => part && ["text", "image", "record"].includes(part.type))
+    && event.message.some(part => part.type === "image" || part.type === "record")) {
+    // 不读取、下载或向模型传递外部媒体地址，只让调用方回复功能提示。
+    return { messageId: id, text: "", unsupportedMedia: true };
+  }
   return { messageId: id, text: plainText(event.message) };
 }
 

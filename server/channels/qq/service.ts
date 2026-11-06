@@ -5,6 +5,7 @@ import {
   QQ_MAX_BODY, QQ_SECRET_MASK, type DeliveryResult, type QqConfig, type QqSaveInput, type QqSecrets,
 } from "./core";
 import type { QqRepository } from "./repository";
+import type { QqPreparedTransport } from "./roleplay-types";
 
 export interface QqConfigView {
   configured: boolean; enabled: boolean; connected: boolean; generation: number | null;
@@ -25,6 +26,7 @@ export interface QqDependencies {
   decrypt(text: string): Promise<string | null>;
   fetch: typeof fetch;
   chat(input: QqChatInput): Promise<string | null>;
+  handleInbound?(input: { config: QqConfig; messageId: string; text: string; unsupportedMedia?: boolean; signal: AbortSignal; reply(text: string): Promise<void> }): Promise<boolean>;
   timeoutMs?: number;
 }
 
@@ -132,11 +134,13 @@ export class QqService {
     return this.read(userId);
   }
 
-  private async request(config: QqConfig, secrets: QqSecrets, action: "get_login_info" | "send_private_msg", data: object, session: Session): Promise<unknown> {
+  private async request(config: QqConfig, secrets: QqSecrets, action: "get_login_info" | "send_private_msg", data: object, session: Session, signal?: AbortSignal): Promise<unknown> {
     this.requireAlive(config.userId, session);
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const abort = () => controller.abort();
     session.controller.signal.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(abort, this.dependencies.timeoutMs ?? 8000);
     try {
       // dispatchDelivery 依赖此处在首次 await 前启动请求。
@@ -171,6 +175,7 @@ export class QqService {
     } finally {
       clearTimeout(timer);
       session.controller.signal.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", abort);
     }
   }
 
@@ -248,7 +253,7 @@ export class QqService {
     if (!config?.enabled) throw new QqError("FORBIDDEN", "事件认证失败或通道未启用。");
     const secrets = await this.readSecrets(config);
     if (!secrets || !verifyWebhook(raw, signature, authorization, secrets)) throw new QqError("FORBIDDEN", "事件认证失败。");
-    const event = parseInbound(raw, config);
+    const event = parseInbound(raw, config, !!this.dependencies.handleInbound);
     const { userId } = config;
     const session = this.sessions.get(userId);
     if (!session?.connected || session.generation !== config.generation || !this.alive(userId, session)) {
@@ -272,6 +277,11 @@ export class QqService {
         const current = await this.dependencies.repository.get(userId);
         if (!current?.enabled || current.id !== config.id || current.generation !== config.generation || !current.personaId) return;
         this.requireAlive(userId, session);
+        if (await this.dependencies.handleInbound?.({
+          config: current, messageId: event.messageId, text: event.text, unsupportedMedia: event.unsupportedMedia, signal: session.controller.signal,
+          reply: text => this.deliver(config, secrets, session, text, `inbound:${config.botId}:${config.targetId}:${event.messageId}`),
+        })) { status = "done"; return; }
+        if (event.unsupportedMedia) return;
         const text = await this.dependencies.chat({
           userId, personaId: current.personaId, channel: "qq", messageText: event.text,
           conversationKey: `qq:${config.id}:${config.botId}:private:${config.targetId}`,
@@ -336,6 +346,35 @@ export class QqService {
     if (targetId !== `private:${config.targetId}`) throw new QqError("FORBIDDEN", "目标未绑定到当前账号。");
     // 这是内部适配器的一次显式发送；入站回复始终用可重放检测的稳定键。
     await this.deliver(config, await this.requireSecrets(config), session, text, `manual:${randomUUID()}`);
+  }
+
+  /** 调用方必须先完成持久占键和锁内派发校验；此闭包在首次 await 前启动 I/O。 */
+  async prepareOutbound(userId: number): Promise<QqPreparedTransport> {
+    const prepared = await this.prepareMessageTransport(userId);
+    return { config: prepared.config, signal: prepared.signal,
+      send: (text, signal) => prepared.send(plainText(text), signal) };
+  }
+
+  async prepareMessageTransport(userId: number) {
+    const config = await this.dependencies.repository.get(userId);
+    const session = this.sessions.get(userId);
+    if (!config?.enabled || !config.personaId || !session?.connected || session.generation !== config.generation) {
+      throw new QqError("PRECONDITION_FAILED", "QQ 接口尚未验证连接。");
+    }
+    const secrets = await this.requireSecrets(config);
+    this.requireAlive(userId, session);
+    return {
+      config, signal: session.controller.signal,
+      send: async (message: string | Array<{ type: "image"; data: { file: string } }>, signal?: AbortSignal): Promise<DeliveryResult> => {
+        this.requireAlive(userId, session);
+        signal?.throwIfAborted();
+        try {
+          return deliveryResult(await this.request(config, secrets, "send_private_msg", {
+            user_id: Number(config.targetId), message, auto_escape: true,
+          }, session, signal));
+        } catch { return { status: "unknown", remoteMessageId: null, reason: "transport_unconfirmed" }; }
+      },
+    };
   }
 
   async waitForIdle(userId: number): Promise<void> { await this.queues.get(userId); }

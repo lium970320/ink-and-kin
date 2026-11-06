@@ -61,6 +61,13 @@ export type RunRoleplayTurnOptions = {
   generationRevision?: number;
   save?: WebChannelAdvanceSave;
   signal?: AbortSignal;
+  /** 每拍事务先锁QQ，再保存原文计划；提交之后才进行外部派发。 */
+  delivery?: {
+    beforeSave(tx: db.DbTransaction): Promise<void>;
+    savedBeat(tx: db.DbTransaction, beat: RoleplayTurnBeat, beatIndex: number): Promise<void>;
+    afterBeat(beat: RoleplayTurnBeat): Promise<boolean>;
+    readResult(): { qqDelivery: import("../../shared/qq-delivery").QqDeliveryBatch[]; qqDeliveryError?: string };
+  };
 };
 
 export class RoleplayTurnCancelledError extends Error {
@@ -125,10 +132,7 @@ export type RunRoleplayTurnResult = {
   spoken: boolean;
   /** 网页任务已失效，调用方正常结束而非报告生成失败。 */
   cancelled?: boolean;
-  /**
-   * 书中人第 5 批不迁 QQ 交付：这两个字段只为 Roleplay.tsx 的客户端类型兼容而保留，
-   * 生成侧恒不赋值（网页推进不再镜像到 QQ）。
-   */
+  /** 第6B批逐拍交付；只包含已经保存的原文，不重生成。 */
   qqDelivery?: import("../../shared/qq-delivery").QqDeliveryBatch[];
   qqDeliveryError?: string;
   channelId: number;
@@ -1544,6 +1548,7 @@ export async function invokeChannelTurnWithEmptyReplyRetry(params: {
 }
 
 export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): Promise<RunRoleplayTurnResult> {
+  let deliveryStopped = false;
   const stopped = () => options.shouldAbort?.() === true || options.signal?.aborted === true;
   const assertCurrentTurn = () => {
     if (stopped()) throw new RoleplayTurnCancelledError();
@@ -2026,6 +2031,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         computeEmotionalState(transcriptNow, parsed.reply, persona.emotionalState),
       );
       const { message, beat } = await save(() => db.withRoleplayBeatTransaction(async executor => {
+        await options.delivery?.beforeSave(executor);
         const saved = await db.createRoleplayMessage({
           channelId: options.channelId,
           userId: options.userId,
@@ -2051,12 +2057,16 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         await persistSavedTurnProgress(stopped()
           ? "本轮已停止；保留停止前实际保存的发言，后续未继续生成或交付。"
           : null, { executor, beat, inContext: !rosterViolationUnresolved });
+        await options.delivery?.savedBeat(executor, beat, recordedBeats.length);
         return { message: saved, beat };
       }));
       // 事务成功后才把这一拍计入返回结果和后续生成上下文。
       recordedBeats.push(beat);
       if (!rosterViolationUnresolved) contextBeats.push(beat);
       else console.warn(`[RoleplayRoster] channel=${options.channelId} message=${message.id} 重写后仍有外来人名，已自动排除出上下文`);
+      // 发送不属于保存租约，停止只等待已开始的数据库短写入。
+      // 本拍没有全部确认时，仍保留已保存剧情，但不再生成同人续拍。
+      if (options.delivery && !await options.delivery.afterBeat(beat)) deliveryStopped = true;
       assertCurrentTurn();
       // 把这一拍写进本回合的实时上下文：同人续拍的下一次 generateOne 会看到它，
       // 并通过 previousBeat 被明确要求承接而不是复述。
@@ -2138,7 +2148,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       // 同人续拍：反思判定 same 且非 strict 时，同一人再补一拍（每 tick 最多 2 条）
       let secondBeatFailed = false;
       if (
-        reflection?.nextSpeakerHint === "same"
+        reflection?.nextSpeakerHint === "same" && !deliveryStopped
       ) {
         try {
           await generateOne(firstMember);
@@ -2164,6 +2174,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         emotionalState: first.emotionalState,
         messageId: first.message.id,
         beats: recordedBeats,
+        ...options.delivery?.readResult(),
       };
     }
 

@@ -3,8 +3,9 @@ import { z } from "zod";
 import { protectedProcedure, rateLimit, router } from "../../_core/trpc";
 import { QqError } from "./core";
 import type { QqService } from "./service";
+import type { QqMediaService } from "./media-service";
 
-async function result<T>(work: () => Promise<T>): Promise<T> {
+export async function qqOperation<T>(work: () => Promise<T>): Promise<T> {
   try { return await work(); }
   catch (error) {
     if (error instanceof QqError) throw new TRPCError({ code: error.code, message: error.message });
@@ -13,7 +14,8 @@ async function result<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-export function createQqRouter(service: QqService) {
+const result = qqOperation;
+export function createQqRouter(service: QqService, media?: QqMediaService) {
   const write = protectedProcedure.use(rateLimit({ name: "qq-config-write", limit: 20, windowMs: 60_000, scope: "user" }));
   const version = z.object({ expectedGeneration: z.number().int().positive().nullable() });
   return router({
@@ -33,5 +35,14 @@ export function createQqRouter(service: QqService) {
       return service.read(ctx.user.id);
     })),
     deliveries: protectedProcedure.query(({ ctx }) => result(() => service.dependencies.repository.recentDeliveries(ctx.user.id))),
+    mediaAssets: protectedProcedure.query(({ ctx }) => result(async () => media
+      ? media.list(ctx.user.id) : { available: false, blockedByChannel: false, assets: [] })),
+    sendMedia: write.input(z.object({
+      expectedGeneration: z.number().int().positive(), assetId: z.number().int().positive(),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/), operationId: z.string().uuid(),
+    })).mutation(({ ctx, input }) => result(async () => {
+      if (!media) throw new QqError("PRECONDITION_FAILED", "图片发送暂不可用。");
+      return media.send(ctx.user.id, input);
+    })),
   });
 }

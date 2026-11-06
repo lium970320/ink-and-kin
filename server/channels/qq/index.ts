@@ -6,13 +6,20 @@ import { QqError, QQ_MAX_BODY, type QqErrorCode } from "./core";
 import { createQqRepository } from "./repository";
 import { createQqRouter } from "./router";
 import { QqService } from "./service";
+import { QqRoleplayService } from "./roleplay-service";
+import { createQqRoleplayRepository } from "./roleplay-repository";
+import { QqMediaService } from "./media-service";
 
 const repository = createQqRepository();
-export const qqService = new QqService({
+export const qqService: QqService = new QqService({
   repository, encrypt: encryptSecret, decrypt: decryptSecret,
   fetch: (...args) => globalThis.fetch(...args), chat: handleChannelChat,
+  handleInbound: input => qqRoleplayService.handleInbound(input),
 });
-export const qqRouter = createQqRouter(qqService);
+const roleplayRepository = createQqRoleplayRepository();
+export const qqRoleplayService: QqRoleplayService = new QqRoleplayService({ repository: roleplayRepository, prepare: userId => qqService.prepareOutbound(userId) });
+export const qqMediaService = new QqMediaService(qqService, roleplayRepository);
+export const qqRouter = createQqRouter(qqService, qqMediaService);
 
 async function currentGeneration(userId: number): Promise<number | null> {
   return (await repository.get(userId))?.generation ?? null;

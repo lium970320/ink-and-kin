@@ -1,7 +1,8 @@
 import { memoryRouter } from "./memory-review/memory-router";
 import { memoryReviewRouter } from "./memory-review/router";
 import { sourceLibraryRouter } from "./source-library/router";
-import { qqRouter } from "./channels/qq";
+import { qqRouter, qqRoleplayService } from "./channels/qq";
+import { qqOperation } from "./channels/qq/router";
 import { contextProcedures } from './chat/context-router';
 import { changeContext } from './chat/context-state';
 import { llmProbeInput, testUserLlmConnection, listUserLlmModels } from "./llm-probes";
@@ -2504,18 +2505,22 @@ export const appRouter = router({
     // advanceStatus）：任务身份与取消语义全部来自 server/social/web-channel-advance。
     // 归属校验与 5A 相同：先 getRoleplayChannelById(channelId, ctx.user.id)，查不到 NOT_FOUND。 ───
 
-    /**
-     * 频道推进状态：书中人没有 QQ 端服务端推进，归属校验后恒返回 null。
-     *
-     * 显式声明 RoleplayAdvanceStatus | null 返回类型，避免 tRPC 把输出推成 null 字面量，
-     * 客户端 `advanceStatusQuery.data?.running` 因此仍可编译（与自用版"没有 QQ 推进"等价）。
-     */
+    qqDeliveries: protectedProcedure.input(z.object({ channelId: z.number().int().positive() }))
+      .query(({ ctx, input }) => qqOperation(() => qqRoleplayService.deliveries(ctx.user.id, input.channelId))),
+
+    retryQqDelivery: protectedProcedure
+      .use(rateLimit({ name: "qq-roleplay-retry", limit: 20, windowMs: 60_000, scope: "user" }))
+      .input(z.object({ channelId: z.number().int().positive(), batchId: z.string().uuid(),
+        operationId: z.string().uuid(), expectedVersion: z.number().int().positive(), allowUnknown: z.boolean().optional() }))
+      .mutation(({ ctx, input }) => qqOperation(() => qqRoleplayService.retry({ ...input, userId: ctx.user.id }))),
+
+    /** QQ 端任务的实际状态；网页任务仍使用原有页面状态。 */
     advanceStatus: protectedProcedure
       .input(z.object({ channelId: z.number() }))
       .query(async ({ ctx, input }): Promise<RoleplayAdvanceStatus | null> => {
         const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
         if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
-        return null;
+        return qqRoleplayService.status(ctx.user.id, input.channelId);
       }),
 
     /**
@@ -2559,7 +2564,7 @@ export const appRouter = router({
         };
       }),
 
-    /** 指定任务只停止它；没有 taskId 时停止当前频道的网页任务（书中人无 QQ 服务端推进）。 */
+    /** 指定任务只停止它；没有 taskId 时停止当前频道的网页、QQ 任务及投递。 */
     stopAdvance: protectedProcedure
       .input(z.object({
         channelId: z.number(),
@@ -2569,11 +2574,11 @@ export const appRouter = router({
         const channel = await getRoleplayChannelById(input.channelId, ctx.user.id);
         if (!channel) throw new TRPCError({ code: "NOT_FOUND" });
         return {
-          stopped: await stopWebChannelAdvanceAndWait({
+          stopped: input.taskId ? await stopWebChannelAdvanceAndWait({
             channelId: input.channelId,
             userId: ctx.user.id,
             ...(input.taskId ? { taskId: input.taskId } : {}),
-          }),
+          }) : await qqRoleplayService.stop(ctx.user.id, input.channelId),
         };
       }),
 
@@ -2626,7 +2631,9 @@ export const appRouter = router({
         try {
           return await runWebChannelAdvanceTurn(activeTask, input.operationId,
             JSON.stringify([input.personaId ?? null, input.allowSilence === true]),
-            (shouldAbort, save) => runRoleplayChannelTurn({
+            async (shouldAbort, save) => {
+              const delivery = await qqRoleplayService.prepareTurn(ctx.user.id, input.channelId, input.operationId, "web", activeTask.signal);
+              return runRoleplayChannelTurn({
             channelId: input.channelId,
             userId: ctx.user.id,
             personaId: input.personaId,
@@ -2634,8 +2641,9 @@ export const appRouter = router({
             shouldAbort,
             save,
             generationRevision: activeTask.generationRevision,
-            signal: activeTask.signal,
-          }));
+            signal: delivery?.signal ?? activeTask.signal,
+            delivery: delivery ?? undefined,
+          }); });
         } catch (err) {
           if (err instanceof RoleplayTurnCancelledError || err instanceof WebChannelAdvanceCancelledError) {
             return cancelledRoleplayTurn(input.channelId, input.personaId);

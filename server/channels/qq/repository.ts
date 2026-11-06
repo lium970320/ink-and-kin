@@ -24,7 +24,7 @@ export interface QqRepository {
   finishInbound(config: ConfigIdentity, id: number, status: string): Promise<void>;
   claimDelivery(config: QqConfig, key: string): Promise<number | null>;
   /** start must initiate I/O synchronously, before its first await. */
-  dispatchDelivery<T>(config: QqConfig, id: number, start: () => Promise<T>): Promise<{ result: Promise<T> }>;
+  dispatchDelivery<T>(config: QqConfig, id: number, start: () => Promise<T>, guard?: (tx: DbTransaction) => Promise<void>): Promise<{ result: Promise<T> }>;
   finishDelivery(userId: number, id: number, status: DeliveryStatus, remoteMessageId: string | null, reason: string): Promise<void>;
   recentDeliveries(userId: number): Promise<QqDelivery[]>;
 }
@@ -217,12 +217,13 @@ export function createQqRepository(): QqRepository {
       });
     },
 
-    async dispatchDelivery(config, id, start) {
+    async dispatchDelivery(config, id, start, guard) {
       const db = await database();
       // Do not retry: the callback may already have started transport if commit fails.
       return db.transaction(async tx => {
         await lockQqChannelConfig(tx, config.userId);
         const row = await requireActiveConfig(tx, config);
+        await guard?.(tx);
         const [claim] = await tx.update(deliveries).set({ reason: STARTED, updatedAt: new Date() }).where(and(
           eq(deliveries.id, id), eq(deliveries.configId, row.id), eq(deliveries.userId, row.userId),
           eq(deliveries.configGeneration, row.generation), eq(deliveries.botId, row.botId),

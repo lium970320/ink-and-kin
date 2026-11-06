@@ -39,7 +39,8 @@ vi.mock("../db", () => ({
 
 // 书中人 tsconfig 未显式指定 target（默认 ES5），这里不用顶层 await import；
 // vitest 会把上面的 vi.mock 提升到模块加载前，静态 import 同样拿到 mock 后的模块。
-import { RoleplayTurnCancelledError, runRoleplayChannelTurn } from "./roleplay-channel";
+import { RoleplayTurnCancelledError, runRoleplayChannelTurn, type RoleplayTurnBeat } from "./roleplay-channel";
+import type { QqDeliveryBatch } from "../../shared/qq-delivery";
 
 const CHANNEL = {
   id: 11,
@@ -195,6 +196,77 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
     expect(latestDiagnostics().messageId).toBe(101);
     expect(latestDiagnostics().replyText).toContain("雨已经停了");
     expect(latestDiagnostics().innerThought).toBe("他终于松了口气。");
+  });
+
+  it("首拍在事务内登记交付，提交后确认结果未知则保留首拍且不生成续拍", async () => {
+    let modelTurns = 0;
+    h.invoke.mockImplementation(async params => {
+      const route = params?.options?.usageContext?.route;
+      if (route === "roleplay.channel_reflection") return '{"nextSpeakerHint":"same","mood":"warm"}';
+      if (route === "roleplay.channel_turn") return modelTurns++ === 0 ? GOOD_REPLY : SECOND_REPLY;
+      return "";
+    });
+    h.createRoleplayMessage.mockResolvedValueOnce({ id: 100 });
+    const unknownBatch: QqDeliveryBatch = {
+      id: "fixture-batch", channelId: 11, userId: 1, contactId: "fixture:private:100", source: "qq",
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      parts: [{ id: "fixture-part", messageId: 100, beatIndex: 0, partIndex: 0, text: "已保存的发言", status: "unknown", attempts: 1 }],
+      summary: { total: 1, sent: 0, failed: 0, unknown: 1, pending: 0, cancelled: 0, sending: 0 },
+    };
+    const qqDeliveryError = "首拍 QQ 交付结果未知，请核对。";
+    const beforeSave = vi.fn(async (_executor: object) => {
+      expect(committedBeatTransactions).toHaveLength(0);
+      expect(h.createRoleplayMessage).not.toHaveBeenCalled();
+    });
+    const savedBeat = vi.fn(async (executor: object, beat: RoleplayTurnBeat, beatIndex: number) => {
+      expect(committedBeatTransactions).toHaveLength(0);
+      expect(executor).toBe(beforeSave.mock.calls[0][0]);
+      expect(executor).toBe(h.createRoleplayMessage.mock.calls[0][2]);
+      expect(beat).toMatchObject({ messageId: 100, replyText: expect.stringContaining("台灯") });
+      expect(beatIndex).toBe(0);
+    });
+    const afterBeat = vi.fn(async (beat: RoleplayTurnBeat) => {
+      expect(committedBeatTransactions).toHaveLength(1);
+      expect(committedBeatTransactions[0]).toBe(savedBeat.mock.calls[0][0]);
+      expect(beat).toBe(savedBeat.mock.calls[0][1]);
+      return false;
+    });
+    const readResult = vi.fn(() => ({ qqDelivery: [unknownBatch], qqDeliveryError }));
+
+    const result = await runRoleplayChannelTurn({
+      channelId: 11, userId: 1, delivery: { beforeSave, savedBeat, afterBeat, readResult },
+    });
+
+    expect(modelTurns).toBe(1);
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+    expect(beforeSave).toHaveBeenCalledTimes(1);
+    expect(savedBeat).toHaveBeenCalledTimes(1);
+    expect(afterBeat).toHaveBeenCalledTimes(1);
+    expect(readResult).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ spoken: true, messageId: 100, qqDelivery: [unknownBatch], qqDeliveryError });
+    expect(result.beats).toEqual([savedBeat.mock.calls[0][1]]);
+  });
+
+  it("事务内登记交付失败时整拍不提交，也不触发提交后交付", async () => {
+    mockTurnReplies([GOOD_REPLY]);
+    const writeError = new Error("登记交付失败");
+    const beforeSave = vi.fn(async (_executor: object) => {});
+    const savedBeat = vi.fn(async (_executor: object, _beat: RoleplayTurnBeat, _beatIndex: number) => {
+      throw writeError;
+    });
+    const afterBeat = vi.fn(async (_beat: RoleplayTurnBeat) => true);
+    const readResult = vi.fn(() => ({ qqDelivery: [] }));
+
+    await expect(runRoleplayChannelTurn({
+      channelId: 11, userId: 1, delivery: { beforeSave, savedBeat, afterBeat, readResult },
+    })).rejects.toBe(writeError);
+
+    expect(h.withRoleplayBeatTransaction).toHaveBeenCalledTimes(1);
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+    expect(savedBeat).toHaveBeenCalledTimes(1);
+    expect(committedBeatTransactions).toHaveLength(0);
+    expect(afterBeat).not.toHaveBeenCalled();
+    expect(readResult).not.toHaveBeenCalled();
   });
 
   it("同人续拍异常时仍只返回并保留已落库的第一拍", async () => {

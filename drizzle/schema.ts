@@ -805,3 +805,4 @@ export * from "./source-library-schema";
 export * from './memory-review-schema';
 export * from './chat-context-schema';
 export * from "./qq-channel-schema";
+export * from "./qq-roleplay-schema";

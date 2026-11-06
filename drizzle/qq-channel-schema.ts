@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
-  boolean, check, foreignKey, index, integer, pgTable, serial, text, timestamp, uniqueIndex, varchar,
+  boolean, check, foreignKey, index, integer, pgTable, serial, text, timestamp, unique, uniqueIndex, varchar,
 } from "drizzle-orm/pg-core";
 import { personas, users } from "./schema";
 
@@ -18,7 +18,7 @@ export const qqChannelConfigs = pgTable("qq_channel_configs", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 }, table => ({
   owner: uniqueIndex("qq_channel_configs_user_idx").on(table.userId),
-  scopedId: uniqueIndex("qq_channel_configs_id_owner_idx").on(table.id, table.userId),
+  scopedId: unique("qq_channel_configs_id_owner_idx").on(table.id, table.userId),
   hook: uniqueIndex("qq_channel_configs_hook_idx").on(table.hookId),
   conversation: uniqueIndex("qq_channel_configs_enabled_target_idx").on(table.botId, table.targetId)
     .where(sql`${table.enabled} = true`),

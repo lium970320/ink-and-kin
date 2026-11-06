@@ -5,9 +5,11 @@ import { apiBase, deliveryResult, parseInbound, plainText, QqError, verifyWebhoo
 import type { QqRepository } from "./repository";
 import { createQqRouter } from "./router";
 import { QqService, type QqChatInput } from "./service";
+import { QqMediaService } from "./media-service";
+import type { QqRoleplayRepository } from "./roleplay-types";
 
 const getDb = vi.hoisted(() => vi.fn(() => { throw new Error("QQ 单测禁止连接真实数据库。"); }));
-vi.mock("../../db", () => ({ getDb }));
+vi.mock("../../db", () => ({ getDb, getFilesByPersonaId: vi.fn(), getRoleplayChannels: vi.fn(), getRoleplayChannelById: vi.fn() }));
 
 const secrets: QqSecrets = { apiToken: "test-api-token", receiveToken: "test-receive-token", webhookSecret: "test-signing-secret" };
 const sign = (raw: Buffer, secret = secrets.webhookSecret) => `sha1=${createHmac("sha1", secret).update(raw).digest("hex")}`;
@@ -83,9 +85,10 @@ function fixture() {
         status: "unknown", remoteMessageId: null, reason: "dispatch_pending", createdAt: new Date() });
       return id;
     }),
-    async dispatchDelivery(config, id, start) {
+    async dispatchDelivery(config, id, start, guard) {
       await controls.beforeDispatch?.();
       active(config);
+      await guard?.({} as never);
       const row = deliveryRows.find(item => item.id === id && item.userId === config.userId);
       if (!row || row.reason !== "dispatch_pending") throw new QqError("CONFLICT", "投递占位已使用。");
       const result = start();
@@ -387,5 +390,82 @@ describe("QQ 受保护管理接口", () => {
     await expect(api.stop({ expectedGeneration: null })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(await api.stop({ expectedGeneration: 1 })).toMatchObject({ enabled: false, generation: 2 });
     expect(getDb).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("第6B入口与图片交付", () => {
+  it("媒体通知先过验签归属并去重，不把媒体地址交给聊天", async () => {
+    const f = fixture();
+    f.service.dependencies.handleInbound = vi.fn(async input => {
+      expect(input.unsupportedMedia).toBe(true);
+      expect(input.text).toBe("");
+      await input.reply("当前只接收普通文字。");
+      return true;
+    });
+    await f.start();
+    const raw = event({ message: [{ type: "image", data: { url: "https://private.invalid/secret" } }] });
+    await f.receive(raw); await f.service.waitForIdle(1);
+    await f.receive(raw); await f.service.waitForIdle(1);
+    expect(f.service.dependencies.handleInbound).toHaveBeenCalledTimes(1);
+    expect(f.chat).not.toHaveBeenCalled(); expect(f.dispatches()).toHaveLength(1);
+    expect(JSON.stringify(f.dispatches())).not.toContain("private.invalid");
+  });
+
+  function mediaFixture() {
+    const f = fixture();
+    let inChannel = false;
+    let routeRevision = 0;
+    const route = { getRoute: vi.fn(async () => inChannel ? {} : null) } as unknown as QqRoleplayRepository;
+    const data = Buffer.from("合成已校验图片");
+    const assets = {
+      list: vi.fn(async () => [{ id: 5, name: "图.png", size: data.length, sha256: "a".repeat(64) }]),
+      load: vi.fn(async () => ({ id: 5, name: "图.png", size: data.length, sha256: "a".repeat(64), mime: "image/png" as const, data })),
+    };
+    const media = new QqMediaService(f.service, route, assets, async (_tx, _config, expectedRevision) => {
+      if (expectedRevision !== routeRevision) throw new QqError("CONFLICT", "频道已变化。");
+      if (inChannel) throw new QqError("PRECONDITION_FAILED", "频道中不可发图片。");
+    }, async () => routeRevision);
+    const input = { expectedGeneration: 1, assetId: 5, expectedSha256: "a".repeat(64), operationId: "a1111111-1111-4111-8111-111111111111" };
+    return { ...f, media, assets, input, enter: () => { inChannel = true; routeRevision++; }, exit: () => { inChannel = false; routeRevision++; } };
+  }
+
+  it("只发送已核对的内存字节，相同操作换资产也不重复发送", async () => {
+    const f = mediaFixture(); await f.start();
+    expect(await f.media.send(1, f.input)).toMatchObject({ status: "confirmed", remoteMessageId: "84" });
+    expect(await f.media.send(1, { ...f.input, assetId: 6, operationId: f.input.operationId.toUpperCase() })).toMatchObject({ status: "unknown", reason: "operation_already_processed" });
+    expect(f.dispatches()).toHaveLength(1);
+    const payload = JSON.parse(String(f.dispatches()[0][1]?.body));
+    expect(payload.message).toEqual([{ type: "image", data: { file: `base64://${Buffer.from("合成已校验图片").toString("base64")}` } }]);
+    expect(f.assets.load).toHaveBeenCalledWith(1, 11, 5, "a".repeat(64));
+  });
+
+  it("占位后进入频道或停用配置都在首次网络发送前拦截", async () => {
+    for (const change of ["channel", "stop", "roundtrip"] as const) {
+      const f = mediaFixture(); await f.start();
+      f.controls.beforeDispatch = async () => { if (change === "stop") await f.stop(); else { f.enter(); if (change === "roundtrip") f.exit(); } };
+      expect(await f.media.send(1, f.input)).toMatchObject({ status: "failed" });
+      expect(f.dispatches()).toHaveLength(0);
+    }
+  });
+
+  it("发送未知不换路径重发，重复操作保持一次网络请求", async () => {
+    const f = mediaFixture(); await f.start();
+    f.fetchMock.mockRejectedValue(new Error("合成断线"));
+    expect(await f.media.send(1, f.input)).toMatchObject({ status: "unknown" });
+    expect(await f.media.send(1, f.input)).toMatchObject({ status: "unknown" });
+    expect(f.dispatches()).toHaveLength(1);
+  });
+
+  it("旧配置、频道模式和资产校验失败均不会占发送键", async () => {
+    const f = mediaFixture(); await f.start();
+    await expect(f.media.send(1, { ...f.input, expectedGeneration: 2 })).rejects.toMatchObject({ code: "CONFLICT" });
+    f.assets.load.mockRejectedValueOnce(new QqError("FORBIDDEN", "合成越权"));
+    await expect(f.media.send(1, f.input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    f.enter();
+    expect(await f.media.list(1)).toEqual({ available: false, blockedByChannel: true, assets: [] });
+    await expect(f.media.send(1, f.input)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(f.repository.claimDelivery).not.toHaveBeenCalled();
+    expect(f.dispatches()).toHaveLength(0);
   });
 });

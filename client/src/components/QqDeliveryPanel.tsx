@@ -9,6 +9,10 @@ const statusText: Record<QqDeliveryPartStatus, string> = {
   pending: "未发送", sending: "发送中", sent: "接口已确认", failed: "发送失败", unknown: "结果未知", cancelled: "已取消",
 };
 
+function hasRetryVersion(version: number | undefined): version is number {
+  return typeof version === "number" && Number.isSafeInteger(version) && version >= 0;
+}
+
 export default function QqDeliveryPanel({ channelId, busy }: { channelId: number; busy: boolean }) {
   const utils = trpc.useUtils();
   const mounted = useRef(true);
@@ -24,12 +28,15 @@ export default function QqDeliveryPanel({ channelId, busy }: { channelId: number
   const incomplete = batches.filter(batch => batch.summary.failed + batch.summary.unknown + batch.summary.pending > 0);
 
   const handleRetry = async (batch: QqDeliveryBatch) => {
-    if (busy || sending || retrying.current) return;
+    if (busy || sending || retrying.current || batch.retryable === false || !hasRetryVersion(batch.version)) return;
     const allowUnknown = batch.summary.unknown > 0;
     if (allowUnknown && !window.confirm("部分消息可能已经发到 QQ，只是没有收到确认。重发这些原文可能造成重复消息。确定仍要重发吗？")) return;
     retrying.current = true;
     try {
-      const result = await retry.mutateAsync({ channelId, batchId: batch.id, ...(allowUnknown ? { allowUnknown: true } : {}) });
+      const result = await retry.mutateAsync({
+        channelId, batchId: batch.id, expectedVersion: batch.version, operationId: crypto.randomUUID(),
+        ...(allowUnknown ? { allowUnknown: true } : {}),
+      });
       if (!mounted.current) return;
       await utils.roleplay.qqDeliveries.invalidate({ channelId });
       if (!mounted.current) return;
@@ -37,6 +44,7 @@ export default function QqDeliveryPanel({ channelId, busy }: { channelId: number
       else toast.warning(`QQ 交付仍未完成：${formatQqDeliverySummary(result)}`);
     } catch (error) {
       if (mounted.current) toast.error(error instanceof Error ? error.message : "QQ 重发失败");
+      if (mounted.current) void utils.roleplay.qqDeliveries.invalidate({ channelId });
     } finally {
       retrying.current = false;
     }
@@ -55,16 +63,19 @@ export default function QqDeliveryPanel({ channelId, busy }: { channelId: number
               <span className="text-muted-foreground">{formatBeijingTime(batch.createdAt)} · {batch.source === "duet" ? "对戏" : batch.source === "web" ? "网页推进" : "QQ 频道"} · {batch.contactId.includes(":group:") ? "群聊" : "私聊"}尾号 {batch.contactId.split(":").at(-1)?.slice(-4)}</span>
               <span className={batch.summary.failed + batch.summary.unknown > 0 ? "text-amber-700" : "text-muted-foreground"}>{formatQqDeliverySummary(batch)}</span>
               {batch.summary.failed + batch.summary.unknown + batch.summary.pending > 0 && (
-                <Button size="sm" variant="outline" className="h-6 text-[11px] ml-auto" disabled={busy || sending || retry.isPending} onClick={() => void handleRetry(batch)}>
-                  {retry.isPending && retry.variables?.batchId === batch.id ? "正在重发…" : batch.summary.unknown > 0 ? "确认后重发原文" : "重发未完成原文"}
+                <Button size="sm" variant="outline" className="h-6 text-[11px] ml-auto"
+                  disabled={busy || sending || retry.isPending || batch.retryable === false || !hasRetryVersion(batch.version)} onClick={() => void handleRetry(batch)}>
+                  {batch.retryable === false || !hasRetryVersion(batch.version) ? "重发不可用" : retry.isPending && retry.variables?.batchId === batch.id ? "正在重发…" : batch.summary.unknown > 0 ? "确认后重发原文" : "重发未完成原文"}
                 </Button>
               )}
             </div>
+            {batch.retryable === false && <p className="mt-1 text-[11px] text-muted-foreground">原消息或绑定已变化，历史记录仅供核对。</p>}
             <details className="mt-1">
               <summary className="cursor-pointer text-[11px] text-muted-foreground">查看各段原文与结果</summary>
               <ol className="mt-1 space-y-1">
                 {batch.parts.map(part => <li key={part.id} className="rounded bg-muted/30 p-2">
                   <div className="text-[11px] text-muted-foreground">第 {part.beatIndex + 1} 拍 · 第 {part.partIndex + 1} 段 · {statusText[part.status]}{part.qqMessageId ? ` · QQ 消息编号 ${part.qqMessageId}` : ""}</div>
+                  {part.duplicateRisk && <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">本段此前结果未知，可能重复送达。</p>}
                   <p className="whitespace-pre-wrap break-words mt-1">{part.text}</p>
                 </li>)}
               </ol>

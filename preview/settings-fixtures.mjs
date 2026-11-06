@@ -40,6 +40,7 @@ const fixtures = {
     secretMask: "••••••••", credentialsUnreadable: false, status: "unconfigured",
   },
   "qq.deliveries": [],
+  "qq.mediaAssets": { available: false, blockedByChannel: false, assets: [] },
   "qq.recentContacts": [],
   "qq.listBindings": [],
   "system.operationsDiagnostics": {

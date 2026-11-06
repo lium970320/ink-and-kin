@@ -2719,12 +2719,17 @@ const QQ_DELIVERY_REASONS: Record<string, string> = {
 
 function QqTab() {
   const utils = trpc.useUtils();
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [mediaSelection, setMediaSelection] = useState<{ bindingKey: string; id: number; sha256: string } | null>(null);
+  const [mediaFeedback, setMediaFeedback] = useState("");
   const config = trpc.qq.config.useQuery(undefined, { retry: false });
   const deliveries = trpc.qq.deliveries.useQuery(undefined, { retry: false });
+  const mediaAssets = trpc.qq.mediaAssets.useQuery(undefined, { enabled: mediaOpen, retry: false });
   const personas = trpc.persona.list.useQuery();
   const save = trpc.qq.save.useMutation();
   const start = trpc.qq.start.useMutation();
   const stop = trpc.qq.stop.useMutation();
+  const sendMedia = trpc.qq.sendMedia.useMutation({ retry: false });
   const [draft, setDraft] = useState<QqSettingsDraft | null>(null);
   const [issue, setIssue] = useState("");
   const [conflict, setConflict] = useState(false);
@@ -2750,7 +2755,7 @@ function QqTab() {
     clearApiToken: false,
     clearReceiveToken: false,
   };
-  const busy = save.isPending || start.isPending || stop.isPending;
+  const busy = save.isPending || start.isPending || stop.isPending || sendMedia.isPending;
   const available = !!bot && !config.error && !previewUnavailable;
   const outOfDate = conflict || (!!draft && !!bot && draft.expectedGeneration !== bot.generation);
   const formDisabled = !available || busy || outOfDate;
@@ -2770,6 +2775,69 @@ function QqTab() {
   const webhookUrl = bot?.hookPath && !previewUnavailable
     ? (typeof window === "undefined" ? bot.hookPath : window.location.origin + bot.hookPath)
     : null;
+  const generation = bot?.generation ?? null;
+  const mediaBindingKey = JSON.stringify([generation, bot?.personaId, bot?.botId, bot?.targetId]);
+  const previousMediaBinding = useRef(mediaBindingKey);
+  const mediaList = mediaAssets.data;
+  const selectedAsset = mediaSelection && mediaSelection.bindingKey === mediaBindingKey
+    ? mediaList?.assets.find(asset => asset.id === mediaSelection.id && asset.sha256 === mediaSelection.sha256)
+    : undefined;
+  const canChooseMedia = mediaOpen && available && bot?.connected === true && generation !== null &&
+    !busy && !draft && !outOfDate && !mediaAssets.isError && !mediaAssets.isFetching &&
+    mediaList?.available === true && !mediaList.blockedByChannel;
+  const canSendMedia = canChooseMedia && !!selectedAsset && /^[a-f0-9]{64}$/i.test(selectedAsset.sha256);
+
+  useEffect(() => {
+    if (previousMediaBinding.current === mediaBindingKey) return;
+    previousMediaBinding.current = mediaBindingKey;
+    setMediaSelection(null);
+    setMediaFeedback("");
+    void utils.qq.mediaAssets.invalidate();
+  }, [mediaBindingKey, utils]);
+
+  function chooseMedia(id: string) {
+    const asset = mediaList?.assets.find(item => String(item.id) === id);
+    setMediaSelection(canChooseMedia && generation !== null && asset
+      ? { bindingKey: mediaBindingKey, id: asset.id, sha256: asset.sha256 }
+      : null);
+    setMediaFeedback("");
+  }
+
+  async function sendSelectedMedia() {
+    if (!canSendMedia || generation === null || !selectedAsset || pendingAction.current) return;
+    pendingAction.current = true;
+    setMediaFeedback("");
+    setMediaSelection(null);
+    try {
+      const result = await sendMedia.mutateAsync({
+        expectedGeneration: generation,
+        assetId: selectedAsset.id,
+        expectedSha256: selectedAsset.sha256,
+        operationId: crypto.randomUUID(),
+      });
+      if (result.status === "confirmed") {
+        setMediaFeedback(result.remoteMessageId
+          ? "OneBot API 已确认，消息编号：" + result.remoteMessageId
+          : "OneBot API 已确认。");
+      } else if (result.status === "failed") {
+        setMediaFeedback("发送明确失败。");
+      } else {
+        setMediaFeedback("发送结果未知，请先到 QQ 核对。本页不会重发这次发送。");
+      }
+    } catch (error) {
+      const code = (error as { data?: { code?: string } })?.data?.code;
+      if (code === "CONFLICT" || code === "PRECONDITION_FAILED" || code === "BAD_REQUEST" || code === "NOT_FOUND" || code === "FORBIDDEN") {
+        setMediaFeedback(error instanceof Error ? error.message : "当前无法发送这张图片。");
+        void config.refetch();
+        void utils.qq.mediaAssets.invalidate();
+      } else {
+        setMediaFeedback("未收到确定结果，请先到 QQ 核对。本页不会重发这次发送。");
+      }
+    } finally {
+      pendingAction.current = false;
+      void utils.qq.deliveries.invalidate();
+    }
+  }
 
   function edit(fields: Partial<QqSettingsDraft>) {
     if (!formDisabled) setDraft(previous => ({ ...(previous ?? current), ...fields }));
@@ -2895,13 +2963,57 @@ function QqTab() {
           <Button size="sm" variant="outline" className="rounded-xl border-border" disabled>
             <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> QQ 扫码登录
           </Button>
-          <Button size="sm" variant="outline" className="rounded-xl border-border" disabled>
-            <ImageIcon className="w-3.5 h-3.5 mr-1.5" /> 频道媒体
+          <Button size="sm" variant="outline" className="rounded-xl border-border"
+            aria-expanded={mediaOpen} aria-controls="qq-existing-image" onClick={() => setMediaOpen(open => !open)}>
+            <ImageIcon className="w-3.5 h-3.5 mr-1.5" /> 普通私聊图片
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          扫码登录与频道媒体尚未接通，请自行管理 OneBot 登录。本批仅支持一对一文字接入。
+          扫码登录尚未接通，请自行管理 OneBot 登录。
         </p>
+        {mediaOpen && (
+          <div id="qq-existing-image" className="p-4 bg-muted/20 rounded-xl space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label htmlFor="qq-media-asset" className="text-sm font-medium text-foreground">普通私聊发送已有图片</Label>
+              <Button size="sm" variant="outline" className="rounded-xl border-border"
+                disabled={previewUnavailable || mediaAssets.isFetching || busy}
+                onClick={() => void mediaAssets.refetch()}>刷新图片列表</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              仅可发送已绑定角色上传的图片。频道模式须先在 QQ 私聊发送「退出频道」。音频识别、语音合成和生成图片将在后续批次接入。
+            </p>
+            {previewUnavailable ? <p className="text-xs text-muted-foreground">界面预览不读取实际图片，也不能发送。</p>
+              : mediaAssets.isError ? <p className="text-xs text-destructive" role="alert">无法读取图片列表，请刷新后重试。</p>
+              : mediaAssets.isPending ? <p className="text-xs text-muted-foreground" role="status">正在读取已有图片…</p>
+              : mediaList?.blockedByChannel ? <p className="text-xs text-amber-700 dark:text-amber-400" role="status">当前处于频道模式。退出频道后，请刷新图片列表。</p>
+              : draft || outOfDate ? <p className="text-xs text-muted-foreground">请先处理配置草稿或版本冲突。</p>
+              : !mediaList?.available || !bot?.connected ? <p className="text-xs text-muted-foreground">当前不可发送，请先保存有效绑定并启动 API 探测。</p>
+              : !mediaList.assets.length ? <p className="text-xs text-muted-foreground">当前绑定角色暂无可发送图片。</p>
+              : null}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <select id="qq-media-asset" value={selectedAsset?.id ?? ""} disabled={!canChooseMedia}
+                onChange={event => chooseMedia(event.target.value)}
+                className="min-w-0 flex-1 h-9 px-3 bg-muted/50 border border-border rounded-lg text-sm text-foreground disabled:opacity-50">
+                <option value="">请选择已有图片</option>
+                {mediaList?.assets.map(asset => (
+                  <option key={asset.id} value={asset.id}>{asset.name} · {Math.ceil(asset.size / 1024)} KB</option>
+                ))}
+              </select>
+              <Button size="sm" className="rounded-xl" disabled={!canSendMedia} onClick={() => void sendSelectedMedia()}>
+                {sendMedia.isPending ? "正在发送…" : "发送已有图片到已绑定私聊"}
+              </Button>
+            </div>
+            {mediaFeedback && <p className="text-xs text-foreground/85 break-words" role="status">{mediaFeedback}</p>}
+          </div>
+        )}
+        <details className="p-3 bg-muted/20 rounded-lg text-xs text-muted-foreground">
+          <summary className="cursor-pointer text-foreground">QQ 频道指令帮助</summary>
+          <p className="mt-2 leading-relaxed">
+            在绑定的 QQ 私聊发送：<code>频道列表</code> 查看频道，<code>进入频道1</code> 进入列表第一个频道，
+            <code>退出频道</code> 返回普通私聊。频道内发送 <code>/R数字</code>（如 <code>/R3</code>）推进指定轮数，
+            <code>/R</code> 持续推进至上限，<code>/S</code> 停止推进。
+          </p>
+        </details>
         {previewUnavailable && <p className="text-xs text-muted-foreground" role="status">界面预览未接通 QQ 后台，配置和连接操作不可用。</p>}
         {config.error && <p className="text-xs text-destructive" role="alert">无法读取 QQ 配置，请刷新状态后重试。</p>}
         {issue && <p className="text-xs text-destructive" role="alert">{issue}</p>}
