@@ -6,6 +6,7 @@
  */
 import { feishuAdapter } from "./feishu";
 import { wechatAdapter } from "./wechat";
+import { qqAdapter } from "./qq";
 import type { ChannelAdapter, ChannelId, ChannelStatus } from "./types";
 
 export type { ChannelAdapter, ChannelId, ChannelStatus };
@@ -18,6 +19,7 @@ export function registerChannel(adapter: ChannelAdapter): void {
 
 registerChannel(wechatAdapter);
 registerChannel(feishuAdapter);
+registerChannel(qqAdapter);
 
 export function getChannelAdapter(id: ChannelId): ChannelAdapter | undefined {
   return adapters.get(id);

@@ -789,14 +789,28 @@ function formatDiagnosticTime(value: string | undefined) {
   return formatBeijingDateTime(date, { hour12: false });
 }
 
-function platformStatusLabel(platform: "qq", status: string | undefined) {
-  const labels: Record<string, string> = {
-    connected: "已连接",
-    error: "连接异常",
-    disabled: "未启用",
-    unknown: "未知",
-  };
-  return labels[status || "unknown"] || status || "未知";
+type QqConnectionSnapshot = {
+  configured: boolean;
+  enabled: boolean;
+  connected: boolean;
+  credentialsUnreadable?: boolean;
+};
+
+function isQqPreviewUnavailable(config: unknown) {
+  return (config as { previewUnavailable?: boolean } | undefined)?.previewUnavailable === true;
+}
+
+function qqConnectionStatus(config: QqConnectionSnapshot | undefined, loading: boolean, readError: boolean): {
+  label: string; tone: StatusTone;
+} {
+  if (isQqPreviewUnavailable(config)) return { label: "未接通（界面预览）", tone: "muted" };
+  if (readError) return { label: "配置读取失败", tone: "error" };
+  if (loading || !config) return { label: "正在读取", tone: "muted" };
+  if (config.credentialsUnreadable) return { label: "凭据不可读", tone: "error" };
+  if (config.connected) return { label: "API 探测通过", tone: "ok" };
+  if (config.enabled) return { label: "启用 · 尚未探测通过", tone: "warn" };
+  if (config.configured) return { label: "已停用", tone: "muted" };
+  return { label: "未配置", tone: "muted" };
 }
 
 function runtimeCapabilityLabel(key: string) {
@@ -1012,50 +1026,6 @@ function sceneImageOutputUrl(key: string | null | undefined): string | null {
   return /^(?:scene-images|scene-image-tests)\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(normalized)
     ? `/uploads/${normalized}`
     : null;
-}
-
-function platformDiagnosticAdvice(platform: "qq", status: any): DiagnosticAdvice | null {
-  const message = String(status?.lastError || "").trim();
-
-  if (platform === "qq") {
-    if (!status?.enabled || status?.status === "disabled") {
-      return {
-        title: "QQ 未启用",
-        detail: "在本机运行副本 .env 设置 QQ_ENABLED=true，重启 书中人 后再检查 NapCat。",
-        tone: "muted",
-      };
-    }
-    if (status?.status === "connected") {
-      return {
-        title: "NapCat 已连接",
-        detail: "OneBot HTTP API 可访问，后续重点检查联系人绑定和 webhook 上报。",
-        tone: "ok",
-      };
-    }
-    if (/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(message)) {
-      return {
-        title: "NapCat / OneBot 不可访问",
-        detail: "确认 NapCat 已启动，HTTP API 端口与 QQ_ONEBOT_BASE_URL 一致，并允许本机访问。",
-        tone: "error",
-      };
-    }
-    if (/401|403|unauthorized|token|access/i.test(message)) {
-      return {
-        title: "OneBot access token 可能不匹配",
-        detail: "核对 NapCat accessToken 与 QQ_ONEBOT_ACCESS_TOKEN；事件上报 token 另看 webhook token。",
-        tone: "error",
-      };
-    }
-    if (message) {
-      return {
-        title: "QQ 接入异常",
-        detail: message,
-        tone: "error",
-      };
-    }
-  }
-
-  return null;
 }
 
 function AdvisoryBox({ advice }: { advice: DiagnosticAdvice | null }) {
@@ -2691,224 +2661,340 @@ function AISettingsTab() {
 
 // ─── QQ TAB ──────────────────────────────────────────────────────────────────
 
+type QqSettingsDraft = {
+  expectedGeneration: number | null;
+  apiBaseUrl: string;
+  botId: string;
+  targetId: string;
+  personaId: string;
+  apiToken: string;
+  receiveToken: string;
+  webhookSecret: string;
+  clearApiToken: boolean;
+  clearReceiveToken: boolean;
+};
+
+function QqCredentialField({ id, label, value, saved, disabled, onChange, clear, onClear }: {
+  id: string;
+  label: string;
+  value: string;
+  saved: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  clear?: boolean;
+  onClear?: (value: boolean) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Label htmlFor={id} className="text-xs text-foreground/70">{label}</Label>
+        <StatusBadge label={saved ? "已保存" : "未保存"} tone={saved ? "ok" : "muted"} />
+      </div>
+      <Input id={id} type="password" autoComplete="new-password" maxLength={512}
+        value={value} disabled={disabled || clear}
+        placeholder={saved ? "留空保留已保存凭据" : "输入凭据"}
+        onChange={event => onChange(event.target.value)} className="bg-muted/50" />
+      {onClear && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={clear === true} disabled={disabled}
+            onChange={event => onClear(event.target.checked)} className="accent-primary" />
+          {saved ? "保存时清除已保存凭据" : "明确留空"}
+        </label>
+      )}
+    </div>
+  );
+}
+
+const QQ_DELIVERY_LABELS: Record<string, { label: string; tone: StatusTone }> = {
+  confirmed: { label: "API 已确认", tone: "ok" },
+  failed: { label: "明确失败", tone: "error" },
+  unknown: { label: "结果未知", tone: "warn" },
+};
+
+const QQ_DELIVERY_REASONS: Record<string, string> = {
+  confirmed_by_api: "API 返回消息编号",
+  rejected_by_api: "API 明确拒绝",
+  unconfirmed_response: "API 应答无法确认",
+};
+
 function QqTab() {
-  const [selectedPersonaId, setSelectedPersonaId] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("ink-and-kin_selected_qq_persona_id") || "";
-    }
-    return "";
-  });
-
-  const qqStatus = trpc.qq.getStatus.useQuery(undefined, { refetchInterval: 5000 });
-  const recentContacts = trpc.qq.recentContacts.useQuery(undefined, { refetchInterval: 3000 });
-  const bindings = trpc.qq.listBindings.useQuery(undefined, { refetchInterval: 3000 });
+  const utils = trpc.useUtils();
+  const config = trpc.qq.config.useQuery(undefined, { retry: false });
+  const deliveries = trpc.qq.deliveries.useQuery(undefined, { retry: false });
   const personas = trpc.persona.list.useQuery();
-  const bot = qqStatus.data;
-  const webhookUrl = typeof window === "undefined"
-    ? "/api/qq/onebot/event"
-    : `${window.location.origin}/api/qq/onebot/event`;
+  const save = trpc.qq.save.useMutation();
+  const start = trpc.qq.start.useMutation();
+  const stop = trpc.qq.stop.useMutation();
+  const [draft, setDraft] = useState<QqSettingsDraft | null>(null);
+  const [issue, setIssue] = useState("");
+  const [conflict, setConflict] = useState(false);
+  const pendingAction = useRef(false);
+  const [preferredPersonaId, setPreferredPersonaId] = useState(() => {
+    try { return localStorage.getItem("ink-and-kin_selected_qq_persona_id") ?? ""; }
+    catch { return ""; }
+  });
 
-  const readyPersonas = useMemo(
-    () => (personas.data ?? []).filter((p: any) => p.analysisStatus === "ready"),
-    [personas.data],
-  );
-  const personaById = useMemo(
-    () => new Map((personas.data ?? []).map((p: any) => [p.id, p])),
-    [personas.data],
-  );
-  const bindingByContactId = useMemo(
-    () => new Map((bindings.data ?? []).map((b: any) => [b.wechatContactId, b])),
-    [bindings.data],
-  );
-
-  const handleSelectPersona = (id: string) => {
-    setSelectedPersonaId(id);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ink-and-kin_selected_qq_persona_id", id);
-    }
+  const bot = config.data;
+  const previewUnavailable = isQqPreviewUnavailable(bot);
+  const readyPersonas = (personas.data ?? []).filter(persona => persona.analysisStatus === "ready");
+  const defaultPersona = readyPersonas.find(persona => String(persona.id) === preferredPersonaId) ?? readyPersonas[0];
+  const current: QqSettingsDraft = draft ?? {
+    expectedGeneration: bot?.generation ?? null,
+    apiBaseUrl: bot?.apiBaseUrl ?? "",
+    botId: bot?.botId ?? "",
+    targetId: bot?.targetId ?? "",
+    personaId: bot?.configured ? String(bot.personaId ?? "") : String(defaultPersona?.id ?? ""),
+    apiToken: "",
+    receiveToken: "",
+    webhookSecret: "",
+    clearApiToken: false,
+    clearReceiveToken: false,
   };
+  const busy = save.isPending || start.isPending || stop.isPending;
+  const available = !!bot && !config.error && !previewUnavailable;
+  const outOfDate = conflict || (!!draft && !!bot && draft.expectedGeneration !== bot.generation);
+  const formDisabled = !available || busy || outOfDate;
+  const usablePersona = readyPersonas.some(persona => String(persona.id) === current.personaId);
+  const needsCredentialRecovery = bot?.credentialsUnreadable === true;
+  const credentialsReady = (bot?.webhookSecretConfigured || !!current.webhookSecret) &&
+    (!needsCredentialRecovery || (!!current.webhookSecret &&
+      (!!current.apiToken || current.clearApiToken) && (!!current.receiveToken || current.clearReceiveToken)));
+  const canSave = !formDisabled && !!draft && usablePersona && credentialsReady &&
+    !!current.apiBaseUrl.trim() && !!current.botId.trim() && !!current.targetId.trim();
+  const canStart = !formDisabled && !draft && !needsCredentialRecovery && usablePersona &&
+    bot?.generation != null && bot.webhookSecretConfigured && !bot.connected;
+  const canStop = available && !busy && !conflict && bot?.generation != null && bot.enabled;
+  const status = qqConnectionStatus(bot, config.isPending, !!config.error);
+  const bindingChanged = bot?.configured && (current.botId.trim() !== bot.botId ||
+    current.targetId.trim() !== bot.targetId || Number(current.personaId) !== bot.personaId);
+  const webhookUrl = bot?.hookPath && !previewUnavailable
+    ? (typeof window === "undefined" ? bot.hookPath : window.location.origin + bot.hookPath)
+    : null;
 
-  useEffect(() => {
-    if (readyPersonas.length === 0) return;
-    const exists = readyPersonas.some((p: any) => String(p.id) === selectedPersonaId);
-    if (!exists) {
-      const boundPersonaId = bindings.data?.[0]?.personaId;
-      const boundExists = boundPersonaId && readyPersonas.some((p: any) => p.id === boundPersonaId);
-      const targetId = boundExists ? String(boundPersonaId) : String(readyPersonas[0].id);
-      setSelectedPersonaId(targetId);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("ink-and-kin_selected_qq_persona_id", targetId);
+  function edit(fields: Partial<QqSettingsDraft>) {
+    if (!formDisabled) setDraft(previous => ({ ...(previous ?? current), ...fields }));
+  }
+
+  function selectPersona(id: string) {
+    edit({ personaId: id });
+    setPreferredPersonaId(id);
+    try { localStorage.setItem("ink-and-kin_selected_qq_persona_id", id); } catch {}
+  }
+
+  function discardDraft() {
+    setDraft(null);
+    setConflict(false);
+    setIssue("");
+  }
+
+  async function perform(action: "save" | "start" | "stop") {
+    if (pendingAction.current || !bot || (action === "save" ? !canSave : action === "start" ? !canStart : !canStop)) return;
+    pendingAction.current = true;
+    setIssue("");
+    try {
+      // 防止之前发出的状态查询在保存后覆盖新版本。
+      await utils.qq.config.cancel();
+      const next = action === "save" ? await save.mutateAsync({
+        expectedGeneration: current.expectedGeneration,
+        apiBaseUrl: current.apiBaseUrl.trim(),
+        botId: current.botId.trim(),
+        targetId: current.targetId.trim(),
+        personaId: Number(current.personaId),
+        apiToken: current.apiToken || undefined,
+        receiveToken: current.receiveToken || undefined,
+        webhookSecret: current.webhookSecret || undefined,
+        clearApiToken: current.clearApiToken || undefined,
+        clearReceiveToken: current.clearReceiveToken || undefined,
+      }) : await (action === "start" ? start : stop).mutateAsync({ expectedGeneration: bot.generation });
+      utils.qq.config.setData(undefined, next);
+      if (action === "save") {
+        discardDraft();
+        if (!next.enabled) toast.success("QQ 配置已保存，接入已停用；需要时请重新启动");
+        else toast.success("QQ 配置已保存，请以当前接入状态为准");
+      } else if (action === "start") {
+        if (next.connected) toast.success("OneBot API 探测通过；尚未验证真实收发");
+        else toast.warning("探测结束，当前 QQ 接入未通过探测");
+      } else if (!next.enabled) {
+        toast.success("QQ 接入已停止");
+      } else {
+        toast.warning("配置状态已变化，请刷新后确认当前接入");
       }
+      void deliveries.refetch();
+    } catch (error) {
+      const code = (error as { data?: { code?: string } })?.data?.code;
+      if (code === "CONFLICT") {
+        setConflict(true);
+        setIssue("QQ 配置已被更新。已保留当前草稿，请刷新并载入当前版本后重新操作。");
+      } else {
+        setIssue(error instanceof Error ? error.message : "QQ 操作未完成，请稍后重试。");
+      }
+      void config.refetch();
+    } finally {
+      pendingAction.current = false;
     }
-  }, [readyPersonas, selectedPersonaId, bindings.data]);
-
-  const bindContact = trpc.qq.bindContact.useMutation({
-    onSuccess: () => { toast.success("QQ 联系人已绑定"); bindings.refetch(); personas.refetch(); },
-    onError: (e: any) => toast.error(e.message),
-  });
-  const unbindContact = trpc.qq.unbindContact.useMutation({
-    onSuccess: () => { toast.success("已解除绑定"); bindings.refetch(); personas.refetch(); },
-    onError: (e: any) => toast.error(e.message),
-  });
-  const openManualLoginPage = trpc.qq.openManualLoginPage.useMutation({
-    onSuccess: () => toast.success("已打开独立 QQ 扫码登录页，请完成扫码验证"),
-    onError: (e: any) => toast.error(e.message),
-  });
-
-  const handleBind = (contact: { id: string; name: string }) => {
-    const personaId = Number(selectedPersonaId);
-    if (!personaId) {
-      toast.error("请先选择分身");
-      return;
-    }
-    bindContact.mutate({
-      personaId,
-      qqContactId: contact.id,
-      qqName: contact.name,
-    });
-  };
-
-  const selectedPersona = personaById.get(Number(selectedPersonaId)) as any;
-  const previewUnavailable = (bot as any)?.previewUnavailable === true;
-  const statusText = previewUnavailable ? "未接通（界面预览）" : bot?.status === "connected" ? "已连接"
-    : bot?.status === "error" ? "连接异常"
-    : "未启用";
+  }
 
   return (
     <div className="space-y-6 card-stagger">
       <section className="warm-card p-5 space-y-4">
-        <SectionHeader icon={bot?.status === "connected" ? Wifi : WifiOff} title="QQ OneBot 接入"
-          subtitle={previewUnavailable ? "此预览未连接 QQ，不会启动或操作真实服务" : "NapCat 独立运行，书中人 通过 OneBot HTTP API 收发消息"}
-          action={<StatusBadge label={statusText}
-            tone={bot?.status === "connected" ? "ok" : bot?.status === "error" ? "error" : "muted"} />} />
-
+        <SectionHeader icon={bot?.connected && !config.error && !previewUnavailable ? Wifi : WifiOff} title="QQ OneBot 接入"
+          subtitle="使用自有 OneBot HTTP API，每个账号只配置一个机器人和一个私聊目标"
+          action={<StatusBadge label={status.label} tone={status.tone} />} />
         <div className="p-4 bg-muted/20 rounded-xl space-y-3">
-          <div className="flex items-center gap-3">
-            <div className={`w-3 h-3 rounded-full ${
-              bot?.status === "connected" ? "bg-emerald-500" :
-              bot?.status === "error" ? "bg-red-400" : "bg-muted-foreground/30"
-            }`} />
-            <span className="text-sm text-foreground font-medium">
-              {previewUnavailable ? "QQ 服务未接通（界面预览）" : bot?.status === "connected" ? `NapCat 已连接${bot.loggedInUser ? `：${bot.loggedInUser}` : ""}` :
-               bot?.status === "error" ? "NapCat / OneBot HTTP API 不可用" : "QQ 端未启用"}
-            </span>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            启动只探测 API 并核对机器人身份。探测通过不代表已验证 QQ 的真实收发。
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="qq-api-url" className="text-xs text-foreground/70">OneBot HTTP API 地址</Label>
+              <Input id="qq-api-url" value={current.apiBaseUrl} disabled={formDisabled}
+                autoComplete="off" maxLength={2048} placeholder="https://onebot.example.com"
+                onChange={event => edit({ apiBaseUrl: event.target.value })} className="bg-muted/50" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="qq-bot-id" className="text-xs text-foreground/70">机器人 QQ 号</Label>
+              <Input id="qq-bot-id" value={current.botId} disabled={formDisabled} inputMode="numeric"
+                autoComplete="off" maxLength={24} onChange={event => edit({ botId: event.target.value })} className="bg-muted/50" />
+            </div>
           </div>
-
-          <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">
-            <p>QQ 端由 NapCatQQ 独立运行，书中人 通过 OneBot HTTP API 发消息，并通过 HTTP POST 上报接收消息。</p>
-            <p>NapCat HTTP API 地址：<span className="font-mono text-foreground">{previewUnavailable ? "未接通" : bot?.baseUrl ?? "http://127.0.0.1:3001"}</span></p>
-            <p>NapCat 事件上报地址：<span className="font-mono text-foreground break-all">{webhookUrl}</span></p>
-            {bot?.webhookSecretConfigured && (
-              <p className="text-amber-600">已启用 webhook token 校验，上报时需要带 `?token=你的 QQ_ONEBOT_WEBHOOK_SECRET` 或 `x-ink-and-kin-token` 请求头。</p>
-            )}
-            {!bot?.enabled && !previewUnavailable && (
-              <p>要启用 QQ：在本机运行副本 `.env` 设置 `QQ_ENABLED=true`，再重启 书中人。</p>
-            )}
-            {bot?.lastError && (
-              <p className="text-red-500">最近错误：{bot.lastError}</p>
-            )}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <QqCredentialField id="qq-api-token" label="API 访问令牌（可选）" value={current.apiToken}
+              saved={bot?.apiTokenConfigured === true} disabled={formDisabled} clear={current.clearApiToken}
+              onChange={apiToken => edit({ apiToken })}
+              onClear={clearApiToken => edit({ clearApiToken, ...(clearApiToken ? { apiToken: "" } : {}) })} />
+            <QqCredentialField id="qq-receive-token" label="事件接收令牌（可选）" value={current.receiveToken}
+              saved={bot?.receiveTokenConfigured === true} disabled={formDisabled} clear={current.clearReceiveToken}
+              onChange={receiveToken => edit({ receiveToken })}
+              onClear={clearReceiveToken => edit({ clearReceiveToken, ...(clearReceiveToken ? { receiveToken: "" } : {}) })} />
+            <QqCredentialField id="qq-webhook-secret" label="事件签名密钥（必填）" value={current.webhookSecret}
+              saved={bot?.webhookSecretConfigured === true} disabled={formDisabled}
+              onChange={webhookSecret => edit({ webhookSecret })} />
+          </div>
+          {needsCredentialRecovery && (
+            <p className="text-xs text-amber-700 dark:text-amber-400" role="status">
+              已保存的凭据不可读。请重填事件签名密钥，并重填两个可选令牌或分别勾选明确留空。
+            </p>
+          )}
+          <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
+            <p>事件上报地址：<span className="font-mono text-foreground break-all">{webhookUrl ?? "保存后显示"}</span></p>
+            <p>反向事件需用签名密钥生成签名并发送 X-Signature 请求头；设置接收令牌时还需提供对应的 Authorization 请求头。</p>
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" className="rounded-xl border-border"
-            onClick={() => qqStatus.refetch()} disabled={qqStatus.isFetching}>
-            {qqStatus.isFetching ? "刷新中..." : "刷新状态"}
+            onClick={() => { void config.refetch(); void deliveries.refetch(); }} disabled={config.isFetching || busy}>
+            {config.isFetching ? "刷新中..." : "刷新状态"}
           </Button>
-          <Button size="sm" variant="outline" className="rounded-xl border-border"
-            onClick={() => openManualLoginPage.mutate()} disabled={openManualLoginPage.isPending}>
-            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
-            {openManualLoginPage.isPending ? "正在启动并打开..." : "打开 QQ 扫码登录"}
+          <Button size="sm" className="rounded-xl" disabled={!canStart} onClick={() => void perform("start")}>
+            {start.isPending ? "正在探测…" : "启动并探测 API"}
+          </Button>
+          <Button size="sm" variant="outline" className="rounded-xl border-border" disabled={!canStop} onClick={() => void perform("stop")}>
+            {stop.isPending ? "正在停止…" : "停止 QQ 接入"}
+          </Button>
+          <Button size="sm" variant="outline" className="rounded-xl border-border" disabled>
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> QQ 扫码登录
+          </Button>
+          <Button size="sm" variant="outline" className="rounded-xl border-border" disabled>
+            <ImageIcon className="w-3.5 h-3.5 mr-1.5" /> 频道媒体
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          {previewUnavailable ? "界面预览保留此操作入口；当前未接后台，点击不会启动 QQ 服务或打开真实登录窗口。" : "点击后会启动尚未运行的隔离 QQ 服务，并打开独立浏览器窗口，可能需要等待约一分钟；已有登录或验证会话不会被重启。打开后完成扫码验证，再点“刷新状态”确认。"}
+          扫码登录与频道媒体尚未接通，请自行管理 OneBot 登录。本批仅支持一对一文字接入。
         </p>
+        {previewUnavailable && <p className="text-xs text-muted-foreground" role="status">界面预览未接通 QQ 后台，配置和连接操作不可用。</p>}
+        {config.error && <p className="text-xs text-destructive" role="alert">无法读取 QQ 配置，请刷新状态后重试。</p>}
+        {issue && <p className="text-xs text-destructive" role="alert">{issue}</p>}
       </section>
 
       <section className="warm-card p-5 space-y-4">
-        <SectionHeader icon={Users} title="QQ 联系人绑定" subtitle="把私聊联系人绑定到 ready 状态的分身"
-          action={<StatusBadge label={`${bindings.data?.length ?? 0} 个已绑定`}
-            tone={(bindings.data?.length ?? 0) > 0 ? "ok" : "muted"} />} />
-
+        <SectionHeader icon={Users} title="QQ 联系人绑定" subtitle="为指定的一对一私聊选择一个已就绪角色"
+          action={<StatusBadge label={bot?.personaId && bot.targetId ? "已有绑定" : "未绑定"} tone={bot?.personaId && bot.targetId ? "ok" : "muted"} />} />
         <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
           <div className="space-y-2">
-            <Label className="text-xs text-foreground/70">选择分身</Label>
-            <select value={selectedPersonaId} onChange={e => handleSelectPersona(e.target.value)}
-              className="w-full h-10 px-3 bg-muted/50 border border-border rounded-lg text-sm text-foreground">
-              {readyPersonas.length === 0 && <option value="">暂无可绑定分身</option>}
-              {readyPersonas.map((persona: any) => (
-                <option key={persona.id} value={persona.id}>{persona.name}</option>
-              ))}
+            <Label htmlFor="qq-persona" className="text-xs text-foreground/70">选择角色</Label>
+            <select id="qq-persona" value={usablePersona ? current.personaId : ""} onChange={event => selectPersona(event.target.value)}
+              disabled={formDisabled || readyPersonas.length === 0}
+              className="w-full h-10 px-3 bg-muted/50 border border-border rounded-lg text-sm text-foreground disabled:opacity-50">
+              <option value="" disabled>{readyPersonas.length ? "请选择角色" : "暂无可绑定角色"}</option>
+              {readyPersonas.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
             </select>
           </div>
-
           <div className="space-y-2">
-            <Label className="text-xs text-foreground/70">最近 QQ 联系人</Label>
-            <div className="space-y-2">
-              {(recentContacts.data ?? []).length === 0 && (
-                <div className="p-3 bg-muted/20 rounded-lg text-sm text-muted-foreground">
-                  暂无联系人。启用 NapCat 上报后，让要绑定的 QQ 先发一条私聊消息。
-                </div>
-              )}
-
-              {(recentContacts.data ?? []).map((contact: any) => {
-                const binding = bindingByContactId.get(contact.id) as any;
-                const boundPersona = binding ? personaById.get(binding.personaId) as any : null;
-                const isDifferentPersonaSelected = binding && selectedPersonaId && String(binding.personaId) !== selectedPersonaId;
-
-                return (
-                  <div key={contact.id} className="p-3 bg-muted/20 rounded-lg flex flex-col sm:flex-row gap-3 sm:items-center">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <MessageCircle className="w-4 h-4 text-primary/60 flex-shrink-0" />
-                        <span className="font-medium text-sm text-foreground truncate">{contact.name}</span>
-                        <span className="text-[11px] text-muted-foreground bg-muted/40 px-2 py-0.5 rounded-full">
-                          {contact.kind === "group" ? "群聊" : "私聊"}
-                        </span>
-                        {binding && (
-                          <span className="text-xs text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                            已绑定 {boundPersona?.name ?? `#${binding.personaId}`}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                        <Clock className="w-3.5 h-3.5" />
-                        <span>{formatBeijingDateTime(contact.lastMessageAt, { hour12: false })}</span>
-                        <span className="truncate">{contact.lastMessagePreview}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {binding ? (
-                        <>
-                          {isDifferentPersonaSelected && selectedPersona && (
-                            <Button size="sm" className="bg-primary hover:bg-primary/95 text-primary-foreground rounded-xl shadow-xs hover:shadow-md active:scale-[0.98] transition-all text-xs"
-                              onClick={() => handleBind(contact)}
-                              disabled={bindContact.isPending}>
-                              换绑为 {selectedPersona.name}
-                            </Button>
-                          )}
-                          <Button size="sm" variant="outline" className="rounded-xl border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/30 active:scale-[0.98] transition-all"
-                            onClick={() => unbindContact.mutate({ id: binding.id })}
-                            disabled={unbindContact.isPending}>
-                            解除绑定
-                          </Button>
-                        </>
-                      ) : (
-                        <Button size="sm" className="bg-primary hover:bg-primary/95 text-primary-foreground rounded-xl shadow-xs hover:shadow-md active:scale-[0.98] transition-all"
-                          onClick={() => handleBind(contact)}
-                          disabled={bindContact.isPending || !selectedPersonaId}>
-                          绑定为 {selectedPersona?.name ?? "当前分身"}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+            <Label htmlFor="qq-target" className="text-xs text-foreground/70">目标私聊 QQ 号</Label>
+            <Input id="qq-target" value={current.targetId} disabled={formDisabled} inputMode="numeric"
+              autoComplete="off" maxLength={24} onChange={event => edit({ targetId: event.target.value })}
+              className="bg-muted/50" />
+            <div className="p-3 bg-muted/20 rounded-lg text-xs text-muted-foreground">
+              最近联系人自动发现尚未接通，请手动输入目标 QQ 号。
             </div>
           </div>
         </div>
+        {outOfDate && (
+          <p className="text-xs text-amber-700 dark:text-amber-400" role="status">
+            配置版本已变化。当前草稿仍保留；载入当前配置后才能重新操作。
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" className="rounded-xl" disabled={!canSave} onClick={() => void perform("save")}>
+            {save.isPending ? "正在保存…" : bindingChanged ? "保存改绑" : "保存 QQ 配置"}
+          </Button>
+          {(draft || outOfDate) && (
+            <Button size="sm" variant="outline" className="rounded-xl border-border"
+              disabled={busy || config.isFetching || !available} onClick={discardDraft}>
+              {outOfDate ? "载入当前配置" : "放弃草稿"}
+            </Button>
+          )}
+          <p className="text-xs text-muted-foreground">保存配置或改绑会停止现有接入，需要时请重新启动。</p>
+        </div>
+      </section>
+
+      <section className="warm-card p-5 space-y-4">
+        <SectionHeader icon={Clock} title="最近 QQ 交付" subtitle="仅列出当前账号的交付记录"
+          action={<Button size="sm" variant="outline" className="rounded-xl border-border"
+            onClick={() => void deliveries.refetch()} disabled={deliveries.isFetching}>
+            {deliveries.isFetching ? "刷新中..." : "刷新记录"}
+          </Button>} />
+        <p className="text-xs text-muted-foreground">API 确认表示 OneBot 返回消息编号。结果未知的消息不会自动重发，本页也不提供重发入口。</p>
+        {previewUnavailable ? (
+          <p className="text-xs text-muted-foreground">界面预览没有真实 QQ 交付记录。</p>
+        ) : deliveries.isPending ? (
+          <p className="text-xs text-muted-foreground">正在读取交付记录…</p>
+        ) : deliveries.error ? (
+          <p className="text-xs text-destructive" role="alert">无法读取 QQ 交付记录，请刷新后重试。</p>
+        ) : !deliveries.data?.length ? (
+          <p className="p-3 bg-muted/20 rounded-lg text-xs text-muted-foreground">暂无交付记录。</p>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-border/50">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-muted/30 text-muted-foreground">
+                <tr>
+                  <th scope="col" className="px-3 py-2 font-medium">时间</th>
+                  <th scope="col" className="px-3 py-2 font-medium">私聊目标</th>
+                  <th scope="col" className="px-3 py-2 font-medium">状态</th>
+                  <th scope="col" className="px-3 py-2 font-medium">消息编号</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deliveries.data.map(row => {
+                  const result = QQ_DELIVERY_LABELS[row.status] ?? QQ_DELIVERY_LABELS.unknown;
+                  const reason = row.reason ? QQ_DELIVERY_REASONS[row.reason] : undefined;
+                  return (
+                    <tr key={row.id} className="border-t border-border/50">
+                      <td className="px-3 py-2 whitespace-nowrap">{formatBeijingDateTime(row.createdAt, { hour12: false })}</td>
+                      <td className="px-3 py-2 font-mono">{row.targetId}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <StatusBadge label={result.label} tone={result.tone} />
+                        {reason && <span className="block mt-1 text-muted-foreground">{reason}</span>}
+                      </td>
+                      <td className="px-3 py-2 font-mono">{row.remoteMessageId ?? "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
   );
@@ -2939,6 +3025,7 @@ function OperationsDiagnosticsTab() {
     limit: "50",
   });
   const diagnostics = trpc.system.operationsDiagnostics.useQuery(undefined, { refetchInterval: 10000 });
+  const qqConfig = trpc.qq.config.useQuery(undefined, { retry: false });
   const usageDetailsInput = useMemo(() => ({
     from: optionalUsageText(usageFilters.from),
     to: optionalUsageText(usageFilters.to),
@@ -3000,10 +3087,10 @@ function OperationsDiagnosticsTab() {
     unconfigured: "error",
     invalid: "error",
   };
-  const qqLive = data.live?.qq;
-  const qqStatusTone: StatusTone = qqLive?.status === "connected" ? "ok" : qqLive?.status === "error" ? "error" : "muted";
+  const qqLive = qqConfig.data;
+  const qqStatus = qqConnectionStatus(qqLive, qqConfig.isPending, !!qqConfig.error);
+  const qqAvailable = !!qqLive && !qqConfig.error && !isQqPreviewUnavailable(qqLive);
   const troubleshootingItems = data.troubleshooting?.items ?? [];
-  const qqAdvice = data.troubleshooting?.platforms?.qq ?? platformDiagnosticAdvice("qq", qqLive);
   const configuredProviders = (data.llm?.providers ?? []).filter((provider: any) => provider.configured);
   const enabledStickerTypes = Object.entries(data.stickers?.enabledByType ?? {})
     .map(([type, count]) => `${type} ${count}`)
@@ -3079,20 +3166,18 @@ function OperationsDiagnosticsTab() {
         </DiagnosticCard>
 
         <DiagnosticCard icon={MessageCircle} title="平台接入" hue="teal"
-          subtitle="QQ 实时状态与绑定策略">
+          subtitle="当前账号的 QQ 配置与 API 探测状态">
           <DiagGroup title="QQ / OneBot"
-            hint={<StatusBadge label={platformStatusLabel("qq", qqLive?.status)} tone={qqStatusTone} />}>
+            hint={<StatusBadge label={qqStatus.label} tone={qqStatus.tone} />}>
             <DiagnosticRow label="QQ 开关" value=""
-              badge={<BoolBadge value={Boolean(data.qq?.enabled)} trueLabel="已启用" falseLabel="未启用" />} />
-            <DiagnosticRow label="OneBot" value={data.qq?.onebotEndpoint?.origin || "未配置"} mono />
-            <DiagnosticRow label="Webhook token" value=""
-              badge={<BoolBadge value={Boolean(data.qq?.webhookSecretConfigured)} />} />
-            <DiagnosticRow label="群聊" value=""
-              badge={<BoolBadge value={Boolean(data.qq?.allowGroups)} trueLabel="允许" falseLabel="关闭" />} />
-            {qqLive?.lastError && <DiagnosticRow label="QQ 原始错误" value={qqLive.lastError} />}
-            <div className="mt-2">
-              <AdvisoryBox advice={qqAdvice} />
-            </div>
+              badge={qqAvailable ? <BoolBadge value={qqLive.enabled} trueLabel="已启用" falseLabel="未启用" />
+                : <StatusBadge label="不可用" tone="muted" />} />
+            <DiagnosticRow label="OneBot" value={qqAvailable ? qqLive.apiBaseUrl || "未配置" : "不可用"} mono />
+            <DiagnosticRow label="事件签名密钥" value=""
+              badge={qqAvailable ? <BoolBadge value={qqLive.webhookSecretConfigured} trueLabel="已保存" falseLabel="未保存" />
+                : <StatusBadge label="不可用" tone="muted" />} />
+            <DiagnosticRow label="消息范围" value="仅一对一文字" />
+            <p className="mt-2 text-xs text-muted-foreground">API 探测通过不代表已验证真实收发，配置与交付记录请到 QQ 页签查看。</p>
           </DiagGroup>
         </DiagnosticCard>
 

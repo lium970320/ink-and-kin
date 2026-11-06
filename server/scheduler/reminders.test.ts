@@ -338,6 +338,17 @@ describe("deliverReminder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("QQ 文字接入不自动开启主动提醒，仍保存网页提醒卡片", async () => {
+    const delivered = await deliverReminder({
+      userId: 1, reminder, channel: "qq", targetId: "private:10002",
+      now: new Date(2024, 4, 20, 10, 0),
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(getChannelAdapter).not.toHaveBeenCalled();
+    expect(recordReminder).toHaveBeenCalledWith(expect.objectContaining({ channel: "web" }));
+    expect(delivered).toBe(true);
+  });
+
   it("falls back to the web card when no channel is bound", async () => {
     const delivered = await deliverReminder({
       userId: 1,

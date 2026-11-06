@@ -33,6 +33,13 @@ const fixtures = {
     baseUrl: null, loggedInUser: null, webhookSecretConfigured: false, lastError: null,
     message: "此界面预览未连接QQ服务，不会启动服务或打开真实登录窗口。",
   },
+  "qq.config": {
+    previewOnly: true, previewUnavailable: true, configured: false, enabled: false, connected: false, generation: null,
+    apiBaseUrl: "", botId: "", targetId: "", personaId: null, hookPath: null,
+    apiTokenConfigured: false, receiveTokenConfigured: false, webhookSecretConfigured: false,
+    secretMask: "••••••••", credentialsUnreadable: false, status: "unconfigured",
+  },
+  "qq.deliveries": [],
   "qq.recentContacts": [],
   "qq.listBindings": [],
   "system.operationsDiagnostics": {

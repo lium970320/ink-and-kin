@@ -7,7 +7,7 @@ export const emotionalStateEnum = pgEnum("emotional_state", ["warm", "playful", 
 export const fileTypeEnum = pgEnum("file_type", ["chat_txt", "chat_csv", "image", "video", "collected"]);
 export const processStatusEnum = pgEnum("process_status", ["uploaded", "processing", "done", "failed"]);
 export const messageRoleEnum = pgEnum("message_role", ["user", "assistant"]);
-export const channelEnum = pgEnum("channel", ["web", "wechat", "feishu"]);
+export const channelEnum = pgEnum("channel", ["web", "wechat", "feishu", "qq"]);
 export const characterFamilyEnum = pgEnum("character_family", ["colleague", "relationship", "celebrity"]);
 export const pipelineStageEnum = pgEnum("pipeline_stage", [
   "intake", "collecting", "analyzing_persona", "analyzing_work",
@@ -804,3 +804,4 @@ export type InsertGraduationAssessment = typeof graduationAssessments.$inferInse
 export * from "./source-library-schema";
 export * from './memory-review-schema';
 export * from './chat-context-schema';
+export * from "./qq-channel-schema";

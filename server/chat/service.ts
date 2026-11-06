@@ -67,7 +67,7 @@ export interface ConversationOptions {
   /** Explicit provider override (from `persona.llmProvider`). */
   providerName?: string;
   /** Channel the message arrived on. */
-  channel?: "web" | "wechat" | "feishu";
+  channel?: "web" | "wechat" | "feishu" | "qq";
   /** Whether the user message has already been stored. */
   alreadyPersisted?: boolean;
   /** Media attached to the message. */

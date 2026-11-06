@@ -14,6 +14,7 @@ import { uploadsAuthGuard } from "./uploads";
 import { registerChatStreamRoute } from "../chat/stream-route";
 import { bootstrapAdminAccount } from "../bootstrap/bootstrap";
 import { migrateLegacyTTSFiles } from "./tts";
+import { registerQqRoutes } from "../channels/qq";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,7 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  registerQqRoutes(app);
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 

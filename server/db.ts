@@ -22,6 +22,7 @@ import {
   InsertCollectionJob,
 } from "../drizzle/schema";
 import { chatContextStates } from "../drizzle/chat-context-schema";
+import { qqChannelConfigs } from "../drizzle/qq-channel-schema";
 import {
   appendSceneMemoryRecentMessages,
   buildInitialSceneMemoryCache,
@@ -170,16 +171,17 @@ export async function bumpUserTokenVersion(id: number) {
     .where(eq(users.id, id));
 }
 
-/**
- * Deletes every row belonging to a user, in one transaction.
- *
- * The list covers every user-scoped table in the schema — there are no
- * foreign keys to cascade, so a table left out here would keep orphaned rows
- * behind after the account is gone. `server/db-migrations.test.ts` asserts
- * that this list stays in step with the schema.
- */
+/** Serializes QQ configuration changes, sends and deletion of their account or role. */
+export async function lockQqChannelConfig(tx: DbTransaction, userId: number): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:qq-config'), ${userId})`);
+}
+
+/** Deletes account data using explicit cleanup for legacy tables and cascading keys for newer tables. */
 export async function deleteUserAccount(id: number) {
   await withTransaction(async (tx) => {
+    await lockQqChannelConfig(tx, id);
+    // The QQ configuration owns both the inbound and delivery logs via cascading foreign keys.
+    await tx.delete(qqChannelConfigs).where(eq(qqChannelConfigs.userId, id));
     await tx.delete(channelBindings).where(eq(channelBindings.userId, id));
     await tx.delete(channelStates).where(eq(channelStates.userId, id));
     await tx.delete(chatSummaries).where(eq(chatSummaries.userId, id));
@@ -387,6 +389,20 @@ export async function deletePersona(id: number, userId: number) {
   if (!owned) throw new Error("Persona not found");
 
   await withTransaction(async (tx) => {
+    await lockQqChannelConfig(tx, userId);
+    const [disabledQq] = await tx.update(qqChannelConfigs)
+      .set({
+        personaId: null, enabled: false,
+        generation: sql`${qqChannelConfigs.generation} + 1`, updatedAt: new Date(),
+      })
+      .where(and(eq(qqChannelConfigs.userId, userId), eq(qqChannelConfigs.personaId, id)))
+      .returning({ id: qqChannelConfigs.id });
+    if (disabledQq) {
+      await tx.delete(channelBindings).where(and(eq(channelBindings.userId, userId), eq(channelBindings.channel, "qq")));
+      await tx.update(channelStates)
+        .set({ status: "stopped", credentialsEnc: null, lastError: null, updatedAt: new Date() })
+        .where(and(eq(channelStates.userId, userId), eq(channelStates.channel, "qq")));
+    }
     // 阻止并发添加新成员关系；先按编号锁频道，最后才删人物，避免与生成的外键锁反序。
     await lockRoleplayMembershipChanges(tx, userId);
     const memberChannels = await tx.selectDistinct({ channelId: roleplayChannelMembers.channelId })

@@ -197,7 +197,8 @@ export async function deliverReminder(params: {
   }
 
   // Prefer a bound conversation channel.
-  if (params.channel && params.targetId) {
+  // QQ 6A only enables replies to inbound private messages; proactive delivery belongs to batch 7.
+  if (params.channel && params.channel !== "qq" && params.targetId) {
     const adapter = getChannelAdapter(params.channel as any);
     if (adapter) {
       try {
@@ -269,7 +270,7 @@ export async function runReminderSweep(now: Date = new Date()): Promise<number> 
         // that is set up for 小B. Prefer the binding for this persona; fall
         // back to the web card rather than to the wrong conversation.
         const binding =
-          bindings.find((b) => b.isActive && b.personaId === reminder.personaId) ??
+          bindings.find((b) => b.isActive && b.channel !== "qq" && b.personaId === reminder.personaId) ??
           null;
 
         const sent = await deliverReminder({

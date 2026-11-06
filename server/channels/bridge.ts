@@ -10,7 +10,7 @@ import type { Persona } from "../../drizzle/schema";
 import * as db from "../db";
 import { runConversation } from "../chat/service";
 
-export type ChannelId = "wechat" | "feishu";
+export type ChannelId = "wechat" | "feishu" | "qq";
 
 export interface ChannelChatParams {
   userId: number;
@@ -20,6 +20,8 @@ export interface ChannelChatParams {
   messageText: string;
   /** Which channel the message arrived on. */
   channel: ChannelId;
+  /** Cancels generation when the channel is stopped or rebound. */
+  signal?: AbortSignal;
   /**
    * The user's interface language.
    *
@@ -39,6 +41,7 @@ export interface ChannelChatParams {
  * Returns null when the persona cannot answer — not ready, or gone.
  */
 export async function handleChannelChat(params: ChannelChatParams): Promise<string | null> {
+  params.signal?.throwIfAborted();
   const { userId, personaId, messageText } = params;
 
   const persona = await db.getPersonaById(personaId, userId);
@@ -54,6 +57,7 @@ export async function handleChannelChat(params: ChannelChatParams): Promise<stri
     channel: params.channel,
     mode: "once",
     locale: params.locale ?? "zh",
+    signal: params.signal,
   })) {
     if (event.type === "delta") {
       reply = (reply ?? "") + event.text;

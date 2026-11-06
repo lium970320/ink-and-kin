@@ -1,6 +1,7 @@
 import { memoryRouter } from "./memory-review/memory-router";
 import { memoryReviewRouter } from "./memory-review/router";
 import { sourceLibraryRouter } from "./source-library/router";
+import { qqRouter } from "./channels/qq";
 import { contextProcedures } from './chat/context-router';
 import { changeContext } from './chat/context-state';
 import { llmProbeInput, testUserLlmConnection, listUserLlmModels } from "./llm-probes";
@@ -1026,6 +1027,7 @@ export const appRouter = router({
    * The WeChat ClawBot channel keeps its own QR-login procedures in the
    * `wechat` router; everything that is common to all channels lives here.
    */
+  qq: qqRouter,
   channel: router({
     /** Lists the available channels and whether each one is connected. */
     list: protectedProcedure.query(async ({ ctx }) => {
@@ -1056,7 +1058,7 @@ export const appRouter = router({
     }),
 
     getStatus: protectedProcedure
-      .input(z.object({ channel: z.enum(["wechat", "feishu"]) }))
+      .input(z.object({ channel: z.enum(["wechat", "feishu", "qq"]) }))
       .query(async ({ ctx, input }) => {
         const adapter = getChannelAdapter(input.channel);
         if (!adapter) throw new TRPCError({ code: "NOT_FOUND" });
@@ -1102,7 +1104,7 @@ export const appRouter = router({
     listBindings: protectedProcedure
       .input(z.object({ channel: z.enum(["wechat", "feishu"]).optional() }))
       .query(async ({ ctx, input }) =>
-        getChannelBindingsByUserId(ctx.user.id, input.channel)
+        (await getChannelBindingsByUserId(ctx.user.id, input.channel)).filter(binding => binding.channel !== "qq")
       ),
 
     setDefaultPersona: protectedProcedure
@@ -1139,6 +1141,8 @@ export const appRouter = router({
     unbind: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        const binding = (await getChannelBindingsByUserId(ctx.user.id)).find(row => row.id === input.id);
+        if (binding?.channel === "qq") throw new TRPCError({ code: "BAD_REQUEST", message: "请在 QQ 设置中停用或修改绑定。" });
         await deleteChannelBinding(input.id, ctx.user.id);
         return { success: true };
       }),
