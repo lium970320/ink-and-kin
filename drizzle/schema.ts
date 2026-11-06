@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, index, uniqueIndex, varchar, jsonb } from "drizzle-orm/pg-core";
+import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, index, unique, uniqueIndex, varchar, jsonb } from "drizzle-orm/pg-core";
 
 export const roleEnum = pgEnum("role", ["user", "admin"]);
 export const analysisStatusEnum = pgEnum("analysis_status", ["pending", "analyzing", "ready", "error"]);
@@ -84,7 +84,7 @@ export const personas = pgTable("personas", {
   farewellLetter: text("farewellLetter"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
-});
+}, (table) => ({ idOwner: unique("personas_id_owner_idx").on(table.id, table.userId) }));
 
 export type Persona = typeof personas.$inferSelect;
 export type InsertPersona = typeof personas.$inferInsert;
@@ -741,6 +741,8 @@ export const reminderDeliveries = pgTable("reminder_deliveries", {
   dedupeKey: varchar("dedupeKey", { length: 200 }).notNull(),
   scheduledFor: timestamp("scheduledFor").notNull(),
   deliveredAt: timestamp("deliveredAt"),
+  status: varchar("status", { length: 16 }).default("confirmed").notNull(),
+  reason: varchar("reason", { length: 80 }),
   dismissedAt: timestamp("dismissedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({
@@ -806,3 +808,6 @@ export * from './memory-review-schema';
 export * from './chat-context-schema';
 export * from "./qq-channel-schema";
 export * from "./qq-roleplay-schema";
+
+export * from "./proactive-schema";
+export * from "./runtime-state-schema";

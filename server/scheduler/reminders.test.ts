@@ -10,16 +10,23 @@ const getAllPersonasForReminders = vi.fn();
 const getMemoriesByPersonaId = vi.fn();
 const getFilesByPersonaId = vi.fn();
 const getChannelBindingsByUserId = vi.fn();
-const hasReminderDelivery = vi.fn();
-const recordReminder = vi.fn();
+const persist = vi.fn();
+const getPolicy = vi.fn();
 
 vi.mock("../db", () => ({
   getAllPersonasForReminders: (...a: unknown[]) => getAllPersonasForReminders(...a),
   getMemoriesByPersonaId: (...a: unknown[]) => getMemoriesByPersonaId(...a),
   getFilesByPersonaId: (...a: unknown[]) => getFilesByPersonaId(...a),
   getChannelBindingsByUserId: (...a: unknown[]) => getChannelBindingsByUserId(...a),
-  hasReminderDelivery: (...a: unknown[]) => hasReminderDelivery(...a),
-  recordReminder: (...a: unknown[]) => recordReminder(...a),
+}));
+
+vi.mock("../proactive", () => ({
+  proactiveRepository: { getPolicy: (...args: unknown[]) => getPolicy(...args) },
+}));
+
+vi.mock("./reminder-delivery", async importOriginal => ({
+  ...await importOriginal<typeof import("./reminder-delivery")>(),
+  persistReminderDelivery: (...args: unknown[]) => persist(...args),
 }));
 
 const send = vi.fn();
@@ -222,8 +229,23 @@ describe("collectReminders", () => {
       now,
     });
     const trigger = reminders.find((r) => r.kind === "memory_trigger");
+    expect(trigger?.text).toContain("分享过的");
     expect(trigger).toBeDefined();
     expect(trigger!.dedupeKey).toContain("memory_trigger:7");
+  });
+
+  it("uses the configured calendar for anniversary, timestamp and upload-date reminders", () => {
+    const reminders = collectReminders({
+      persona: persona({ togetherFrom: "2021-05-20T16:30:00Z" }),
+      anniversaries: [{ id: 2, title: "启程", date: "05-21" }],
+      photos: [{ id: 7, originalName: "map.png", extractedMemory: null, createdAt: new Date("2019-05-20T16:30:00Z") }],
+      now: new Date("2024-05-20T16:10:00Z"), timeZone: "Asia/Shanghai",
+    });
+    expect(reminders.map(item => item.dedupeKey)).toEqual([
+      "anniversary:2:2024-05-21", "together_years:1:2024-05-21", "memory_trigger:7:2024-05-21",
+    ]);
+    expect(reminders[2].text).toContain("回顾你分享过的");
+    expect(reminders[2].text).not.toContain("拍下");
   });
 
   it("does not fire a memory trigger for a photo from another day", () => {
@@ -274,15 +296,15 @@ describe("deliverReminder", () => {
       getMemoriesByPersonaId,
       getFilesByPersonaId,
       getChannelBindingsByUserId,
-      hasReminderDelivery,
-      recordReminder,
+      persist,
+      getPolicy,
       send,
       getChannelAdapter,
     ]) {
       fn.mockReset();
     }
-    hasReminderDelivery.mockResolvedValue(false);
-    recordReminder.mockResolvedValue(true);
+    getPolicy.mockResolvedValue({ revision: 0, timeZone: "UTC", quietHours: "23:00-08:00" });
+    persist.mockImplementation(async (_input, route?: { send(): Promise<boolean> }) => route ? route.send() : true);
     getChannelAdapter.mockReturnValue({ send });
   });
 
@@ -297,7 +319,7 @@ describe("deliverReminder", () => {
   it("does not send a reminder that was already delivered today", async () => {
     // The sweep runs every minute. Without this check the same reminder
     // would be pushed to the channel once a minute for the whole day.
-    hasReminderDelivery.mockResolvedValue(true);
+    persist.mockResolvedValueOnce(false);
 
     const delivered = await deliverReminder({
       userId: 1,
@@ -321,7 +343,7 @@ describe("deliverReminder", () => {
     });
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(recordReminder).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledTimes(1);
     expect(delivered).toBe(true);
   });
 
@@ -345,8 +367,18 @@ describe("deliverReminder", () => {
     });
     expect(send).not.toHaveBeenCalled();
     expect(getChannelAdapter).not.toHaveBeenCalled();
-    expect(recordReminder).toHaveBeenCalledWith(expect.objectContaining({ channel: "web" }));
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, reminder }));
     expect(delivered).toBe(true);
+  });
+
+  it("飞书发送调用正常返回但没有显式回执，保留外部路由而不写站内卡片", async () => {
+    const delivered = await deliverReminder({
+      userId: 1, reminder, channel: "feishu", targetId: "feishu-1", now: new Date(2024, 4, 20, 10),
+    });
+    expect(delivered).toBe(false);
+    expect(send).toHaveBeenCalledWith(1, "feishu-1", reminder.text);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist.mock.calls[0][1]).toMatchObject({ channel: "feishu", targetId: "feishu-1" });
   });
 
   it("falls back to the web card when no channel is bound", async () => {
@@ -357,9 +389,7 @@ describe("deliverReminder", () => {
     });
 
     expect(send).not.toHaveBeenCalled();
-    expect(recordReminder).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: "web" }),
-    );
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, reminder: expect.objectContaining({ personaId: 1 }) }));
     expect(delivered).toBe(true);
   });
 });
@@ -371,15 +401,15 @@ describe("runReminderSweep", () => {
       getMemoriesByPersonaId,
       getFilesByPersonaId,
       getChannelBindingsByUserId,
-      hasReminderDelivery,
-      recordReminder,
+      persist,
+      getPolicy,
       send,
       getChannelAdapter,
     ]) {
       fn.mockReset();
     }
-    hasReminderDelivery.mockResolvedValue(false);
-    recordReminder.mockResolvedValue(true);
+    getPolicy.mockResolvedValue({ revision: 0, timeZone: "UTC", quietHours: "23:00-08:00" });
+    persist.mockImplementation(async (_input, route?: { send(): Promise<boolean> }) => route ? route.send() : true);
     getChannelAdapter.mockReturnValue({ send });
     getMemoriesByPersonaId.mockResolvedValue([]);
     getFilesByPersonaId.mockResolvedValue([]);
@@ -422,9 +452,28 @@ describe("runReminderSweep", () => {
     await runReminderSweep(new Date(2024, 4, 20, 10, 0));
 
     expect(send).not.toHaveBeenCalled();
-    expect(recordReminder).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: "web" }),
-    );
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, reminder: expect.objectContaining({ personaId: 1 }) }));
+  });
+
+  it("使用保存的时区和免打扰设置，主动消息关闭不关闭旧提醒", async () => {
+    getPolicy.mockResolvedValue({ revision: 2, timeZone: "Asia/Shanghai", quietHours: "00:00-08:00", enabled: false });
+    getMemoriesByPersonaId.mockResolvedValue([{ id: 1, title: "启程", category: "anniversary", date: "05-21" }]);
+    getChannelBindingsByUserId.mockResolvedValue([]);
+    expect(await runReminderSweep(new Date("2024-05-20T16:00:00Z"))).toBe(0);
+    expect(getMemoriesByPersonaId).not.toHaveBeenCalled();
+    expect(await runReminderSweep(new Date("2024-05-21T00:00:00Z"))).toBe(1);
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ reminder: expect.objectContaining({ dedupeKey: "anniversary:1:2024-05-21" }) }));
+  });
+
+  it("读取设置期间停止后，不继续读取纪念日或尝试投递", async () => {
+    const stop = new AbortController();
+    getPolicy.mockImplementationOnce(async () => {
+      stop.abort();
+      return { revision: 0, timeZone: "UTC", quietHours: "00:00-00:00" };
+    });
+    expect(await runReminderSweep(new Date(2024, 4, 20, 10), stop.signal)).toBe(0);
+    expect(getMemoriesByPersonaId).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it("pushes to the conversation bound to the same persona", async () => {

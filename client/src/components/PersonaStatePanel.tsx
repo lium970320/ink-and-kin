@@ -1,4 +1,4 @@
-import { useMemo, useState, type ElementType, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -28,6 +28,8 @@ import {
 import { trpc } from "@/lib/trpc";
 import { formatBeijingDateTime } from "@/lib/beijing-time";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import ProactivePanel from "@/components/ProactivePanel";
 
 interface PersonaStatePanelProps {
   personaId: number;
@@ -391,6 +393,13 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
     { id: personaId },
     { refetchOnWindowFocus: false },
   );
+  const utils = trpc.useUtils();
+  const setRuntime = trpc.persona.setRuntimeState.useMutation({ retry: false });
+  const clearRuntime = trpc.persona.clearRuntimeState.useMutation({ retry: false });
+  const [temporaryDraft, setTemporaryDraft] = useState<{ personaId: number; revision: number; status: string; minutes: string } | null>(null);
+  const [temporaryFeedback, setTemporaryFeedback] = useState("");
+  const [temporaryConflict, setTemporaryConflict] = useState(false);
+  const temporaryInFlight = useRef(false);
 
   const diag = runtime?.runtimeDiagnostics as any;
   const turnPlan = diag?.turnPlan;
@@ -411,7 +420,8 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
   const personaRuntime = (runtime as any)?.personaRuntime || {};
   const proactiveRuntime = personaRuntime?.proactiveMessages || {};
   const runtimeDataKeys = (((runtime as any)?.personaDataKeys || []) as string[]);
-  const runtimeStorageLabel = runtimeDataKeys.includes("personaRuntime") ? "personaRuntime" : "legacy-compatible";
+  const runtimeStorageLabel = typeof runtime?.runtimeStateRevision === "number" ? "运行态独立保存"
+    : runtimeDataKeys.includes("personaRuntime") ? "personaRuntime" : "legacy-compatible";
 
   const sourceChunkCount = useMemo(() => {
     const sourceLibrary = runtime?.sourceLibrary as any;
@@ -437,13 +447,76 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
   );
   const hasProactiveRuntime = randomizedSlots.length > 0 || lastSentEntries.length > 0 || isRecord(ambientPresence);
 
-  const runtimeState = runtime?.runtimeLifeState as any;
+  const runtimeState = runtime?.runtimeLifeState;
+  const runtimeRevision = runtime?.runtimeStateRevision;
+  const activeTemporaryDraft = temporaryDraft?.personaId === personaId ? temporaryDraft : null;
+  const temporaryStatus = activeTemporaryDraft?.status ?? runtimeState?.status ?? "";
+  const temporaryMinutes = activeTemporaryDraft?.minutes ?? "60";
+  const temporaryOutOfDate = temporaryConflict || (!!activeTemporaryDraft && activeTemporaryDraft.revision !== runtimeRevision);
+  const temporaryDisabled = typeof runtimeRevision !== "number" || isFetching || setRuntime.isPending || clearRuntime.isPending || temporaryOutOfDate;
+  const stateTimeZone = runtime?.scheduleState?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const temporaryEnd = runtimeState?.expiresAt ? new Date(runtimeState.expiresAt) : null;
+  const temporaryEndLabel = temporaryEnd && Number.isFinite(temporaryEnd.getTime())
+    ? temporaryEnd.toLocaleString(undefined, stateTimeZone ? { timeZone: stateTimeZone } : undefined)
+    : "暂无";
+
+  useEffect(() => {
+    setTemporaryDraft(null);
+    setTemporaryConflict(false);
+    setTemporaryFeedback("");
+  }, [personaId]);
+
+  useEffect(() => {
+    if (!runtimeState?.expiresAt) return;
+    const expiry = new Date(runtimeState.expiresAt).getTime();
+    if (!Number.isFinite(expiry)) return;
+    const timer = setTimeout(() => void refetch(), Math.max(0, expiry - Date.now()) + 100);
+    return () => clearTimeout(timer);
+  }, [runtimeState?.expiresAt, refetch]);
+
+  function editTemporary(fields: { status?: string; minutes?: string }) {
+    if (temporaryDisabled || typeof runtimeRevision !== "number") return;
+    setTemporaryDraft({
+      personaId, revision: activeTemporaryDraft?.revision ?? runtimeRevision,
+      status: temporaryStatus, minutes: temporaryMinutes, ...fields,
+    });
+    setTemporaryFeedback("");
+  }
+
+  async function writeTemporary(action: "set" | "clear") {
+    if (temporaryDisabled || temporaryInFlight.current || typeof runtimeRevision !== "number") return;
+    const status = temporaryStatus.trim();
+    const minutes = Number(temporaryMinutes);
+    if (action === "set" && (!status || Array.from(status).length > 200 || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) {
+      setTemporaryFeedback("请输入 1–200 字的状态和 1–1440 分钟的持续时长。");
+      return;
+    }
+    temporaryInFlight.current = true;
+    setTemporaryFeedback("");
+    const scope = { id: personaId, expectedRevision: activeTemporaryDraft?.revision ?? runtimeRevision };
+    try {
+      const next = action === "set" ? await setRuntime.mutateAsync({
+        ...scope, status, expiresAt: new Date(Date.now() + minutes * 60_000).toISOString(),
+      }) : await clearRuntime.mutateAsync(scope);
+      utils.persona.getRuntimeState.setData({ id: personaId }, current => current ? { ...current, ...next } : current);
+      setTemporaryDraft(null);
+      setTemporaryFeedback(action === "set" ? "临时状态已保存。" : "临时状态已清除。");
+    } catch (error) {
+      if ((error as { data?: { code?: string } })?.data?.code === "CONFLICT") {
+        setTemporaryConflict(true);
+        setTemporaryFeedback("临时状态版本已变化，已保留草稿。请载入当前版本后重新编辑。");
+        void refetch();
+      } else {
+        setTemporaryFeedback(error instanceof Error ? error.message : "无法更新临时状态。");
+      }
+    } finally {
+      temporaryInFlight.current = false;
+    }
+  }
   const currentIntent = intentLabel(turnPlan?.intent || reflection?.intent);
   const currentState = turnPlan?.immersiveMode
     ? "scene_awake"
-    : runtimeState?.status === "drowsy_awake"
-      ? "drowsy_awake"
-      : runtime?.scheduleState?.stateId;
+    : runtimeState?.status || runtime?.scheduleState?.stateId;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
@@ -870,10 +943,40 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                         临时状态：{stateLabel(runtimeState.status)}
                       </div>
                       <p className="mt-1.5 text-xs text-muted-foreground font-medium pl-5">
-                        预计结束时间：{formatTime(runtimeState.until)}
+                        预计结束时间：{temporaryEndLabel}（{stateTimeZone || "浏览器本地"}）
                       </p>
                     </div>
                   )}
+
+                  <form className="space-y-2 rounded-xl border border-border/80 bg-muted/5 p-3.5 text-xs"
+                    onSubmit={event => { event.preventDefault(); void writeTemporary("set"); }}>
+                    <p className="font-bold text-foreground">设置临时状态</p>
+                    <p className="text-muted-foreground">只影响当前运行状态，最长 24 小时，不写入角色资料或事实。</p>
+                    <div className="grid gap-2 sm:grid-cols-[1fr_10rem]">
+                      <label className="space-y-1 text-muted-foreground">
+                        <span>状态说明</span>
+                        <Input value={temporaryStatus} onChange={event => editTemporary({ status: event.target.value })}
+                          maxLength={400} disabled={temporaryDisabled} placeholder="例如：正在整理旅行笔记" />
+                      </label>
+                      <label className="space-y-1 text-muted-foreground">
+                        <span>持续分钟</span>
+                        <Input type="number" min={1} max={1440} value={temporaryMinutes}
+                          onChange={event => editTemporary({ minutes: event.target.value })} disabled={temporaryDisabled} />
+                      </label>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" type="submit" className="h-7 text-xs" disabled={temporaryDisabled || !temporaryStatus.trim()}>保存临时状态</Button>
+                      <Button size="sm" type="button" variant="outline" className="h-7 text-xs" disabled={temporaryDisabled || !runtimeState}
+                        onClick={() => void writeTemporary("clear")}>清除临时状态</Button>
+                      {temporaryOutOfDate && (
+                        <Button size="sm" type="button" variant="outline" className="h-7 text-xs" disabled={isFetching}
+                          onClick={() => { setTemporaryDraft(null); setTemporaryConflict(false); setTemporaryFeedback(""); }}>
+                          载入当前版本（放弃草稿）
+                        </Button>
+                      )}
+                    </div>
+                    {temporaryFeedback && <p role="status" className="text-muted-foreground">{temporaryFeedback}</p>}
+                  </form>
 
                   <div className="rounded-xl border border-border/80 bg-muted/5 p-3.5 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
@@ -937,7 +1040,7 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                           </div>
                         ) : (
                           <div className="rounded-lg border border-dashed border-border/70 px-3 py-3 text-muted-foreground">
-                            暂无随机化计划。主动消息未启用、未设置时间，或 scheduler 尚未生成今日计划。
+                            当前不使用旧随机计划；预定时间与结果见下方任务列表。
                           </div>
                         )}
                       </div>
@@ -986,17 +1089,18 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                               />
                             </div>
                           ) : (
-                            <p className="rounded-lg border border-dashed border-border/70 px-3 py-2.5 text-muted-foreground">暂无 ambient 运行态。</p>
+                            <p className="rounded-lg border border-dashed border-border/70 px-3 py-2.5 text-muted-foreground">大厅触发的任务见下方列表。</p>
                           )}
                         </div>
                       </div>
 
                       {!hasProactiveRuntime && (
                         <TextBlock>
-                          当前没有主动消息运行态。若主动消息已开启，等待 scheduler tick 后会出现随机计划、已发送槽位或 ambient 统计。
+                          主动消息设置和实际任务分别保存。
                         </TextBlock>
                       )}
                     </div>
+                    <ProactivePanel key={personaId} personaId={personaId} />
                   </div>
                 </div>
               </CollapsibleCard>

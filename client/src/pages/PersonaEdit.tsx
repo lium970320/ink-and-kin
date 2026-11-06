@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import LivingWorldProbePanel from "@/components/LivingWorldProbePanel";
+import type { ProactiveSettings } from "../../../server/proactive/types";
 import {
   ArrowLeft, Save, Eye, X, Plus, Sparkles, Bell, Clock, Upload
 } from "lucide-react";
@@ -18,6 +19,16 @@ const ATTACHMENT_STYLES = ["安全型", "焦虑型", "回避型", "混乱型"];
 const LOVE_LANGUAGES = ["精心时刻", "肯定的言辞", "服务的行动", "身体接触", "接收礼物"];
 const DEFAULT_PROACTIVE_TIME = "09:00";
 const PROFILE_SCHEMA_VERSION = 1;
+
+function proactiveSettingsDraft(policy: ProactiveSettings & { revision: number }): ProactiveSettings {
+  return {
+    enabled: policy.enabled, times: [...policy.times], stylePrompt: policy.stylePrompt,
+    timeZone: policy.revision === 0 && policy.timeZone === "UTC"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" : policy.timeZone,
+    quietHours: policy.quietHours, maxPerLocalDay: policy.maxPerLocalDay,
+    minIntervalMinutes: policy.minIntervalMinutes, delivery: policy.delivery, ambientEnabled: policy.ambientEnabled,
+  };
+}
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
@@ -90,6 +101,11 @@ export default function PersonaEdit() {
     { id: personaId }, { enabled: isAuthenticated && personaId > 0 }
   );
   const providers = trpc.llmConfig.listProviders.useQuery();
+  const utils = trpc.useUtils();
+  const proactiveQuery = trpc.proactive.getSettings.useQuery(
+    { personaId }, { enabled: isAuthenticated && personaId > 0 && persona?.analysisStatus === "ready" },
+  );
+  const saveProactiveMutation = trpc.proactive.saveSettings.useMutation({ retry: false });
 
   const updateMutation = trpc.persona.update.useMutation({
     onSuccess: () => { toast.success("基本信息已保存"); refetch(); },
@@ -129,10 +145,11 @@ export default function PersonaEdit() {
   const [dailyScenes, setDailyScenes] = useState("");
   const [customInstructions, setCustomInstructions] = useState("");
   const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
-  const [proactiveEnabled, setProactiveEnabled] = useState(false);
-  const [proactiveTimes, setProactiveTimes] = useState<string[]>([]);
+  const [proactiveDraft, setProactiveDraft] = useState<{ personaId: number; revision: number; settings: ProactiveSettings } | null>(null);
   const [proactiveTimeInput, setProactiveTimeInput] = useState(DEFAULT_PROACTIVE_TIME);
-  const [proactiveStylePrompt, setProactiveStylePrompt] = useState("");
+  const [qqConsentRevision, setQqConsentRevision] = useState<number | null>(null);
+  const [proactiveFeedback, setProactiveFeedback] = useState("");
+  const [proactiveConflict, setProactiveConflict] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
 
   useEffect(() => {
@@ -181,10 +198,15 @@ export default function PersonaEdit() {
     setDailyScenes(textValue(behavior.dailyScenes, p.dailyScenes, p.dailyLifeScenes));
     setCustomInstructions(textValue(behavior.customInstructions, p.customInstructions));
     setStarterQuestions(arrayValue(behavior.starterQuestions, p.starterQuestions));
-    setProactiveEnabled(Boolean(p.proactiveMessages?.enabled));
-    setProactiveTimes(Array.isArray(p.proactiveMessages?.times) ? p.proactiveMessages.times : []);
-    setProactiveStylePrompt(textValue(behavior.proactiveStyle, p.proactiveStyle, p.proactiveMessages?.stylePrompt));
   }, [persona]);
+
+  useEffect(() => {
+    setProactiveDraft(null);
+    setProactiveTimeInput(DEFAULT_PROACTIVE_TIME);
+    setQqConsentRevision(null);
+    setProactiveFeedback("");
+    setProactiveConflict(false);
+  }, [personaId]);
 
   const saveBasic = () => updateMutation.mutate({
     id: personaId, name, relationshipDesc,
@@ -192,28 +214,64 @@ export default function PersonaEdit() {
     llmProvider: llmProvider || null,
   });
 
-  const addProactiveTime = () => {
-    if (!/^\d{2}:\d{2}$/.test(proactiveTimeInput)) return;
-    if (!proactiveTimes.includes(proactiveTimeInput)) {
-      setProactiveTimes([...proactiveTimes, proactiveTimeInput].sort());
-    }
+  const policy = proactiveQuery.data;
+  const activeProactiveDraft = proactiveDraft?.personaId === personaId ? proactiveDraft : null;
+  const proactive = activeProactiveDraft?.settings ?? (policy ? proactiveSettingsDraft(policy) : undefined);
+  const qqProactiveConsent = !!policy && qqConsentRevision === policy.revision;
+  const proactiveOutOfDate = proactiveConflict || (!!activeProactiveDraft && !!policy && activeProactiveDraft.revision !== policy.revision);
+  const proactiveDisabled = !policy || proactiveQuery.isError || saveProactiveMutation.isPending || proactiveOutOfDate;
+
+  const editProactive = (fields: Partial<ProactiveSettings>) => {
+    if (proactiveDisabled || !policy || !proactive) return;
+    setProactiveDraft({ personaId, revision: activeProactiveDraft?.revision ?? policy.revision, settings: { ...proactive, ...fields } });
+    setProactiveFeedback("");
+    if (fields.delivery !== undefined) setQqConsentRevision(null);
   };
 
+  const addProactiveTime = () => {
+    if (!proactive || proactive.times.length >= 8 || !/^\d{2}:\d{2}$/.test(proactiveTimeInput) || proactive.times.includes(proactiveTimeInput)) return;
+    editProactive({ times: [...proactive.times, proactiveTimeInput].sort() });
+  };
+
+  async function saveProactive() {
+    if (proactiveDisabled || !proactive || !policy || (proactive.delivery === "qq" && !qqProactiveConsent)) return;
+    if (!Number.isInteger(proactive.maxPerLocalDay) || proactive.maxPerLocalDay < 1 || proactive.maxPerLocalDay > 10 ||
+      !Number.isInteger(proactive.minIntervalMinutes) || proactive.minIntervalMinutes < 5 || proactive.minIntervalMinutes > 1440) {
+      setProactiveFeedback("每日上限须为 1–10 次，最短间隔须为 5–1440 分钟。");
+      return;
+    }
+    setProactiveFeedback("");
+    try {
+      const saved = await saveProactiveMutation.mutateAsync({
+        personaId, expectedRevision: activeProactiveDraft?.revision ?? policy.revision, settings: proactive,
+      });
+      utils.proactive.getSettings.setData({ personaId }, saved);
+      setProactiveDraft(null);
+      setQqConsentRevision(null);
+      setProactiveFeedback("主动消息设置已保存。");
+    } catch (error) {
+      if ((error as { data?: { code?: string } })?.data?.code === "CONFLICT") {
+        setProactiveConflict(true);
+        setQqConsentRevision(null);
+        setProactiveFeedback("设置版本已变化，当前草稿已保留。请载入当前设置后重新编辑。");
+        void proactiveQuery.refetch();
+      } else {
+        setProactiveFeedback(error instanceof Error ? error.message : "未能保存主动消息设置。");
+      }
+    }
+  }
+
   const savePersonaData = () => {
-    const current = ((persona?.personaData as any) || {});
-    const currentProactive = current.proactiveMessages || {};
+    const {
+      proactiveMessages: _legacyProactive, proactiveStyle: _legacyStyle, personaRuntime: _legacyRuntime,
+      runtimeLifeState: _runtimeLifeState, runtimeDiagnostics: _runtimeDiagnostics, ...current
+    } = asRecord(persona?.personaData);
     const currentProfile = asRecord(current.profileSections);
-    const { randomizedSchedule, lastSent, ambientPresence, ...currentProactiveConfig } = currentProactive;
-    const { runtimeLifeState, runtimeDiagnostics, ...currentRuntimeProfile } = asRecord(currentProfile.runtime);
+    const { runtimeLifeState, runtimeDiagnostics, proactiveMessages, ...currentRuntimeProfile } = asRecord(currentProfile.runtime);
     const hardFacts = multilineToList(hardFactsText);
-    const proactiveMessages = {
-      ...currentProactiveConfig,
-      enabled: proactiveEnabled,
-      times: proactiveTimes,
-      stylePrompt: proactiveStylePrompt,
-    };
     const profileSections = {
       schemaVersion: PROFILE_SCHEMA_VERSION,
+      ...(currentProfile.life === undefined ? {} : { life: currentProfile.life }),
       core: {
         identity: coreIdentity,
         hardFacts,
@@ -247,13 +305,11 @@ export default function PersonaEdit() {
       },
       behavior: {
         dailyScenes,
-        proactiveStyle: proactiveStylePrompt,
         customInstructions,
         starterQuestions,
       },
       runtime: {
         ...currentRuntimeProfile,
-        proactiveMessages,
       },
     };
 
@@ -285,8 +341,6 @@ export default function PersonaEdit() {
         dailyScenes,
         customInstructions,
         starterQuestions,
-        proactiveStyle: proactiveStylePrompt,
-        proactiveMessages,
         profileSections,
         profileSchemaVersion: PROFILE_SCHEMA_VERSION,
       },
@@ -563,40 +617,102 @@ export default function PersonaEdit() {
                     <Bell className="w-4 h-4 text-primary" />
                     <div className="min-w-0 flex-1">
                       <h3 className="text-sm font-semibold text-foreground">主动问候与心路分享</h3>
-                      <p className="text-[11px] text-muted-foreground leading-normal">分身服务保持常驻且 QQ 通道畅通时，会在设定时间发起主动关怀问候。</p>
+                      <p className="text-[11px] text-muted-foreground leading-normal">默认关闭，启用后按这里保存的时区与频率安排问候。默认在网页查看。</p>
                     </div>
-                    <Switch checked={proactiveEnabled} onCheckedChange={setProactiveEnabled} className="data-[state=checked]:bg-primary" />
+                    <Switch aria-label="启用主动问候" checked={proactive?.enabled ?? false} disabled={proactiveDisabled}
+                      onCheckedChange={enabled => editProactive({ enabled })} className="data-[state=checked]:bg-primary" />
                   </div>
 
+                  {proactiveQuery.isError ? (
+                    <p role="alert" className="text-xs text-destructive">主动设置读取失败。<button type="button" className="ml-2 underline" onClick={() => void proactiveQuery.refetch()}>刷新</button></p>
+                  ) : !proactive ? <p className="text-xs text-muted-foreground">正在读取主动设置…</p> : <>
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {proactiveTimes.map(time => (
+                    {proactive.times.map(time => (
                       <span key={time} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 bg-primary/10 text-primary border border-primary/12 rounded-full font-medium transition-all">
                         <Clock className="w-3.5 h-3.5" />{time}
-                        <button onClick={() => setProactiveTimes(proactiveTimes.filter(t => t !== time))}
+                        <button type="button" aria-label={`移除时间 ${time}`} disabled={proactiveDisabled}
+                          onClick={() => editProactive({ times: proactive.times.filter(t => t !== time) })}
                           className="hover:text-destructive transition-colors"><X className="w-3.5 h-3.5" /></button>
                       </span>
                     ))}
-                    {proactiveTimes.length === 0 && (
+                    {proactive.times.length === 0 && (
                       <span className="text-xs text-muted-foreground italic pl-1">暂无排定问候时间点</span>
                     )}
                   </div>
 
                   <div className="flex gap-2">
-                    <Input type="time" value={proactiveTimeInput} onChange={e => setProactiveTimeInput(e.target.value)}
+                    <Input aria-label="待添加的问候时间" type="time" value={proactiveTimeInput} disabled={proactiveDisabled} onChange={e => setProactiveTimeInput(e.target.value)}
                       className="h-10 bg-card border-border rounded-xl max-w-[140px] focus-visible:ring-1 focus-visible:ring-primary/45 transition-all text-xs" />
-                    <Button size="sm" variant="outline" onClick={addProactiveTime}
+                    <Button size="sm" variant="outline" disabled={proactiveDisabled || proactive.times.length >= 8} onClick={addProactiveTime}
                       className="rounded-xl h-10 px-3 border-border hover:bg-muted/40 transition-all text-xs font-semibold">
                       <Plus className="w-4 h-4 mr-1" />添加时间
                     </Button>
                   </div>
 
                   <div className="space-y-2">
-                    <Label className="text-xs font-semibold text-foreground/85">主动问候心路风格补充</Label>
-                    <Textarea value={proactiveStylePrompt} onChange={e => setProactiveStylePrompt(e.target.value)}
+                    <Label htmlFor="proactive-style" className="text-xs font-semibold text-foreground/85">主动问候心路风格补充</Label>
+                    <Textarea id="proactive-style" value={proactive.stylePrompt} disabled={proactiveDisabled} maxLength={2000}
+                      onChange={e => editProactive({ stylePrompt: e.target.value })}
                       rows={2}
                       placeholder="例如：清晨问候注重关怀提醒；深夜则更倾向于平实地倾诉心里的挂念与过去的小说细节回忆。"
                       className="bg-card border-border rounded-xl text-sm focus-visible:ring-1 focus-visible:ring-primary/45 transition-all leading-relaxed" />
                   </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>问候时区</span>
+                      <Input value={proactive.timeZone} disabled={proactiveDisabled} maxLength={100}
+                        onChange={e => editProactive({ timeZone: e.target.value })} className="bg-card rounded-xl" />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>免打扰（HH:mm-HH:mm）</span>
+                      <Input value={proactive.quietHours} disabled={proactiveDisabled} maxLength={11} placeholder="23:00-08:00"
+                        onChange={e => editProactive({ quietHours: e.target.value })} className="bg-card rounded-xl" />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>每日发送上限</span>
+                      <Input type="number" min={1} max={10} value={Number.isNaN(proactive.maxPerLocalDay) ? "" : proactive.maxPerLocalDay} disabled={proactiveDisabled}
+                        onChange={e => editProactive({ maxPerLocalDay: e.target.valueAsNumber })} className="bg-card rounded-xl" />
+                    </label>
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>最短间隔（分钟）</span>
+                      <Input type="number" min={5} max={1440} value={Number.isNaN(proactive.minIntervalMinutes) ? "" : proactive.minIntervalMinutes} disabled={proactiveDisabled}
+                        onChange={e => editProactive({ minIntervalMinutes: e.target.valueAsNumber })} className="bg-card rounded-xl" />
+                    </label>
+                  </div>
+                  {policy?.revision === 0 && <p className="text-[11px] text-muted-foreground">初填时区来自浏览器，保存主动设置后才生效。</p>}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:items-end">
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>交付方式</span>
+                      <select value={proactive.delivery} disabled={proactiveDisabled}
+                        onChange={e => editProactive({ delivery: e.target.value === "qq" ? "qq" : "web" })}
+                        className="h-9 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground">
+                        <option value="web">网页</option><option value="qq">QQ 私聊</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                      <Switch checked={proactive.ambientEnabled} disabled={proactiveDisabled} onCheckedChange={ambientEnabled => editProactive({ ambientEnabled })} />
+                      允许大厅存在感触发排程
+                    </label>
+                  </div>
+                  {proactive.delivery === "qq" && (
+                    <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+                      <input type="checkbox" className="mt-0.5 accent-primary" checked={qqProactiveConsent} disabled={proactiveDisabled}
+                        onChange={e => setQqConsentRevision(e.target.checked ? policy?.revision ?? null : null)} />
+                      我同意把该角色的主动消息发送到同账号已验证的 QQ 私聊绑定；处于频道模式时暂停。
+                    </label>
+                  )}
+                  </>}
+                  {proactiveFeedback && <p role="status" className="text-xs text-muted-foreground">{proactiveFeedback}</p>}
+                  {proactiveOutOfDate && (
+                    <Button size="sm" variant="outline" disabled={proactiveQuery.isFetching || proactiveQuery.isError}
+                      onClick={() => { setProactiveDraft(null); setProactiveConflict(false); setQqConsentRevision(null); setProactiveFeedback(""); }}>
+                      载入当前设置（放弃草稿）
+                    </Button>
+                  )}
+                  <Button size="sm" className="rounded-xl" disabled={proactiveDisabled || !proactive || (proactive.delivery === "qq" && !qqProactiveConsent)}
+                    onClick={() => void saveProactive()}>
+                    <Save className="w-3.5 h-3.5 mr-1.5" />{saveProactiveMutation.isPending ? "保存中…" : "保存主动消息设置"}
+                  </Button>
                 </div>
               </TabsContent>
             </Tabs>

@@ -673,7 +673,7 @@ function TypingIndicator({ personas }: { personas: any[] }) {
   const [event, setEvent] = useState<{ personaIdx: number; text: string } | null>(null);
   const ready = useMemo(() => personas.filter((p: any) => p.analysisStatus === "ready"), [personas]);
   const readyRef = useRef(ready);
-  const ambientPresenceMutation = trpc.qq.maybeSendAmbientPresence.useMutation();
+  const ambientPresenceMutation = trpc.proactive.requestAmbient.useMutation({ retry: false });
   const ambientPresenceRef = useRef(ambientPresenceMutation.mutate);
 
   useEffect(() => {
@@ -711,7 +711,7 @@ function TypingIndicator({ personas }: { personas: any[] }) {
           text,
         });
         if (currentReady[idx]?.id) {
-          ambientPresenceRef.current({ personaId: currentReady[idx].id, eventText: text });
+          ambientPresenceRef.current({ personaId: currentReady[idx].id });
         }
 
         hideTimer = setTimeout(() => {

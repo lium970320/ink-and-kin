@@ -18,6 +18,7 @@ import { resolveProviderForUser } from "../llm/user-provider";
 import type { Persona } from "../../drizzle/schema";
 import * as db from "../db";
 import { buildSystemPrompt, computeIntimacy } from "../_core/persona-utils";
+import { personaRuntimeService } from "../proactive/runtime";
 import { inferEmotionalState } from "../_core/emotion";
 import { retrieveMemories, formatMemoriesForPrompt, formatAnchorsForPrompt } from "./retrieval";
 import { buildCrisisResponse, buildGentleCheckIn, detectCrisis } from "../safety/crisis";
@@ -288,7 +289,11 @@ export async function composeMessages(params: {
   }
   await withContextRevision(params.userId, params.persona.id, revision, async () => undefined);
   const sceneHeader = scenePromptSections.length > 0 ? "\n\n" + scenePromptSections.join("\n\n") : "";
-  return [{ role: "system", content: systemPrompt + sceneHeader + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
+  const runtime = activeSceneId === null ? await personaRuntimeService.getRuntimeStateForChat(params.userId, params.persona.id) : null;
+  const temporarySection = runtime?.runtimeLifeState
+    ? `\n\n【用户设定的临时角色状态，仅本轮参考】${runtime.runtimeLifeState.status}；到期时间：${runtime.runtimeLifeState.expiresAt}。这是角色互动设置，不是现实事实；不要写入长期记忆或当作已发生事件。`
+    : "";
+  return [{ role: "system", content: systemPrompt + temporarySection + sceneHeader + (sourceContext ? "\n\n" + sourceContext.instruction : "") }, ...recent];
 }
 
 /**

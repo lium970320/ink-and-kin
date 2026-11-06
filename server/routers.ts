@@ -1,3 +1,5 @@
+import { proactiveRouter } from "./proactive/router";
+import { runtimeService } from "./proactive";
 import { memoryRouter } from "./memory-review/memory-router";
 import { memoryReviewRouter } from "./memory-review/router";
 import { sourceLibraryRouter } from "./source-library/router";
@@ -308,6 +310,7 @@ function cancelledRoleplayTurn(channelId: number, personaId?: number): RunRolepl
 }
 
 export const appRouter = router({
+  proactive: proactiveRouter,
   sourceLibrary: sourceLibraryRouter,
   memoryReview: memoryReviewRouter,
   system: systemRouter,
@@ -500,10 +503,17 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const persona = await getPersonaById(input.id, ctx.user.id);
         if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        const merged = { ...((persona.personaData as any) || {}), ...input.personaData };
+        const draft = { ...input.personaData };
+        delete draft.proactiveMessages;
+        delete draft.runtimeLifeState;
+        const merged = { ...((persona.personaData as any) || {}), ...draft };
         await updatePersona(input.id, ctx.user.id, { personaData: merged });
         return { success: true };
       }),
+
+    getRuntimeState: protectedProcedure.input(z.object({id:z.number().int().positive()})).query(({ctx,input}) => runtimeService.getRuntimeState(ctx.user.id,input.id)),
+    setRuntimeState: protectedProcedure.input(z.object({id:z.number().int().positive(),status:z.string().trim().min(1).max(200),expiresAt:z.string().datetime({offset:true}),expectedRevision:z.number().int().nonnegative()})).mutation(({ctx,input}) => runtimeService.setRuntimeState(ctx.user.id,input)),
+    clearRuntimeState: protectedProcedure.input(z.object({id:z.number().int().positive(),expectedRevision:z.number().int().nonnegative()})).mutation(({ctx,input}) => runtimeService.clearRuntimeState(ctx.user.id,input)),
 
     getSystemPrompt: protectedProcedure
       .input(z.object({ id: z.number() }))

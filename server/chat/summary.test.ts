@@ -10,6 +10,7 @@
  * through the exported `composeMessages`.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { RuntimeStateView } from "../proactive/runtime";
 
 const getMessagesByPersonaId = vi.fn();
 const getMemoriesByPersonaId = vi.fn();
@@ -19,6 +20,7 @@ const getLatestChatSummary = vi.fn();
 const createChatSummary = vi.fn();
 const getDefaultLlmConfig = vi.fn();
 const touchMemoryRecalled = vi.fn();
+const getRuntimeStateForChat = vi.fn<(userId: number, personaId: number) => Promise<RuntimeStateView>>();
 const lockedTransaction = Object.freeze({ fixture: "context-transaction" });
 
 vi.mock("../db", () => ({
@@ -43,6 +45,9 @@ vi.mock("./context-state", () => ({
 }));
 vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
 vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
+vi.mock("../proactive/runtime", () => ({
+  personaRuntimeService: { getRuntimeStateForChat: (userId: number, personaId: number) => getRuntimeStateForChat(userId, personaId) },
+}));
 
 const invoke = vi.fn();
 const invokeWithProvider = vi.fn();
@@ -127,6 +132,7 @@ describe("composeMessages — history compaction", () => {
       createChatSummary,
       getDefaultLlmConfig,
       touchMemoryRecalled,
+      getRuntimeStateForChat,
       invoke,
       invokeWithProvider,
       streamWithProvider,
@@ -146,6 +152,7 @@ describe("composeMessages — history compaction", () => {
     getLatestChatSummary.mockResolvedValue(undefined);
     createChatSummary.mockResolvedValue(1);
     touchMemoryRecalled.mockResolvedValue(undefined);
+    getRuntimeStateForChat.mockResolvedValue({ runtimeStateRevision: 0, runtimeLifeState: null });
     resolveProviderForUser.mockResolvedValue(fakeProvider());
     invokeWithProvider.mockResolvedValue("他们最近常聊旅行计划。");
 
@@ -174,18 +181,30 @@ describe("composeMessages — history compaction", () => {
 
   it("summarises a long history and puts the summary in the system prompt", async () => {
     getMessagesByPersonaId.mockResolvedValue(history(30));
+    const status = "临时留在灯塔整理航海图";
+    const expiresAt = "2026-01-03T00:00:00.000Z";
+    getRuntimeStateForChat.mockResolvedValue({
+      runtimeStateRevision: 1,
+      runtimeLifeState: {
+        status, startedAt: "2026-01-01T00:00:00.000Z", expiresAt, until: expiresAt, source: "user", revision: 1,
+      },
+    });
 
     const messages = await composeMessages({
       persona: persona(),
       userId: 1,
       userMessage: "在吗",
       contextLimit: 20,
+      now: NOW,
     });
 
     expect(invokeWithProvider).toHaveBeenCalledTimes(1);
     const systemPrompt = String(messages[0].content);
     expect(systemPrompt).toContain("【以往对话摘要】");
     expect(systemPrompt).toContain("他们最近常聊旅行计划。");
+    expect(systemPrompt).toContain(status);
+    const [, summaryRequest] = invokeWithProvider.mock.calls[0];
+    expect(JSON.stringify(summaryRequest.messages)).not.toContain(status);
     expect(createChatSummary).toHaveBeenCalledTimes(1);
     expect(createChatSummary).toHaveBeenCalledWith({
       personaId: 1, userId: 1, summary: "他们最近常聊旅行计划。", fromMessageId: 1, toMessageId: 11,

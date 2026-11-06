@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { RuntimeStateView } from "../proactive/runtime";
 
 const createMessage = vi.fn();
 const getDefaultLlmConfig = vi.fn();
@@ -29,6 +30,7 @@ const getSceneMemoryStateSnapshot = vi.fn();
 const getSceneConversationMessagesBySceneId = vi.fn();
 const recordSceneMemoryTurn = vi.fn();
 const getSceneGenerationSnapshot = vi.fn();
+const getRuntimeStateForChat = vi.fn<(userId: number, personaId: number) => Promise<RuntimeStateView>>();
 const lockedTransaction = Object.freeze({ fixture: "context-transaction" });
 
 vi.mock("../db", () => ({
@@ -75,6 +77,9 @@ vi.mock("./context-state", () => ({
 }));
 vi.mock("../source-library", () => ({ sourceLibraryService: { context: async () => null } }));
 vi.mock("../memory-review", () => ({ eligibleRealityMemories: async (rows: unknown[]) => rows }));
+vi.mock("../proactive/runtime", () => ({
+  personaRuntimeService: { getRuntimeStateForChat: (userId: number, personaId: number) => getRuntimeStateForChat(userId, personaId) },
+}));
 
 const invoke = vi.fn();
 const invokeWithProvider = vi.fn();
@@ -149,7 +154,7 @@ describe("runConversation", () => {
       getLastMessageAt, getMessageCountSince, getDailyChatCounts, invoke, invokeWithProvider,
       streamWithProvider, resolveProviderForUser, inferEmotionalState,
       getSceneMemoryStateSnapshot, getSceneConversationMessagesBySceneId,
-      recordSceneMemoryTurn, getSceneGenerationSnapshot,
+      recordSceneMemoryTurn, getSceneGenerationSnapshot, getRuntimeStateForChat,
     ]) {
       fn.mockReset();
     }
@@ -167,6 +172,7 @@ describe("runConversation", () => {
     getSceneMemoryStateSnapshot.mockResolvedValue({ stateId: null, storyState: null, cache: null });
     getSceneConversationMessagesBySceneId.mockResolvedValue([]);
     recordSceneMemoryTurn.mockResolvedValue(0);
+    getRuntimeStateForChat.mockResolvedValue({ runtimeStateRevision: 0, runtimeLifeState: null });
     installGenerationFixture();
     getLatestChatSummary.mockResolvedValue(undefined);
     getRecentEmotionTrend.mockResolvedValue([]);
@@ -637,6 +643,7 @@ describe("composeMessages", () => {
     getSceneConversationMessagesBySceneId.mockResolvedValue([]);
     getLatestChatSummary.mockResolvedValue(undefined);
     touchMemoryRecalled.mockResolvedValue(undefined);
+    getRuntimeStateForChat.mockReset().mockResolvedValue({ runtimeStateRevision: 0, runtimeLifeState: null });
   });
 
   it("puts the system prompt first", async () => {
@@ -649,6 +656,34 @@ describe("composeMessages", () => {
 
     expect(messages[0].role).toBe("system");
     expect(String(messages[0].content)).toContain("小A");
+  });
+
+  it("adds temporary role state only to the system prompt with its non-factual boundary", async () => {
+    const status = "临时留在灯塔整理航海图";
+    const expiresAt = "2026-11-08T16:00:00.000Z";
+    getRuntimeStateForChat.mockResolvedValue({
+      runtimeStateRevision: 2,
+      runtimeLifeState: {
+        status, startedAt: "2026-11-08T15:00:00.000Z", expiresAt, until: expiresAt, source: "user", revision: 2,
+      },
+    });
+    getMessagesByPersonaId.mockResolvedValue([
+      { id: 10, role: "user", content: "今天想聊什么？", createdAt: new Date("2026-11-08T15:30:00.000Z") },
+    ]);
+
+    const messages = await composeMessages({
+      persona: persona({ id: 17, userId: 23 }), userId: 23, userMessage: "今天想聊什么？",
+      contextLimit: 20, now: new Date("2026-11-08T15:30:00.000Z"),
+    });
+
+    expect(getRuntimeStateForChat.mock.calls).toEqual([[23, 17]]);
+    expect(messages[0].role).toBe("system");
+    const prompt = String(messages[0].content);
+    expect(prompt).toContain("用户设定的临时角色状态，仅本轮参考");
+    expect(prompt).toContain(status);
+    expect(prompt).toContain(expiresAt);
+    expect(prompt).toContain("不是现实事实；不要写入长期记忆");
+    expect(messages.slice(1)).toEqual([{ role: "user", content: "今天想聊什么？" }]);
   });
 
   it("includes the retrieved memories", async () => {
