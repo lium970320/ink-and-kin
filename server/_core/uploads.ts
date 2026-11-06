@@ -21,14 +21,16 @@ const USER_SCOPED = new Set(["personas", "chat", "tts"]);
  * Decides whether a storage key belongs to a user.
  */
 export function isOwnedByUser(relKey: string, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId < 1 || relKey.includes("\\") || /[\x00-\x1f\x7f]/.test(relKey)) return false;
   const parts = relKey.replace(/^\/+/, "").split("/");
+  if (parts.some(part => !part || part === "." || part === "..")) return false;
   if (parts.length < 2) return false;
 
   const [scope, owner] = parts;
 
   if (scope === "tts") {
     // Files written before TTS output was scoped per user.
-    if (owner === "legacy") return true;
+    if (owner === "legacy") return false;
     return owner === String(userId);
   }
 

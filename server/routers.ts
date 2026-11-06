@@ -1,3 +1,8 @@
+import { voiceConfigRouter } from "./voice/router";
+import { voiceOperations } from "./media/operations";
+import { decodeVoiceBase64, transcribeForUser, voiceFailure } from "./voice/service";
+import { getVoiceConfig, isVoiceConfigCurrent } from "./voice/config";
+import { getSceneGenerationSnapshot } from "./db";
 import { proactiveRouter } from "./proactive/router";
 import { runtimeService } from "./proactive";
 import { memoryRouter } from "./memory-review/memory-router";
@@ -19,6 +24,7 @@ import type { InvokeParams, InvokeResult } from "./llm/types";
 import { getTextContent } from "./llm/types";
 import { resolveProviderForUser } from "./llm/user-provider";
 import { storagePut } from "./storage";
+import { unlink } from "node:fs/promises";
 import type { InsertScene } from "../drizzle/schema";
 import {
   SCENE_IMAGE_REFERENCE_MAX_BYTES,
@@ -310,6 +316,7 @@ function cancelledRoleplayTurn(channelId: number, personaId?: number): RunRolepl
 }
 
 export const appRouter = router({
+  voiceConfig: voiceConfigRouter,
   proactive: proactiveRouter,
   sourceLibrary: sourceLibraryRouter,
   memoryReview: memoryReviewRouter,
@@ -884,46 +891,50 @@ export const appRouter = router({
 
     sendVoice: protectedProcedure.use(rateLimit(RATE_LIMITS.llm))
       .input(z.object({
-        personaId: z.number(),
-        audioContent: z.string(),
-        duration: z.number(),
-        fileName: z.string(),
-        locale: z.enum(["zh", "en"]).default("zh"),
+        personaId: z.number().int().positive(), operationId: z.string().uuid(),
+        expectedSceneId: z.number().int().positive().nullable(), expectedConfigRevision: z.number().int().nonnegative(),
+        audioContent: z.string().max(11184812), duration: z.number().min(0).max(31),
+        fileName: z.string().max(160), mimeType: z.string().max(100).optional(), locale: z.enum(["zh", "en"]).default("zh"),
       }))
       .mutation(async ({ ctx, input }) => {
-        const persona = await getPersonaById(input.personaId, ctx.user.id);
-        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        if (persona.analysisStatus !== "ready") throw new TRPCError({ code: "BAD_REQUEST", message: "分身还未准备好" });
-
-        const buffer = Buffer.from(input.audioContent, "base64");
-        const safeName = sanitizeFileName(input.fileName);
-        const fileKey = `chat/${ctx.user.id}/${input.personaId}/${nanoid()}-${safeName}`;
-        const { url } = await storagePut(fileKey, buffer, "audio/webm");
-
-        const transcription = await llmService.invoke({
-          options: { provider: persona.llmProvider ?? undefined, usageContext: { userId: ctx.user.id, personaId: persona.id, route: "chat.voice_transcription", purpose: "utility" } },
-          messages: [{ role: "user", content: `请将以下语音消息转写为文字。如果无法转写，请根据上下文猜测可能的内容。语音时长：${input.duration}秒` }],
-        }) || "（语音消息）";
-
-        let reply = "";
-        let emotionalState: string = persona.emotionalState;
-        let graduationSuggested = false;
-
-        for await (const event of runConversation({
-          persona,
-          userId: ctx.user.id,
-          message: transcription,
-          providerName: (persona as any).llmProvider || undefined,
-          mode: "once",
-          locale: input.locale,
-          media: { url, type: "voice" },
-        })) {
-          if (event.type === "delta") reply += event.text;
-          else if (event.type === "emotion") emotionalState = event.state;
-          else if (event.type === "done") graduationSuggested = event.graduationSuggested;
+        const operation = voiceOperations.begin(ctx.user.id, input.operationId, ctx);
+        let storedKey: string | undefined;
+        let mediaPersisted = false;
+        try {
+          const snapshot = await getSceneGenerationSnapshot(input.personaId, ctx.user.id);
+          if ((snapshot.scene?.id ?? null) !== input.expectedSceneId) throw new TRPCError({ code: "CONFLICT", message: "录音所属场景已变化，请重新录制。" });
+          if (snapshot.persona.analysisStatus !== "ready") throw new TRPCError({ code: "BAD_REQUEST", message: "分身还未准备好" });
+          const result = await transcribeForUser(ctx.user.id, decodeVoiceBase64(input.audioContent), operation.signal, input.expectedConfigRevision);
+          await getSceneGenerationSnapshot(input.personaId, ctx.user.id, { expectedRevision: snapshot.revision });
+          operation.signal.throwIfAborted();
+          const key = `chat/${ctx.user.id}/${input.personaId}/${nanoid()}-voice.wav`;
+          storedKey = key;
+          const { url } = await storagePut(key, result.audio.buffer, result.audio.mimeType);
+          let reply = "";
+          let emotionalState: string = snapshot.persona.emotionalState;
+          let graduationSuggested = false;
+          for await (const event of runConversation({
+            persona: snapshot.persona, userId: ctx.user.id, message: result.transcription,
+            providerName: snapshot.persona.llmProvider ?? undefined, mode: "once", locale: input.locale,
+            onUserMessageSaved: () => { mediaPersisted = true; },
+            signal: operation.signal, expectedContextRevision: snapshot.revision, allowSceneStartMarker: false,
+            media: { url, type: "voice", mimeType: result.audio.mimeType, duration: result.audio.durationSeconds },
+          })) {
+            if (event.type === "delta") reply += event.text;
+            else if (event.type === "emotion") emotionalState = event.state;
+            else if (event.type === "done") graduationSuggested = event.graduationSuggested;
+          }
+          operation.signal.throwIfAborted();
+          return { reply, emotionalState, transcription: result.transcription, voiceUrl: url,
+            voiceDuration: result.audio.durationSeconds, graduationSuggested };
+        } catch (error) { voiceFailure(error, operation.signal); }
+        finally {
+          operation.finish();
+          if (storedKey && !mediaPersisted) {
+            const file = resolveStoredPath(storedKey);
+            if (file) await unlink(file!).catch(() => undefined);
+          }
         }
-
-        return { reply, emotionalState, transcription, voiceUrl: url, graduationSuggested };
       }),
 
     clear: protectedProcedure
@@ -942,11 +953,19 @@ export const appRouter = router({
       }),
 
     tts: protectedProcedure.use(rateLimit(RATE_LIMITS.llm))
-      .input(z.object({ text: z.string().min(1).max(500), voice: z.string().max(64).optional() }))
+      .input(z.object({ text: z.string().min(1).max(500), voice: z.string().max(64).optional(), operationId: z.string().uuid() }))
       .mutation(async ({ ctx, input }) => {
-        const { generateTTS } = await import("./_core/tts");
-        const audioUrl = await generateTTS(input.text, input.voice, ctx.user.id);
-        return { audioUrl };
+        const operation = voiceOperations.begin(ctx.user.id, input.operationId, ctx);
+        try {
+          const config = await getVoiceConfig(ctx.user.id);
+          if (!config.ttsEnabled) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "手动朗读已关闭。" });
+          const { generateTTS } = await import("./_core/tts");
+          const audioUrl = await generateTTS(input.text, input.voice, ctx.user.id, operation.signal);
+          operation.signal.throwIfAborted();
+          if (!await isVoiceConfigCurrent(ctx.user.id, config.revision)) throw new TRPCError({ code: "CONFLICT", message: "语音设置已变化，请重新操作。" });
+          return { audioUrl };
+        } catch (error) { voiceFailure(error, operation.signal); }
+        finally { operation.finish(); }
       }),
 
     export: protectedProcedure

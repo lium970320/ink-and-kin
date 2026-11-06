@@ -199,6 +199,22 @@ describe("runConversation", () => {
     invokeWithProvider.mockResolvedValue("在的。");
   });
 
+  it("读取最后消息期间取消不会落入用户回合", async () => {
+    const controller = new AbortController();
+    getLastMessageAt.mockImplementationOnce(async () => { controller.abort(); return null; });
+    const saved = vi.fn();
+    const work = async () => { for await (const event of runConversation({ persona: persona(), userId: 1, message: "录音转写", mode: "once", signal: controller.signal, onUserMessageSaved: saved })) { void event; } };
+    await expect(work()).rejects.toThrow();
+    expect(createMessage).not.toHaveBeenCalled(); expect(saved).not.toHaveBeenCalled();
+  });
+  it("用户回合落库后取消不再写危机回复并准确报告关联资产", async () => {
+    const controller = new AbortController(); const saved=vi.fn(() => controller.abort());
+    const work = async () => { for await (const event of runConversation({ persona: persona(), userId:1, message:"我想自杀", mode:"once",signal:controller.signal,onUserMessageSaved:saved })) { void event; } };
+    await expect(work()).rejects.toThrow();
+    expect(saved).toHaveBeenCalledTimes(1);expect(createMessage).toHaveBeenCalledTimes(1);
+    expect(createMessage.mock.calls[0][0].role).toBe("user");
+  });
+
   it("取消流式回复后不启动辅助模型或写入虚假回复", async () => {
     const controller = new AbortController();
     streamWithProvider.mockImplementation(async function* () {

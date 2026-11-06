@@ -1453,10 +1453,11 @@ export async function activateScene(personaId: number, sceneId: number | null, u
 
 /** Binds the current scene and revision in one short transaction before generation. */
 export async function getSceneGenerationSnapshot(
-  personaId: number, userId: number, options: { startNewScene?: boolean } = {},
+  personaId: number, userId: number, options: { startNewScene?: boolean; expectedRevision?: number } = {},
 ) {
   return withTransaction(async tx => {
     const context = await lockChatContext(tx, personaId, userId, options.startNewScene ? "update" : "share");
+    if (options.expectedRevision !== undefined && context.revision !== options.expectedRevision) throw new TRPCError({ code: "CONFLICT", message: "对话上下文已变化，请重新发送。" });
     const [persona] = await tx.select().from(personas).where(personaOwner(personaId, userId)).limit(1);
     if (!persona) throw new TRPCError({ code: "NOT_FOUND", message: "角色不存在。" });
     if (options.startNewScene && persona.activeSceneId != null) {

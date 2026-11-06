@@ -6,6 +6,7 @@ import {
 } from "./core";
 import type { QqRepository } from "./repository";
 import type { QqPreparedTransport } from "./roleplay-types";
+import { readQqRecording, QQ_RECORD_RESPONSE_BYTES, type QqVoiceInbound, type QqVoiceReplyGuard } from "./voice-inbound";
 
 export interface QqConfigView {
   configured: boolean; enabled: boolean; connected: boolean; generation: number | null;
@@ -27,6 +28,7 @@ export interface QqDependencies {
   fetch: typeof fetch;
   chat(input: QqChatInput): Promise<string | null>;
   handleInbound?(input: { config: QqConfig; messageId: string; text: string; unsupportedMedia?: boolean; signal: AbortSignal; reply(text: string): Promise<void> }): Promise<boolean>;
+  voiceInbound?: QqVoiceInbound;
   timeoutMs?: number;
 }
 
@@ -134,7 +136,7 @@ export class QqService {
     return this.read(userId);
   }
 
-  private async request(config: QqConfig, secrets: QqSecrets, action: "get_login_info" | "send_private_msg", data: object, session: Session, signal?: AbortSignal): Promise<unknown> {
+  private async request(config: QqConfig, secrets: QqSecrets, action: "get_login_info" | "send_private_msg" | "get_record", data: object, session: Session, signal?: AbortSignal): Promise<unknown> {
     this.requireAlive(config.userId, session);
     signal?.throwIfAborted();
     const controller = new AbortController();
@@ -154,6 +156,11 @@ export class QqService {
         void response.body?.cancel().catch(() => {});
         throw new Error("http_unconfirmed");
       }
+      const maxBytes = action === "get_record" ? QQ_RECORD_RESPONSE_BYTES : RESPONSE_BYTES;
+      if (Number(response.headers.get("Content-Length")) > maxBytes) {
+        void response.body?.cancel().catch(() => {});
+        throw new Error("oversized_response");
+      }
       const reader = response.body?.getReader();
       if (!reader) throw new Error("empty_response");
       const chunks: Uint8Array[] = [];
@@ -164,7 +171,7 @@ export class QqService {
           controller.signal.throwIfAborted();
           if (part.done) break;
           length += part.value.byteLength;
-          if (length > RESPONSE_BYTES) throw new Error("oversized_response");
+          if (length > maxBytes) throw new Error("oversized_response");
           chunks.push(part.value);
         }
       } catch (error) {
@@ -253,7 +260,7 @@ export class QqService {
     if (!config?.enabled) throw new QqError("FORBIDDEN", "事件认证失败或通道未启用。");
     const secrets = await this.readSecrets(config);
     if (!secrets || !verifyWebhook(raw, signature, authorization, secrets)) throw new QqError("FORBIDDEN", "事件认证失败。");
-    const event = parseInbound(raw, config, !!this.dependencies.handleInbound);
+    const event = parseInbound(raw, config, !!this.dependencies.handleInbound, !!this.dependencies.voiceInbound);
     const { userId } = config;
     const session = this.sessions.get(userId);
     if (!session?.connected || session.generation !== config.generation || !this.alive(userId, session)) {
@@ -277,9 +284,30 @@ export class QqService {
         const current = await this.dependencies.repository.get(userId);
         if (!current?.enabled || current.id !== config.id || current.generation !== config.generation || !current.personaId) return;
         this.requireAlive(userId, session);
+        const key = `inbound:${config.botId}:${config.targetId}:${event.messageId}`;
+        const reply: Parameters<QqVoiceInbound>[0]["reply"] = (text, guard) => this.deliver(config, secrets, session, text, key, guard);
+        if (event.voiceRecord && this.dependencies.voiceInbound) {
+          const isCurrent = async () => {
+            if (!this.alive(userId, session)) return false;
+            const latest = await this.dependencies.repository.get(userId);
+            return !!(this.alive(userId, session) && latest?.enabled && latest.id === current.id
+              && latest.generation === current.generation && latest.personaId === current.personaId);
+          };
+          const recordId = event.voiceRecord.id;
+          const handled = await this.dependencies.voiceInbound({
+            config: current, messageId: event.messageId, signal: session.controller.signal, reply, isCurrent,
+            loadAudio: async () => {
+              if (!recordId || !await isCurrent()) throw new Error("record_unavailable");
+              return readQqRecording(await this.request(current, secrets, "get_record", {
+                file_id: recordId, out_format: "mp3",
+              }, session));
+            },
+          });
+          status = handled ? "done" : this.alive(userId, session) ? "ignored" : "cancelled";
+          return;
+        }
         if (await this.dependencies.handleInbound?.({
-          config: current, messageId: event.messageId, text: event.text, unsupportedMedia: event.unsupportedMedia, signal: session.controller.signal,
-          reply: text => this.deliver(config, secrets, session, text, `inbound:${config.botId}:${config.targetId}:${event.messageId}`),
+          config: current, messageId: event.messageId, text: event.text, unsupportedMedia: event.unsupportedMedia, signal: session.controller.signal, reply,
         })) { status = "done"; return; }
         if (event.unsupportedMedia) return;
         const text = await this.dependencies.chat({
@@ -289,7 +317,7 @@ export class QqService {
         });
         this.requireAlive(userId, session);
         if (!text) return;
-        await this.deliver(config, secrets, session, text, `inbound:${config.botId}:${config.targetId}:${event.messageId}`);
+        await reply(text);
         status = "done";
       } catch {
         status = this.alive(userId, session) ? "failed" : "cancelled";
@@ -303,7 +331,8 @@ export class QqService {
     return { accepted: true, duplicate: false };
   }
 
-  private async deliver(config: QqConfig, secrets: QqSecrets, session: Session, text: string, key: string) {
+  private async deliver(config: QqConfig, secrets: QqSecrets, session: Session, text: string, key: string,
+    guard?: QqVoiceReplyGuard) {
     const message = plainText(text);
     this.requireAlive(config.userId, session);
     const id = await this.dependencies.repository.claimDelivery(config, key);
@@ -318,7 +347,7 @@ export class QqService {
         return this.request(config, secrets, "send_private_msg", {
           user_id: Number(config.targetId), message, auto_escape: true,
         }, session);
-      });
+      }, guard);
       result = deliveryResult(await dispatch.result);
     } catch {
       result = started

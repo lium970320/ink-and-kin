@@ -78,7 +78,22 @@ function messageId(value: unknown): string | null {
   return text.replace(/^(-?)0+(?=\d)/, "$1").replace(/^-0$/, "0");
 }
 
-export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = false): { messageId: string; text: string; unsupportedMedia?: boolean } {
+export interface QqInboundEvent {
+  messageId: string;
+  text: string;
+  unsupportedMedia?: boolean;
+  voiceRecord?: { id: string | null };
+}
+
+function recordingId(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  // NapCat emits the cache token in file, separate from the optional path and URL.
+  const { file: token } = data as { file?: unknown };
+  return typeof token === "string" && token === token.trim()
+    && /^[a-f0-9]{32}(?:\.(?:amr|silk|slk|mp3|wav))?$/i.test(token) ? token : null;
+}
+
+export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = false, acceptVoice = false): QqInboundEvent {
   if (raw.length > QQ_MAX_BODY) throw new QqError("BAD_REQUEST", "事件体积超过上限。");
   let event: Record<string, unknown>;
   try {
@@ -96,6 +111,9 @@ export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = 
   }
   const id = messageId(event.message_id);
   if (id == null) throw new QqError("BAD_REQUEST", "事件缺少有效消息编号。");
+  if (acceptVoice && Array.isArray(event.message) && event.message.length === 1 && event.message[0]?.type === "record") {
+    return { messageId: id, text: "", voiceRecord: { id: recordingId(event.message[0].data) } };
+  }
   if (acceptMediaNotice && Array.isArray(event.message) && event.message.length > 0
     && event.message.every(part => part && ["text", "image", "record"].includes(part.type))
     && event.message.some(part => part.type === "image" || part.type === "record")) {

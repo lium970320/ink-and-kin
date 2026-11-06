@@ -72,12 +72,15 @@ export interface ConversationOptions {
   /** Whether the user message has already been stored. */
   alreadyPersisted?: boolean;
   /** Media attached to the message. */
-  media?: { url: string; type: "image" | "voice"; mimeType?: string };
+  media?: { url: string; type: "image" | "voice"; mimeType?: string; duration?: number };
   /** Locale for prompt language and trigger words. */
   locale?: "zh" | "en";
   /** Cancels the model call when the client goes away. */
   signal?: AbortSignal;
   now?: Date;
+  expectedContextRevision?: number;
+  allowSceneStartMarker?: boolean;
+  onUserMessageSaved?: () => void;
 }
 
 /**
@@ -313,8 +316,10 @@ export async function* runConversation(
 
   // 场景和版本号一并读取；「开始」也在同一事务内推进当前场景的起点。
   const generation = await db.getSceneGenerationSnapshot(options.persona.id, userId, {
-    startNewScene: isSceneStoryStartMarker(message),
+    startNewScene: options.allowSceneStartMarker !== false && isSceneStoryStartMarker(message),
+    expectedRevision: options.expectedContextRevision,
   });
+  options.signal?.throwIfAborted();
   const { persona, scene: activeScene, revision: generationRevision } = generation;
   const activeSceneId = activeScene?.id ?? null;
 
@@ -331,7 +336,9 @@ export async function* runConversation(
   // 场景消息带 sceneId（db.createMessage 据此把 mode 记为 scene），日常消息不带。
   let userMessageId: number | null = null;
   if (!options.alreadyPersisted) {
-    userMessageId = await withContextRevision(userId, persona.id, generationRevision, tx => db.createMessage({
+    userMessageId = await withContextRevision(userId, persona.id, generationRevision, tx => {
+      options.signal?.throwIfAborted();
+      return db.createMessage({
       personaId: persona.id,
       userId,
       role: "user",
@@ -340,15 +347,19 @@ export async function* runConversation(
       channel: options.channel ?? "web",
       messageType: options.media?.type ?? "text",
       mediaUrl: options.media?.url ?? null,
+      mediaDuration: options.media?.duration == null ? null : Math.max(1, Math.round(options.media.duration)),
       sceneId: activeSceneId,
-    }, tx), { sceneId: activeSceneId });
+    }, tx); }, { sceneId: activeSceneId });
+    options.onUserMessageSaved?.();
   }
 
   // Crisis handling short-circuits the model entirely.
   const crisis = detectCrisis(message);
   if (crisis.crisis) {
     const replyText = buildCrisisResponse(persona.name, locale);
-    const messageId = await withContextRevision(userId, persona.id, generationRevision, tx => db.createMessage({
+    const messageId = await withContextRevision(userId, persona.id, generationRevision, tx => {
+      options.signal?.throwIfAborted();
+      return db.createMessage({
       personaId: persona.id,
       userId,
       role: "assistant",
@@ -356,7 +367,7 @@ export async function* runConversation(
       emotionalState: persona.emotionalState,
       channel: options.channel ?? "web",
       sceneId: activeSceneId,
-    }, tx), { sceneId: activeSceneId });
+    }, tx); }, { sceneId: activeSceneId });
     await db.createSafetyEvent({
       userId,
       personaId: persona.id,
@@ -480,6 +491,7 @@ export async function* runConversation(
 
   const { messageId, turn } = await withContextRevision(
     userId, persona.id, generationRevision, async tx => {
+      options.signal?.throwIfAborted();
       const messageId = await db.createMessage({
         personaId: persona.id,
         userId,

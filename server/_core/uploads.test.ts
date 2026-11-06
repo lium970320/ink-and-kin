@@ -23,7 +23,7 @@ describe("isOwnedByUser", () => {
   it("allows the legacy speech folder to any signed-in user", () => {
     // Files written before speech was scoped per user. They stay readable so
     // old history still plays.
-    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 1)).toBe(true);
+    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 1)).toBe(false);
   });
 
   it("refuses an unknown scope", () => {
@@ -38,4 +38,9 @@ describe("isOwnedByUser", () => {
   it("ignores a leading slash", () => {
     expect(isOwnedByUser("/personas/1/2/a.png", 1)).toBe(true);
   });
+});
+
+// Decoding precedes this function; normalization must not move outside the owner's subtree.
+it.each(["tts/1/../2/a.mp3", "chat/1/3/../../2/b.wav", "tts/1/../legacy/a.mp3", "tts/1/./a.mp3", "tts/1//a.mp3", String.raw`tts/1/..\2/a.mp3`])("拒绝可归一化越权的路径 %s", value => {
+  expect(isOwnedByUser(value, 1)).toBe(false);
 });

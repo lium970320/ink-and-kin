@@ -83,11 +83,10 @@ describe("isOwnedByUser", () => {
     expect(isOwnedByUser("", 7)).toBe(false);
   });
 
-  it("keeps the legacy speech folder readable", () => {
-    // Files written before speech was scoped per user. They stay readable so
-    // old history still plays.
-    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 7)).toBe(true);
-    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 99)).toBe(true);
+  it("denies legacy speech without a proven owner", () => {
+    // Files remain on disk but lack a provable owner.
+    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 7)).toBe(false);
+    expect(isOwnedByUser("tts/legacy/abcdef.mp3", 99)).toBe(false);
   });
 });
 
@@ -140,7 +139,7 @@ describe("uploadsAuthGuard", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Not found" });
   });
 
-  it("lets the legacy speech folder through for any signed-in user", async () => {
+  it("denies legacy speech for signed-in users", async () => {
     authenticateRequest.mockResolvedValue(makeUser(9));
     const req = createRequest("/tts/legacy/abcdef.mp3");
     const res = createResponse();
@@ -149,8 +148,8 @@ describe("uploadsAuthGuard", () => {
     uploadsAuthGuard(req, res, next);
     await flush();
 
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
   });
 
   it("decodes the path before checking the owner", async () => {

@@ -8,15 +8,63 @@ import { createQqRouter } from "./router";
 import { QqService } from "./service";
 import { QqRoleplayService } from "./roleplay-service";
 import { createQqRoleplayRepository } from "./roleplay-repository";
-import { QqMediaService } from "./media-service";
+import { assertQqPrivateMediaRoute, QqMediaService } from "./media-service";
+import { getDb, getSceneGenerationSnapshot, lockQqChannelConfig } from "../../db";
+import { runConversation } from "../../chat/service";
+import { getVoiceConfig, isVoiceConfigCurrent } from "../../voice/config";
+import { transcribeForUser } from "../../voice/service";
+import { createQqVoiceInbound } from "./voice-inbound";
 
 const repository = createQqRepository();
+const roleplayRepository = createQqRoleplayRepository();
+const voiceInbound = createQqVoiceInbound({
+  async handleChannel({ config, messageId, signal, reply }) {
+    if (!await roleplayRepository.getRoute(config.userId)) return false;
+    return qqRoleplayService.handleInbound({ config, messageId, signal, reply, text: "", unsupportedMedia: true });
+  },
+  async checkRoute(config, expectedRevision) {
+    const db = await getDb();
+    if (!db) throw new QqError("PRECONDITION_FAILED", "数据库暂不可用。");
+    return db.transaction(async tx => {
+      await lockQqChannelConfig(tx, config.userId);
+      return assertQqPrivateMediaRoute(tx, config, expectedRevision);
+    });
+  },
+  async guardReply(tx, config, revision) { await assertQqPrivateMediaRoute(tx, config, revision); },
+  async readContext(config, expectedRevision) {
+    if (!config.personaId) throw new QqError("PRECONDITION_FAILED", "QQ 尚未绑定角色。");
+    const snapshot = await getSceneGenerationSnapshot(config.personaId, config.userId, { expectedRevision });
+    if (snapshot.persona.analysisStatus !== "ready") throw new QqError("PRECONDITION_FAILED", "绑定的角色尚未就绪。");
+    return snapshot;
+  },
+  readVoiceConfig: getVoiceConfig,
+  checkVoiceConfig: isVoiceConfigCurrent,
+  transcribe: transcribeForUser,
+  async chat(config, snapshot, transcription, signal) {
+    let text = "";
+    for await (const event of runConversation({
+      persona: snapshot.persona, userId: config.userId, message: transcription,
+      providerName: snapshot.persona.llmProvider ?? undefined,
+      channel: "qq", mode: "once", locale: "zh", signal,
+      expectedContextRevision: snapshot.revision, allowSceneStartMarker: false,
+    })) {
+      if (event.type === "delta") text += event.text;
+    }
+    return text.trim() || null;
+  },
+});
 export const qqService: QqService = new QqService({
   repository, encrypt: encryptSecret, decrypt: decryptSecret,
   fetch: (...args) => globalThis.fetch(...args), chat: handleChannelChat,
-  handleInbound: input => qqRoleplayService.handleInbound(input),
+  async handleInbound(input) {
+    if (input.unsupportedMedia && !await roleplayRepository.getRoute(input.config.userId)) {
+      await input.reply("当前私聊只支持文字或单条语音，请分开发送。");
+      return true;
+    }
+    return qqRoleplayService.handleInbound(input);
+  },
+  voiceInbound,
 });
-const roleplayRepository = createQqRoleplayRepository();
 export const qqRoleplayService: QqRoleplayService = new QqRoleplayService({ repository: roleplayRepository, prepare: userId => qqService.prepareOutbound(userId) });
 export const qqMediaService = new QqMediaService(qqService, roleplayRepository);
 export const qqRouter = createQqRouter(qqService, qqMediaService);
@@ -34,7 +82,7 @@ export const qqAdapter: ChannelAdapter = {
     return { channel: "qq", connected: view.connected, status: view.status, detail: { enabled: view.enabled, credentialsUnreadable: view.credentialsUnreadable } };
   },
   async send() {
-    throw new QqError("PRECONDITION_FAILED", "当前 QQ 接入仅回复收到的私聊文字，主动发送尚未启用。");
+    throw new QqError("PRECONDITION_FAILED", "当前 QQ 接入仅回复收到的私聊消息，主动发送尚未启用。");
   },
   async setDefaultPersona(userId, personaId) { await qqService.setDefaultPersona(userId, personaId, await currentGeneration(userId)); },
   restore: userId => qqService.restore(userId),

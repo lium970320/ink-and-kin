@@ -1,4 +1,4 @@
-import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Fragment, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { beijingDateKey, formatBeijingDate, formatBeijingTime } from "@/lib/beijing-time";
@@ -68,21 +68,42 @@ function getAvatarUrl(name: string, avatarUrl?: string | null): string {
   return avatarUrl && avatarUrl.trim() ? avatarUrl : generateAvatar(name);
 }
 
+function releaseChatAudio(audio: HTMLAudioElement | null) {
+  if (!audio) return;
+  audio.onplay = audio.onpause = audio.onended = null;
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+}
+
 function VoicePlayer({ url, duration }: { url: string; duration?: number | null }) {
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  useEffect(() => {
+    setPlaying(false);
+    return () => {
+      releaseChatAudio(audioRef.current);
+      audioRef.current = null;
+    };
+  }, [url]);
+
   const toggle = () => {
     if (!audioRef.current) {
-      audioRef.current = new Audio(url);
-      audioRef.current.onended = () => setPlaying(false);
+      const audio = new Audio(url);
+      audio.onplay = () => setPlaying(true);
+      audio.onpause = audio.onended = () => setPlaying(false);
+      audioRef.current = audio;
     }
-    if (playing) { audioRef.current.pause(); setPlaying(false); }
-    else { audioRef.current.play(); setPlaying(true); }
+    const audio = audioRef.current;
+    if (!audio.paused) audio.pause();
+    else void audio.play().catch((error: DOMException) => {
+      if (error.name !== "AbortError" && audioRef.current === audio) toast.error("语音播放失败，请再试一次。");
+    });
   };
 
   return (
-    <button onClick={toggle} className="flex items-center gap-2 min-w-[120px]">
+    <button type="button" onClick={toggle} aria-label={playing ? "暂停语音" : "播放语音"} className="flex items-center gap-2 min-w-[120px]">
       {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
       <div className="flex-1 flex items-center gap-0.5">
         {[...Array(12)].map((_, i) => (
@@ -90,42 +111,82 @@ function VoicePlayer({ url, duration }: { url: string; duration?: number | null 
             style={{ height: `${4 + Math.random() * 12}px`, animationDelay: `${i * 0.05}s` }} />
         ))}
       </div>
-      {duration != null && <span className="text-xs opacity-60">{duration}″</span>}
+      {duration != null && <span className="text-xs opacity-60">{Math.round(duration * 10) / 10}″</span>}
     </button>
   );
 }
 
-function TTSButton({ text }: { text: string }) {
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+function TTSButton({ text, enabled }: { text: string; enabled: boolean }) {
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ttsMutation = trpc.chat.tts.useMutation();
+  const operationRef = useRef<string | null>(null);
+  const ttsMutation = trpc.chat.tts.useMutation({ retry: false });
+  const { mutate: cancelOperation } = trpc.voiceConfig.cancelOperation.useMutation();
 
-  const handlePlay = async () => {
-    if (audioUrl && audioRef.current) {
-      if (playing) { audioRef.current.pause(); setPlaying(false); }
-      else { audioRef.current.play(); setPlaying(true); }
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await ttsMutation.mutateAsync({ text: text.slice(0, 500) });
-      setAudioUrl(result.audioUrl);
-      const audio = new Audio(result.audioUrl);
-      audioRef.current = audio;
-      audio.onended = () => setPlaying(false);
-      audio.play();
-      setPlaying(true);
-    } catch { toast.error("语音生成失败"); }
-    finally { setLoading(false); }
+  useEffect(() => {
+    setLoading(false);
+    setPlaying(false);
+    return () => {
+      const operationId = operationRef.current;
+      operationRef.current = null;
+      if (operationId) cancelOperation({ operationId });
+      releaseChatAudio(audioRef.current);
+      audioRef.current = null;
+    };
+  }, [text, enabled, cancelOperation]);
+
+  const play = (audio: HTMLAudioElement) => {
+    void audio.play().catch((error: DOMException) => {
+      if (error.name !== "AbortError" && audioRef.current === audio) toast.error("朗读音频播放失败，请再试一次。");
+    });
   };
 
+  const handlePlay = async () => {
+    if (!enabled) return;
+    if (operationRef.current) {
+      const operationId = operationRef.current;
+      operationRef.current = null;
+      setLoading(false);
+      cancelOperation({ operationId }, { onError: () => toast.error("取消请求未送达。") });
+      return;
+    }
+    if (audioRef.current) {
+      if (!audioRef.current.paused) audioRef.current.pause();
+      else play(audioRef.current);
+      return;
+    }
+    const operationId = crypto.randomUUID();
+    operationRef.current = operationId;
+    setLoading(true);
+    try {
+      const result = await ttsMutation.mutateAsync({ text: text.slice(0, 500), operationId });
+      if (operationRef.current !== operationId) return;
+      const audio = new Audio(result.audioUrl);
+      audioRef.current = audio;
+      audio.onplay = () => setPlaying(true);
+      audio.onpause = audio.onended = () => setPlaying(false);
+      play(audio);
+    } catch (error) {
+      if (operationRef.current === operationId) {
+        toast.error(error instanceof Error ? error.message : "语音生成失败。");
+      }
+    } finally {
+      if (operationRef.current === operationId) {
+        operationRef.current = null;
+        setLoading(false);
+      }
+    }
+  };
+
+  const label = !enabled ? "手动朗读已关闭" : loading ? "取消朗读生成" : playing ? "暂停朗读" : "朗读消息";
   return (
     <button
+      type="button"
       onClick={handlePlay}
-      disabled={loading}
-      title={playing ? "暂停朗读" : "朗读消息"}
+      disabled={!enabled}
+      title={label}
+      aria-label={label}
       className={`p-1 rounded-lg transition-all flex items-center gap-1 ${
         playing
           ? "text-primary bg-primary/10 animate-pulse"
@@ -133,7 +194,7 @@ function TTSButton({ text }: { text: string }) {
       } disabled:opacity-30`}
     >
       {loading ? (
-        <Sparkles className="w-3 h-3 animate-pulse text-primary" />
+        <X className="w-3 h-3 text-primary" />
       ) : (
         <Volume2 className={`w-3 h-3 ${playing ? "text-primary scale-110" : ""}`} />
       )}
@@ -623,11 +684,13 @@ function MessageBubble({
   personaName,
   personaAvatarUrl,
   showState = true,
+  ttsEnabled = true,
 }: {
   msg: Message;
   personaName: string;
   personaAvatarUrl?: string | null;
   showState?: boolean;
+  ttsEnabled?: boolean;
 }) {
   const isUser = msg.role === "user";
   const state = msg.emotionalState ? STATES[msg.emotionalState] : null;
@@ -712,7 +775,7 @@ function MessageBubble({
             {msg.channel === "qq" && (
               <span className="text-[9.5px] px-1.5 py-0.2 bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-md font-semibold">QQ</span>
             )}
-            {!isUser && msg.messageType === "text" && <TTSButton text={msg.content} />}
+            {!isUser && msg.messageType === "text" && <TTSButton text={msg.content} enabled={ttsEnabled} />}
           </div>
         )}
       </div>
@@ -722,9 +785,65 @@ function MessageBubble({
 
 // ─── MAIN CHAT ────────────────────────────────────────────────────────────────
 
+const RECORDING_MAX_SECONDS = 30;
+const RECORDING_MAX_BYTES = 8 * 1024 * 1024;
+const RECORDING_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4"];
+type VoiceTarget = Readonly<{ expectedSceneId: number | null; expectedConfigRevision: number }>;
+type VoiceRecording = { target: VoiceTarget; blob: Blob; duration: number };
+type VoiceCapture = {
+  target: VoiceTarget;
+  recorder?: MediaRecorder;
+  startedAt: number;
+  stoppedAt?: number;
+  timer?: number;
+  deadline?: number;
+  sendWhenStopped: boolean;
+};
+type VoiceUpload = {
+  target: VoiceTarget;
+  id: string;
+  userBubble: Message;
+  replyBubble: Message;
+  reader: FileReader;
+  submitted: boolean;
+};
+
+function clearRecordingTimers(capture: VoiceCapture) {
+  window.clearInterval(capture.timer);
+  window.clearTimeout(capture.deadline);
+}
+
+function releaseRecording(capture: VoiceCapture) {
+  clearRecordingTimers(capture);
+  const recorder = capture.recorder;
+  if (!recorder) return;
+  recorder.ondataavailable = recorder.onstop = recorder.onerror = null;
+  try {
+    if (recorder.state !== "inactive") recorder.stop();
+  } catch {
+    // The stream can end before the recorder's stop event arrives.
+  } finally {
+    recorder.stream.getTracks().forEach(track => track.stop());
+  }
+}
+
+function releaseVoiceUpload(upload: VoiceUpload) {
+  if (upload.reader.readyState === FileReader.LOADING) upload.reader.abort();
+  URL.revokeObjectURL(upload.userBubble.mediaUrl!);
+}
+
+function recordingExtension(mimeType: string) {
+  const type = mimeType.split(";", 1)[0].trim().toLowerCase();
+  return type === "audio/webm" ? "webm" : type === "audio/ogg" ? "ogg" : type === "audio/mp4" ? "m4a" : undefined;
+}
+
 export default function Chat() {
   const params = useParams<{ id: string }>();
   const personaId = parseInt(params.id || "0");
+  return <PersonaChat key={personaId} personaId={personaId} />;
+}
+
+function PersonaChat({ personaId }: { personaId: number }) {
   const [, navigate] = useLocation();
   const { isAuthenticated } = useAuth();
 
@@ -828,10 +947,11 @@ export default function Chat() {
 
   const [showMenu, setShowMenu] = useState(false);
   const [showAttach, setShowAttach] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
+  const [voiceStage, setVoiceStage] = useState<"requesting" | "recording" | "finishing" | "ready" | "sending" | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const captureRef = useRef<VoiceCapture | null>(null);
+  const readyRecordingRef = useRef<VoiceRecording | null>(null);
+  const voiceUploadRef = useRef<VoiceUpload | null>(null);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showSourceLibrary, setShowSourceLibrary] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -854,7 +974,8 @@ export default function Chat() {
     },
   });
 
-  const activeScene = scenesList?.find((s: any) => s.id === persona?.activeSceneId);
+  const activeSceneId = persona?.activeSceneId ?? null;
+  const activeScene = scenesList?.find((s: any) => s.id === activeSceneId);
 
   const changeStateMutation = trpc.persona.update.useMutation({
     onSuccess: () => toast.success("情感状态已切换"),
@@ -864,9 +985,24 @@ export default function Chat() {
     onError: (e: any) => { toast.error("图片发送失败：" + e.message); setIsSending(false); },
   });
 
-  const sendVoiceMutation = trpc.chat.sendVoice.useMutation({
-    onError: (e: any) => { toast.error("语音发送失败：" + e.message); setIsSending(false); },
-  });
+  const voiceConfig = trpc.voiceConfig.get.useQuery(undefined, { enabled: isAuthenticated });
+  const sendVoiceMutation = trpc.chat.sendVoice.useMutation({ retry: false });
+  const { mutateAsync: cancelVoiceOperation } = trpc.voiceConfig.cancelOperation.useMutation({ retry: false });
+  useLayoutEffect(() => () => {
+    const capture = captureRef.current;
+    captureRef.current = null;
+    readyRecordingRef.current = null;
+    if (capture) releaseRecording(capture);
+    const upload = voiceUploadRef.current;
+    voiceUploadRef.current = null;
+    if (upload) {
+      releaseVoiceUpload(upload);
+      if (upload.submitted) {
+        toast.info("已请求停止；已保存的用户语音可能保留。");
+        void cancelVoiceOperation({ operationId: upload.id }).then(() => refetchHistory()).catch(() => {});
+      }
+    }
+  }, [cancelVoiceOperation, refetchHistory]);
 
   const exportMutation = trpc.chat.export.useMutation();
 
@@ -886,11 +1022,13 @@ export default function Chat() {
 
   useEffect(() => {
     if (history) {
-      setMessages(history.map((m: any) => ({
+      const stored = history.map((m: any) => ({
         id: m.id, role: m.role as "user" | "assistant",
         content: m.content, messageType: m.messageType, mediaUrl: m.mediaUrl, mediaDuration: m.mediaDuration,
         emotionalState: m.emotionalState, channel: m.channel, createdAt: m.createdAt,
-      })));
+      }));
+      const upload = voiceUploadRef.current;
+      setMessages(upload ? [...stored, upload.userBubble, upload.replyBubble] : stored);
     }
   }, [history]);
 
@@ -995,7 +1133,7 @@ export default function Chat() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || isSending) return;
+    if (!text || isSending || voiceStage) return;
     setInput("");
     setIsSending(true);
 
@@ -1028,7 +1166,7 @@ export default function Chat() {
 
   const handleImageSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || isSending) return;
+    if (!file || isSending || voiceStage) return;
     setShowAttach(false);
     setIsSending(true);
 
@@ -1053,68 +1191,229 @@ export default function Chat() {
     };
     reader.readAsDataURL(file);
     e.target.value = "";
-  }, [isSending, personaId, currentState]);
+  }, [isSending, personaId, currentState, voiceStage]);
 
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        const blob = new Blob(chunks, { type: "audio/webm" });
-        const reader = new FileReader();
-        reader.onload = async () => {
-          const base64 = (reader.result as string).split(",")[1];
-          const duration = recordingTime;
-          setIsRecording(false);
-          setRecordingTime(0);
-          setIsSending(true);
-
-          const localUrl = URL.createObjectURL(blob);
-          const userMsg: Message = { id: `temp-${Date.now()}`, role: "user", content: "（语音消息）", messageType: "voice", mediaUrl: localUrl, mediaDuration: duration, createdAt: new Date() };
-          setMessages(prev => [...prev, userMsg]);
-          const streamId = `stream-${Date.now()}`;
-          setMessages(prev => [...prev, { id: streamId, role: "assistant", content: "", isStreaming: true, emotionalState: currentState }]);
-
-          try {
-            const result = await sendVoiceMutation.mutateAsync({ personaId, audioContent: base64, duration, fileName: `voice-${Date.now()}.webm` });
-            setMessages(prev => prev.map(m => {
-              if (m.id === streamId) return { id: `ai-${Date.now()}`, role: "assistant", content: result.reply, emotionalState: result.emotionalState, createdAt: new Date(), isStreaming: false };
-              if (m === userMsg) return { ...m, content: result.transcription || "（语音消息）" };
-              return m;
-            }));
-            setCurrentState(result.emotionalState);
-          } catch { setMessages(prev => prev.filter(m => m.id !== streamId)); }
-          finally { setIsSending(false); }
-        };
-        reader.readAsDataURL(blob);
-      };
-      recorder.start();
-      mediaRecorderRef.current = recorder;
-      setIsRecording(true);
-      setRecordingTime(0);
-      recordingTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
-    } catch { toast.error("无法访问麦克风"); }
-  }, [personaId, currentState, recordingTime]);
-
-  const stopRecording = useCallback(() => {
-    if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
-    mediaRecorderRef.current?.stop();
+  const removeVoiceBubbles = useCallback((upload: VoiceUpload) => {
+    setMessages(prev => prev.filter(message => message.id !== upload.userBubble.id && message.id !== upload.replyBubble.id));
   }, []);
+
+  const sendRecording = async ({ blob, duration, target }: VoiceRecording) => {
+    const extension = recordingExtension(blob.type);
+    if (!extension || !blob.size || blob.size > RECORDING_MAX_BYTES || duration <= 0 || duration > RECORDING_MAX_SECONDS) {
+      setVoiceStage(null);
+      toast.error("录音为空、超过 8 MiB 或格式不受支持，请重新录制或改用文字。");
+      return;
+    }
+    if (voiceUploadRef.current) return;
+    const id = crypto.randomUUID();
+    const reader = new FileReader();
+    const userBubble: Message = {
+      id: `voice-${id}`, role: "user", content: "（语音消息）", messageType: "voice",
+      mediaUrl: URL.createObjectURL(blob), mediaDuration: duration, createdAt: new Date(),
+    };
+    const replyBubble: Message = {
+      id: `voice-reply-${id}`, role: "assistant", content: "",
+      isStreaming: true, emotionalState: currentState, createdAt: new Date(),
+    };
+    const upload: VoiceUpload = { id, target, reader, userBubble, replyBubble, submitted: false };
+    voiceUploadRef.current = upload;
+    setVoiceStage("sending");
+    setMessages(prev => [...prev, userBubble, replyBubble]);
+
+    try {
+      const audioContent = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const data = typeof reader.result === "string" ? reader.result.split(",", 2)[1] : null;
+          if (data) resolve(data);
+          else reject(new Error("无法读取录音。"));
+        };
+        reader.onabort = reader.onerror = () => reject(new Error("无法读取录音。"));
+        reader.readAsDataURL(blob);
+      });
+      if (voiceUploadRef.current !== upload) return;
+      upload.submitted = true;
+      const result = await sendVoiceMutation.mutateAsync({
+        personaId, audioContent, mimeType: blob.type, duration, ...upload.target,
+        fileName: `voice-${id}.${extension}`, operationId: id,
+      });
+      if (voiceUploadRef.current !== upload) return;
+      setMessages(prev => prev.map(message => {
+        if (message.id === userBubble.id) return {
+          ...userBubble, content: result.transcription, mediaUrl: result.voiceUrl,
+          mediaDuration: (result as { voiceDuration?: number }).voiceDuration ?? duration,
+        };
+        if (message.id === replyBubble.id) return {
+          ...replyBubble, content: result.reply, emotionalState: result.emotionalState, isStreaming: false,
+        };
+        return message;
+      }));
+      setCurrentState(result.emotionalState);
+      if (result.graduationSuggested) setShowGraduation(true);
+      void refetchHistory();
+    } catch (error) {
+      if (voiceUploadRef.current === upload) {
+        removeVoiceBubbles(upload);
+        toast.error(`${error instanceof Error ? error.message : "语音发送失败。"} 可重新录制或改用文字。`);
+        void refetchHistory();
+      }
+    } finally {
+      if (voiceUploadRef.current === upload) {
+        voiceUploadRef.current = null;
+        releaseVoiceUpload(upload);
+        setVoiceStage(null);
+        setRecordingTime(0);
+      }
+    }
+  };
+
+  const finishRecording = (capture: VoiceCapture, sendWhenStopped: boolean) => {
+    if (captureRef.current !== capture || capture.stoppedAt !== undefined || capture.recorder?.state !== "recording") return;
+    capture.stoppedAt = performance.now();
+    capture.sendWhenStopped = sendWhenStopped;
+    clearRecordingTimers(capture);
+    setVoiceStage("finishing");
+    try {
+      capture.recorder.stop();
+    } catch {
+      captureRef.current = null;
+      releaseRecording(capture);
+      setVoiceStage(null);
+      setRecordingTime(0);
+      toast.error("无法结束录音，请重新录制或改用文字。");
+    }
+  };
+
+  const startRecording = async () => {
+    if (captureRef.current || readyRecordingRef.current || voiceUploadRef.current || isSending) return;
+    if (!persona) {
+      toast.error("还无法确认当前角色和场景，请稍后再试。");
+      return;
+    }
+    if (!voiceConfig.data?.asrEnabled) {
+      toast.error(voiceConfig.isPending ? "正在读取语音设置，请稍后再试。" :
+        voiceConfig.isError ? "无法读取语音设置，请稍后再试。" : "语音识别尚未开启，请先在设置中配置。");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      toast.error("当前浏览器无法录音，请改用文字。");
+      return;
+    }
+    const capture: VoiceCapture = {
+      startedAt: 0, sendWhenStopped: false,
+      target: { expectedSceneId: activeSceneId, expectedConfigRevision: voiceConfig.data.revision },
+    };
+    captureRef.current = capture;
+    setVoiceStage("requesting");
+    setRecordingTime(0);
+    let stream: MediaStream | undefined;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (captureRef.current !== capture) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      const mimeType = RECORDING_TYPES.find(type => MediaRecorder.isTypeSupported?.(type));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      capture.recorder = recorder;
+      const chunks: Blob[] = [];
+      let bytes = 0;
+      const fail = (message: string) => {
+        if (captureRef.current !== capture) return;
+        captureRef.current = null;
+        releaseRecording(capture);
+        setVoiceStage(null);
+        setRecordingTime(0);
+        toast.error(message);
+      };
+      recorder.ondataavailable = event => {
+        if (captureRef.current !== capture || !event.data.size) return;
+        bytes += event.data.size;
+        if (bytes > RECORDING_MAX_BYTES) fail("录音超过 8 MiB，请缩短录音或改用文字。");
+        else chunks.push(event.data);
+      };
+      recorder.onerror = () => fail("录音失败，请重新录制或改用文字。");
+      recorder.onstop = () => {
+        if (captureRef.current !== capture) return;
+        captureRef.current = null;
+        releaseRecording(capture);
+        const duration = ((capture.stoppedAt ?? performance.now()) - capture.startedAt) / 1000;
+        const actualMime = chunks.find(chunk => recordingExtension(chunk.type))?.type || recorder.mimeType;
+        const blob = new Blob(chunks, { type: actualMime });
+        if (!recordingExtension(blob.type) || !blob.size || duration <= 0 || duration > RECORDING_MAX_SECONDS) {
+          setVoiceStage(null);
+          setRecordingTime(0);
+          toast.error(duration > RECORDING_MAX_SECONDS ? "录音超过 30 秒，请缩短录音或改用文字。" : "没有录到可用的语音，请重新录制或改用文字。");
+          return;
+        }
+        const recording: VoiceRecording = { blob, duration, target: capture.target };
+        if (capture.sendWhenStopped) {
+          void sendRecording(recording);
+        } else {
+          readyRecordingRef.current = recording;
+          setRecordingTime(Math.round(duration * 10) / 10);
+          setVoiceStage("ready");
+        }
+      };
+      recorder.start(250);
+      capture.startedAt = performance.now();
+      setVoiceStage("recording");
+      capture.timer = window.setInterval(() => {
+        const elapsed = (performance.now() - capture.startedAt) / 1000;
+        setRecordingTime(Math.min(RECORDING_MAX_SECONDS, Math.floor(elapsed)));
+      }, 250);
+      // Leave a small margin for the browser to dispatch the stop timer.
+      capture.deadline = window.setTimeout(() => finishRecording(capture, false), RECORDING_MAX_SECONDS * 1000 - 150);
+    } catch {
+      stream?.getTracks().forEach(track => track.stop());
+      if (captureRef.current === capture) {
+        captureRef.current = null;
+        releaseRecording(capture);
+        setVoiceStage(null);
+        setRecordingTime(0);
+        toast.error("无法开始录音，请检查麦克风权限或改用文字。");
+      }
+    }
+  };
+
+  const stopRecording = () => {
+    const capture = captureRef.current;
+    if (capture) finishRecording(capture, true);
+    const ready = readyRecordingRef.current;
+    if (ready) {
+      readyRecordingRef.current = null;
+      void sendRecording(ready);
+    }
+  };
 
   const cancelRecording = useCallback(() => {
-    if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.ondataavailable = null;
-      mediaRecorderRef.current.onstop = null;
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+    const capture = captureRef.current;
+    captureRef.current = null;
+    readyRecordingRef.current = null;
+    if (capture) releaseRecording(capture);
+    const upload = voiceUploadRef.current;
+    voiceUploadRef.current = null;
+    if (upload) {
+      removeVoiceBubbles(upload);
+      releaseVoiceUpload(upload);
+      if (upload.submitted) {
+        toast.info("已请求停止；已保存的用户语音可能保留。");
+        void cancelVoiceOperation({ operationId: upload.id }).then(
+          () => { void refetchHistory(); },
+          () => {
+            toast.error("取消请求未送达，请核对聊天记录。");
+            void refetchHistory();
+          },
+        );
+      }
     }
-    setIsRecording(false);
+    setVoiceStage(null);
     setRecordingTime(0);
-  }, []);
+  }, [cancelVoiceOperation, refetchHistory, removeVoiceBubbles]);
+
+  useLayoutEffect(() => {
+    const target = captureRef.current?.target ?? readyRecordingRef.current?.target ?? voiceUploadRef.current?.target;
+    if (target && target.expectedSceneId !== activeSceneId) cancelRecording();
+  }, [activeSceneId, cancelRecording]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -1508,6 +1807,7 @@ export default function Chat() {
                       msg={msg}
                       personaName={persona?.name || "?"}
                       personaAvatarUrl={(persona as { avatarUrl?: string | null } | undefined)?.avatarUrl}
+                      ttsEnabled={voiceConfig.data?.ttsEnabled ?? true}
                       showState={showState}
                     />
                   </Fragment>
@@ -1522,22 +1822,34 @@ export default function Chat() {
             <div className={`chat-composer max-w-3xl sm:max-w-4xl mx-auto py-2.5 sm:py-3 px-3 sm:px-4 shadow-md sm:shadow-lg will-change-transform transition-transform duration-300 ease-out ${
               activeScene && scenePanelTab ? "lg:-translate-x-[150px] xl:-translate-x-[180px]" : ""
             }`}>
-          {isRecording ? (
+          {voiceStage ? (
             <div className="flex items-center gap-3 h-11">
-              <button onClick={cancelRecording} className="text-destructive hover:bg-destructive/10 rounded-xl w-10 h-10 flex items-center justify-center">
+              <button type="button" onClick={cancelRecording} aria-label={voiceStage === "sending" ? "取消语音请求" : "取消录音"}
+                className="text-destructive hover:bg-destructive/10 rounded-xl w-10 h-10 flex items-center justify-center">
                 <X className="w-5 h-5" />
               </button>
               <div className="flex-1 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-sm text-foreground">录音中 {recordingTime}″</span>
-                <div className="flex-1 flex items-center gap-0.5 px-2">
-                  {[...Array(20)].map((_, i) => (
-                    <div key={i} className="w-1 rounded-full bg-primary/40 animate-pulse"
-                      style={{ height: `${4 + Math.random() * 16}px`, animationDelay: `${i * 0.08}s` }} />
-                  ))}
-                </div>
+                {voiceStage === "recording" ? <>
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  <span className="text-sm text-foreground">录音中 {recordingTime}″</span>
+                  <div className="flex-1 flex items-center gap-0.5 px-2" aria-hidden="true">
+                    {[...Array(20)].map((_, i) => (
+                      <div key={i} className="w-1 rounded-full bg-primary/40 animate-pulse"
+                        style={{ height: `${4 + Math.random() * 16}px`, animationDelay: `${i * 0.08}s` }} />
+                    ))}
+                  </div>
+                </> : (
+                  <span role="status" className="text-sm text-foreground">
+                    {voiceStage === "requesting" ? "正在等待麦克风权限…"
+                      : voiceStage === "finishing" ? "正在处理录音…"
+                      : voiceStage === "sending" ? "正在转写并发送语音…"
+                      : `录音已结束（${recordingTime}″），可以发送`}
+                  </span>
+                )}
               </div>
-              <Button onClick={stopRecording} className="h-11 w-11 p-0 bg-primary hover:bg-primary/90 text-primary-foreground border-0 rounded-xl flex-shrink-0">
+              <Button type="button" onClick={stopRecording} aria-label="发送录音"
+                disabled={(voiceStage !== "recording" && voiceStage !== "ready") || !isOnline}
+                className="h-11 w-11 p-0 bg-primary hover:bg-primary/90 text-primary-foreground border-0 rounded-xl flex-shrink-0">
                 <Send className="w-5 h-5" />
               </Button>
             </div>
@@ -1554,7 +1866,7 @@ export default function Chat() {
                       <Image className="w-4 h-4" />发送图片
                       <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
                     </label>
-                    <button onClick={() => { setShowAttach(false); startRecording(); }}
+                    <button type="button" onClick={() => { setShowAttach(false); void startRecording(); }}
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors">
                       <Mic className="w-4 h-4" />语音消息
                     </button>

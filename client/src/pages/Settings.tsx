@@ -1,3 +1,4 @@
+import VoiceSettingsCard from "@/components/VoiceSettingsCard";
 import { useState, useEffect, useMemo, useCallback, useRef, useId, type ChangeEvent, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -2636,6 +2637,8 @@ function AISettingsTab() {
       </section>
 
 
+      <VoiceSettingsCard />
+
       <SettingsDisclosure icon={ImageIcon} title="剧情场景配图" subtitle="管理本地工作流、云端图片中转站与人物参考图。">
         <SceneImageSettingsCard />
       </SettingsDisclosure>
@@ -2980,7 +2983,7 @@ function QqTab() {
                 onClick={() => void mediaAssets.refetch()}>刷新图片列表</Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              仅可发送已绑定角色上传的图片。频道模式须先在 QQ 私聊发送「退出频道」。音频识别、语音合成和生成图片将在后续批次接入。
+              可发送已绑定角色上传的图片；私聊语音需在 AI 设置中启用录音转写。频道内语音暂不转写，可先发送「退出频道」。QQ 语音回复与生成图片尚未接入。
             </p>
             {previewUnavailable ? <p className="text-xs text-muted-foreground">界面预览不读取实际图片，也不能发送。</p>
               : mediaAssets.isError ? <p className="text-xs text-destructive" role="alert">无法读取图片列表，请刷新后重试。</p>
