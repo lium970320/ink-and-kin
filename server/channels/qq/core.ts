@@ -123,6 +123,15 @@ export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = 
   return { messageId: id, text: plainText(event.message) };
 }
 
+/** Stable across retries of one signed inbound event, even after a config generation changes. */
+export function qqSceneImageOperationId(config: Pick<QqConfig, "id" | "userId" | "botId" | "targetId">, messageId: string): string {
+  const digest = createHash("sha256").update(JSON.stringify(["qq-scene-image", config.id, config.userId, config.botId, config.targetId, messageId])).digest();
+  digest[6] = (digest[6] & 0x0f) | 0x80;
+  digest[8] = (digest[8] & 0x3f) | 0x80;
+  const hex = digest.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export type DeliveryResult = { status: DeliveryStatus; remoteMessageId: string | null; reason: string };
 
 export function deliveryResult(body: unknown): DeliveryResult {

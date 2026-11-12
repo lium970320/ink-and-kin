@@ -1,3 +1,5 @@
+import { getSceneImageLogDetails } from "../scene-image/service";
+import { getSceneImageConfig } from "../scene-image/config";
 import { z } from "zod";
 import { notifyOwner } from "./notification";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./trpc";
@@ -21,11 +23,15 @@ function optionalDate(value?: string) {
 
 
 export const systemRouter = router({
+  sceneImageLogDetails:protectedProcedure.input(z.object({
+    from:z.string().optional(),to:z.string().optional(),personaId:z.number().int().positive().optional(),relayId:z.number().int().positive().optional(),
+    success:z.boolean().optional(),limit:z.number().int().min(1).max(200).default(50),
+  }).optional()).query(({ctx,input})=>getSceneImageLogDetails(ctx.user.id,{...input,from:optionalDate(input?.from),to:optionalDate(input?.to)})),
   operationsDiagnostics: protectedProcedure.query(async ({ ctx }) => {
     const userId = ctx.user.id;
-    const [persisted, config, configs, providers] = await Promise.all([
+    const [persisted, config, configs, providers, imageConfig] = await Promise.all([
       getPersistentLlmUsageSnapshot({ userId }).catch(() => null),
-      getDefaultLlmConfig(userId), getLlmConfigsByUserId(userId), listUserLlmProviders(userId),
+      getDefaultLlmConfig(userId), getLlmConfigsByUserId(userId), listUserLlmProviders(userId), getSceneImageConfig(userId),
     ]);
     const usage = persisted ?? { ...getLlmUsageSnapshot(new Date(), { userId }), source: "in-memory-runtime" };
     const extra = (config?.extraConfig ?? {}) as Record<string, unknown>;
@@ -40,10 +46,12 @@ export const systemRouter = router({
         budget: { status: "unconfigured", recommendation: "尚未配置用户软额度。" },
         economy: { level: "normal", recommendation: "本批未启用自动省额度策略。" },
       },
+      sceneImages: { enabled:imageConfig.enabled,revision:imageConfig.revision,configuredRelays:imageConfig.relays.length,
+        activeRelays:imageConfig.relays.filter(item=>item.enabled).length,priorityStrategy:imageConfig.priorityStrategy },
       troubleshooting: {
         summary: { errors: 0, warnings: persisted ? 1 : 2 },
         items: [
-          { id: "batch2-scope", scope: "迁移范围", tone: "warn", title: "本页已接通模型配置与用量", detail: "图片、平台、语音等其他模块的诊断尚未迁移；其下方占位信息不代表运行状态。", recommendation: "本批以模型用量与路由信息为准。" },
+          { id: "batch2-scope", scope: "迁移范围", tone: "warn", title: "本页已接通模型配置与用量", detail: "模型用量与图片任务已接通；其他模块的占位信息不代表运行状态。", recommendation: "本批以模型用量与路由信息为准。" },
           ...(!persisted ? [{ id: "usage-memory", scope: "模型用量", tone: "warn", title: "正在显示进程内记录", detail: "持久记录暂不可用，内存记录有容量上限，不能代表完整历史。", recommendation: "检查数据库迁移及连接后刷新。" }] : []),
         ],
       },

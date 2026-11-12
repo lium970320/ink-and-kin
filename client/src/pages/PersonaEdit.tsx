@@ -1,3 +1,5 @@
+import { motion, useReducedMotion } from "framer-motion";
+import { CollapseSection, SPRING_SNAPPY } from "@/components/ui/motion";
 import { useState, useEffect } from "react";
 import { useLocation, useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -151,6 +153,8 @@ export default function PersonaEdit() {
   const [proactiveFeedback, setProactiveFeedback] = useState("");
   const [proactiveConflict, setProactiveConflict] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [activeEditTab, setActiveEditTab] = useState("core");
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (!persona) return;
@@ -351,7 +355,7 @@ export default function PersonaEdit() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-40 app-header">
+      <header className="sticky top-0 z-40 app-header border-b border-border/60 bg-background/85 backdrop-blur-xl">
         <div className="container app-nav">
           <button onClick={() => navigate("/")}
             className="app-nav-back -ml-1 gap-1">
@@ -367,12 +371,12 @@ export default function PersonaEdit() {
         </div>
       </header>
 
-      <main className="container py-8 max-w-2xl mx-auto space-y-6 animate-fade-in-up">
+      <main className="container py-6 sm:py-8 max-w-2xl mx-auto space-y-6 animate-fade-in-up">
         {/* Basic Info */}
-        <section className="warm-card p-5 sm:p-6 space-y-4">
+        <section className="warm-card warm-card-static p-5 sm:p-6 space-y-5 border-border/70">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-semibold text-foreground text-sm flex items-center gap-1.5">
-              <span>🌸</span> 基本信息
+              <span className="section-chip h-8 w-8 rounded-xl" aria-hidden="true">✦</span> 基本信息
             </h2>
             <Button size="sm" variant="outline" className="rounded-xl border-border hover:bg-muted/40 text-xs px-3 h-8 shadow-xs"
               onClick={() => navigate(`/upload/${personaId}`)}>
@@ -420,10 +424,10 @@ export default function PersonaEdit() {
 
         {/* Persona Data Editor */}
         {persona.analysisStatus === "ready" && (
-          <section className="warm-card p-5 sm:p-6 space-y-4">
+          <section className="warm-card warm-card-static p-5 sm:p-6 space-y-5 border-border/70">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold text-foreground text-sm flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-primary" />人设资料库
+                <span className="section-chip h-8 w-8 rounded-xl"><Sparkles className="w-4 h-4" /></span>人设资料库
               </h2>
               <Button size="sm" variant="ghost" onClick={() => setShowPrompt(!showPrompt)}
                 className="text-xs text-muted-foreground rounded-xl hover:bg-muted/40 px-3 h-8">
@@ -431,20 +435,26 @@ export default function PersonaEdit() {
               </Button>
             </div>
 
-            {showPrompt && promptData && (
-              <pre className="text-xs text-muted-foreground/90 bg-muted/30 p-4 rounded-xl overflow-auto max-h-64 whitespace-pre-wrap border border-border/80 font-mono leading-relaxed">
-                {promptData.prompt}
-              </pre>
+            {promptData && (
+              <CollapseSection open={showPrompt}>
+                <pre className="panel-scrollbar text-xs text-muted-foreground/90 bg-muted/30 p-4 rounded-2xl overflow-auto max-h-64 whitespace-pre-wrap border border-border/70 font-mono leading-relaxed">
+                  {promptData.prompt}
+                </pre>
+              </CollapseSection>
             )}
 
-            <Tabs defaultValue="core" className="space-y-5">
-              <TabsList className="grid h-auto w-full grid-cols-3 gap-1 bg-muted/60 p-1 border border-border/50 rounded-xl shadow-inner mb-2 sm:grid-cols-6">
-                <TabsTrigger value="core" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">核心</TabsTrigger>
-                <TabsTrigger value="personality" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">性格</TabsTrigger>
-                <TabsTrigger value="relationship" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">关系</TabsTrigger>
-                <TabsTrigger value="source" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">原著</TabsTrigger>
-                <TabsTrigger value="speaking" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">说话</TabsTrigger>
-                <TabsTrigger value="behavior" className="text-xs py-2 rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground transition-all cursor-pointer font-medium">行为</TabsTrigger>
+            <Tabs value={activeEditTab} onValueChange={setActiveEditTab} className="space-y-5">
+              <TabsList aria-label="人设编辑分区" className="grid h-auto w-full grid-cols-3 gap-1 bg-muted/55 p-1 border border-border/60 rounded-2xl sm:grid-cols-6">
+                {[
+                  ["core", "核心"], ["personality", "性格"], ["relationship", "关系"],
+                  ["source", "原著"], ["speaking", "说话"], ["behavior", "行为"],
+                ].map(([key, label]) => (
+                  <TabsTrigger key={key} value={key} className="relative rounded-xl py-2 text-xs font-medium data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none">
+                    {activeEditTab === key && <motion.span aria-hidden="true" layoutId={reduceMotion ? undefined : "persona-edit-tab-pill"}
+                      transition={SPRING_SNAPPY} className="pointer-events-none absolute inset-0 rounded-xl border border-border/70 bg-card shadow-xs" />}
+                    <span className="relative z-10">{label}</span>
+                  </TabsTrigger>
+                ))}
               </TabsList>
 
               <TabsContent value="core" className="space-y-4 focus-visible:outline-none focus:outline-none">

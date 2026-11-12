@@ -15,7 +15,7 @@ import type { Request, Response, NextFunction } from "express";
 import { authenticateRequest } from "./auth";
 
 /** Prefixes whose second path segment is the owning user's id. */
-const USER_SCOPED = new Set(["personas", "chat", "tts"]);
+const USER_SCOPED = new Set(["personas", "chat", "tts", "scene-image-config", "scene-image-assets", "scene-images", "scene-image-tests"]);
 
 /**
  * Decides whether a storage key belongs to a user.

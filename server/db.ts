@@ -179,6 +179,8 @@ export async function lockQqChannelConfig(tx: DbTransaction, userId: number): Pr
 /** Deletes account data using explicit cleanup for legacy tables and cascading keys for newer tables. */
 export async function deleteUserAccount(id: number) {
   await withTransaction(async (tx) => {
+    // 配图发布先锁账号配置再锁 QQ；注销沿用同序，避免与最后一次发布互等。
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ink-and-kin:scene-image-config'), ${id})`);
     await lockQqChannelConfig(tx, id);
     // The QQ configuration owns both the inbound and delivery logs via cascading foreign keys.
     await tx.delete(qqChannelConfigs).where(eq(qqChannelConfigs.userId, id));

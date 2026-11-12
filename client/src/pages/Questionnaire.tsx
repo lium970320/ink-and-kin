@@ -140,7 +140,7 @@ export default function Questionnaire() {
   const currentTitle = t(STEP_KEYS[step]);
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4 py-10">
+    <div className="min-h-dvh bg-background flex items-center justify-center px-4 py-10">
       <div className="w-full max-w-lg">
         <div className="mb-6">
           <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
@@ -157,7 +157,7 @@ export default function Questionnaire() {
           </div>
         </div>
 
-        <h1 className="text-xl font-semibold text-foreground mb-1">{currentTitle}</h1>
+        <h1 className="page-title text-xl font-semibold text-foreground mb-1">{currentTitle}</h1>
 
         <div className="space-y-4 min-h-[220px]">
           {step === 0 && (

@@ -39,14 +39,15 @@ class ErrorBoundary extends Component<Props, State> {
       const locale = currentLocale();
 
       return (
-        <div className="flex items-center justify-center min-h-dvh p-8 bg-background">
-          <div className="w-full max-w-2xl animate-fade-in">
+        <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background p-4 sm:p-8">
+          <div aria-hidden="true" className="gradient-mesh-bg" />
+          <div className="warm-card warm-card-static relative w-full max-w-xl animate-fade-in rounded-3xl border border-border/70 p-6 sm:p-8">
             <h2 className="page-title mb-3">{translate(locale, "errors.boundaryTitle")}</h2>
-            <p className="text-sm text-muted-foreground mb-8">
+            <p className="mb-6 text-sm leading-relaxed text-muted-foreground">
               {translate(locale, "errors.boundaryBodyLong")}
             </p>
 
-            <div className="p-4 w-full rounded-lg bg-muted/60 border border-border overflow-auto mb-8 max-h-56">
+            <div className="panel-scrollbar mb-6 max-h-56 w-full overflow-auto rounded-2xl border border-border/70 bg-muted/40 p-4">
               <pre className="text-xs font-mono text-muted-foreground whitespace-break-spaces">
                 {this.state.error?.stack}
               </pre>

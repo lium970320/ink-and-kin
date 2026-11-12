@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo, ChangeEvent } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation, useParams } from "wouter";
+import { motion } from "framer-motion";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { formatBeijingTime } from "@/lib/beijing-time";
@@ -8,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { MotionModal, SPRING_SNAPPY } from "@/components/ui/motion";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -145,6 +147,8 @@ export default function ScenesPage() {
   const [assetUploading, setAssetUploading] = useState<"persona" | "user" | "env" | null>(null);
   const [showSceneChatManager, setShowSceneChatManager] = useState(false);
   const [historyScene, setHistoryScene] = useState<any | null>(null);
+  const [confirmDeleteSceneOpen, setConfirmDeleteSceneOpen] = useState(false);
+  const [confirmClearMemoryOpen, setConfirmClearMemoryOpen] = useState(false);
 
   // Studio form state
   const [studioForm, setStudioForm] = useState<SceneFormData>({
@@ -243,6 +247,7 @@ export default function ScenesPage() {
 
   const deleteSceneMutation = trpc.scene.delete.useMutation({
     onSuccess: () => {
+      setConfirmDeleteSceneOpen(false);
       toast.success("剧本场景已删除");
       void scenesQuery.refetch();
       setCurrentView("gallery");
@@ -292,6 +297,7 @@ export default function ScenesPage() {
 
   const clearMemoryMutation = trpc.scene.clearMemory.useMutation({
     onSuccess: () => {
+      setConfirmClearMemoryOpen(false);
       toast.success("剧本记忆已清空，下次将重新开场");
       void detailQuery.refetch();
     },
@@ -622,197 +628,303 @@ export default function ScenesPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col antialiased pb-safe">
-      {/* ── Top Navigation Bar (Mobile Responsive) ───────────────────── */}
-      <header className="sticky top-0 z-40 bg-card/90 backdrop-blur-md border-b border-border/80 px-3 sm:px-8 py-2.5 sm:py-3 flex items-center justify-between gap-2.5 sm:gap-4 shrink-0 transition-all">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate(`/chat/${personaId}`)}
-            className="h-8 sm:h-9 px-2 sm:px-2.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/70 gap-1 shrink-0"
-            title="返回对话"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="text-xs font-semibold hidden md:inline">返回对话</span>
-          </Button>
+      {/* ── Top Navigation Bar (Editorial Quiet Luxury & Mobile Responsive) ── */}
+      <header className="sticky top-0 z-40 bg-background/85 backdrop-blur-xl border-b border-border/65 shrink-0 transition-all">
+        <div className="px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 max-w-6xl mx-auto w-full">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate(`/chat/${personaId}`)}
+              className="h-8 sm:h-9 px-2 sm:px-2.5 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/60 gap-1 shrink-0 cursor-pointer"
+              title="返回对话"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span className="text-xs font-medium hidden md:inline">返回对话</span>
+            </Button>
 
-          <div className="h-4 w-[1px] bg-border/80 hidden sm:block" />
+            <div className="h-4 w-px bg-border/70 hidden sm:block shrink-0" />
 
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center text-sm sm:text-base shadow-inner ring-1 ring-primary/20 shrink-0">
-              🎭
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <h1 className="text-xs sm:text-sm md:text-base font-bold text-foreground truncate">
-                  剧场情境
-                </h1>
-                <span className="text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium truncate hidden sm:inline">
-                  {personaName} 专属
-                </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-primary/10 border border-primary/18 text-primary flex items-center justify-center text-sm sm:text-base shrink-0">
+                🎭
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <h1 className="text-xs sm:text-sm md:text-base font-semibold text-foreground truncate tracking-tight">
+                    剧场情境
+                  </h1>
+                  <span className="text-[10px] sm:text-[11px] px-2 py-0.5 rounded-full bg-muted/70 border border-border/60 text-muted-foreground font-medium truncate hidden sm:inline">
+                    {personaName} 专属
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* If Active Scene: Integrated Header Status Pill */}
-          {activeScene && (
-            <div className="flex items-center gap-1.5 bg-chart-3/12 px-2 sm:px-2.5 py-1 rounded-xl border border-chart-3/25 text-xs font-semibold text-chart-3 min-w-0 shadow-2xs">
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="text-xs font-bold truncate flex items-center gap-1">
-                <span>{activeScene.icon || "🎭"}</span>
-                <span className="max-w-[80px] xs:max-w-[130px] sm:max-w-[180px] truncate">{activeScene.name}</span>
-              </span>
-              {activeScene.personaIdentityOverride && (
-                <span className="text-[10.5px] text-muted-foreground font-normal hidden xl:inline max-w-[200px] truncate">
-                  ({activeScene.personaIdentityOverride})
+            {/* Desktop Active Scene Pill */}
+            {activeScene && (
+              <div className="hidden lg:flex items-center gap-1.5 bg-emerald-500/8 px-2.5 py-1 rounded-full border border-emerald-500/22 text-xs font-medium text-emerald-700 dark:text-emerald-300 min-w-0">
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-70" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* View Switcher Tabs & Active Scene Quick Actions in Header */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {activeScene && (
-            <div className="flex items-center gap-1 bg-chart-3/10 p-0.5 sm:p-1 rounded-2xl border border-chart-3/25 shadow-2xs">
-              <Button
-                size="sm"
-                onClick={() => navigate(`/chat/${personaId}`)}
-                className="h-7.5 sm:h-8 rounded-xl bg-chart-3 text-white hover:bg-chart-3/90 text-xs font-bold shadow-xs flex items-center gap-1 px-2.5 sm:px-3 shrink-0"
-                title={`一键进入当前正在运行的场景：${activeScene.name}`}
-              >
-                <Play className="w-3 h-3 fill-current" />
-                <span>一键进入</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7.5 sm:h-8 text-xs text-chart-3 hover:bg-chart-3/15 px-2 rounded-xl font-medium hidden sm:flex items-center gap-1"
-                onClick={() => handleOpenMemory(activeScene.id)}
-                title="记忆中枢"
-              >
-                <Database className="w-3 h-3" />
-                <span className="hidden md:inline">记忆中枢</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7.5 sm:h-8 text-xs text-destructive hover:bg-destructive/10 px-2 rounded-xl font-medium hidden sm:flex items-center gap-1"
-                onClick={() => deactivateSceneMutation.mutate({ personaId })}
-                disabled={deactivateSceneMutation.isPending}
-                title="退出当前剧场"
-              >
-                <LogOut className="w-3 h-3" />
-                <span className="hidden md:inline">退出</span>
-              </Button>
-            </div>
-          )}
-
-          <div className="flex items-center gap-0.5 sm:gap-1 bg-muted/40 p-0.5 sm:p-1 rounded-2xl border border-border/60 shadow-xs">
-            <button
-              onClick={() => setCurrentView("gallery")}
-              className={`flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                currentView === "gallery"
-                  ? "bg-card text-foreground shadow-sm ring-1 ring-border/50"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Film className="w-3.5 h-3.5 text-primary" />
-              <span className="hidden xs:inline">剧场</span>大厅
-            </button>
-            <button
-              onClick={handleOpenCreate}
-              className={`flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                currentView === "studio" && !studioForm.id
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">新建</span>工坊
-            </button>
-            {selectedSceneId && (
-              <button
-                onClick={() => setCurrentView("memory")}
-                className={`flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                  currentView === "memory"
-                    ? "bg-card text-foreground shadow-sm ring-1 ring-border/50"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Database className="w-3.5 h-3.5 text-chart-3" />
-                <span className="hidden xs:inline">剧本</span>记忆
-              </button>
+                <span className="truncate flex items-center gap-1 max-w-[180px]">
+                  <span>{activeScene.icon || "🎭"}</span>
+                  <span className="truncate font-semibold">{activeScene.name}</span>
+                </span>
+              </div>
             )}
           </div>
+
+          {/* Right: Desktop Active Quick Bar + Shared layoutId View Segmented Switcher */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {activeScene && (
+              <div className="hidden sm:flex items-center gap-1 bg-muted/45 p-1 rounded-2xl border border-border/65">
+                <Button
+                  size="sm"
+                  onClick={() => navigate(`/chat/${personaId}`)}
+                  className="h-7.5 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-semibold shadow-2xs flex items-center gap-1 px-2.5 shrink-0 cursor-pointer"
+                  title={`一键进入当前正在运行的场景：${activeScene.name}`}
+                >
+                  <Play className="w-3 h-3 fill-current" />
+                  <span>一键进入</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7.5 text-xs text-muted-foreground hover:text-foreground hover:bg-card/80 px-2 rounded-xl font-medium flex items-center gap-1 cursor-pointer"
+                  onClick={() => handleOpenMemory(activeScene.id)}
+                  title="记忆中枢"
+                >
+                  <Database className="w-3 h-3 text-chart-3" />
+                  <span className="hidden md:inline">记忆中枢</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7.5 text-xs text-destructive hover:bg-destructive/10 px-2 rounded-xl font-medium flex items-center gap-1 cursor-pointer"
+                  onClick={() => deactivateSceneMutation.mutate({ personaId })}
+                  disabled={deactivateSceneMutation.isPending}
+                  title="退出当前剧场"
+                >
+                  <LogOut className="w-3 h-3" />
+                  <span className="hidden md:inline">退出</span>
+                </Button>
+              </div>
+            )}
+
+            <div
+              role="tablist"
+              aria-label="剧场情境视图切换"
+              className="inline-flex items-center gap-0.5 bg-muted/55 p-1 rounded-2xl border border-border/65 backdrop-blur-xs"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={currentView === "gallery"}
+                onClick={() => setCurrentView("gallery")}
+                className={`relative flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs transition-colors outline-none select-none cursor-pointer ${
+                  currentView === "gallery"
+                    ? "text-foreground font-semibold"
+                    : "text-muted-foreground hover:text-foreground font-medium"
+                }`}
+              >
+                {currentView === "gallery" && (
+                  <motion.span
+                    layoutId="scenes-view-pill"
+                    transition={SPRING_SNAPPY}
+                    className="pointer-events-none absolute inset-0 rounded-xl border border-border/70 bg-card shadow-xs dark:border-border/55 dark:bg-card/95"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-1">
+                  <Film className={`w-3.5 h-3.5 ${currentView === "gallery" ? "text-primary" : "text-muted-foreground"}`} />
+                  <span>
+                    <span className="hidden xs:inline">剧场</span>大厅
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={currentView === "studio"}
+                onClick={() => {
+                  if (currentView === "studio" && studioForm.id) return;
+                  handleOpenCreate();
+                }}
+                className={`relative flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs transition-colors outline-none select-none cursor-pointer ${
+                  currentView === "studio"
+                    ? "text-foreground font-semibold"
+                    : "text-muted-foreground hover:text-foreground font-medium"
+                }`}
+              >
+                {currentView === "studio" && (
+                  <motion.span
+                    layoutId="scenes-view-pill"
+                    transition={SPRING_SNAPPY}
+                    className="pointer-events-none absolute inset-0 rounded-xl border border-border/70 bg-card shadow-xs dark:border-border/55 dark:bg-card/95"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-1">
+                  {currentView === "studio" && studioForm.id ? (
+                    <Pencil className="w-3.5 h-3.5 text-primary" />
+                  ) : (
+                    <Plus className={`w-3.5 h-3.5 ${currentView === "studio" ? "text-primary" : "text-muted-foreground"}`} />
+                  )}
+                  <span>
+                    {currentView === "studio" && studioForm.id ? (
+                      <>
+                        <span className="hidden xs:inline">编辑</span>工坊
+                      </>
+                    ) : (
+                      <>
+                        <span className="hidden xs:inline">新建</span>工坊
+                      </>
+                    )}
+                  </span>
+                </span>
+              </button>
+
+              {(selectedSceneId || activeScene) && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={currentView === "memory"}
+                  onClick={() => {
+                    if (!selectedSceneId && activeScene) {
+                      setSelectedSceneId(activeScene.id);
+                    }
+                    setCurrentView("memory");
+                  }}
+                  className={`relative flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs transition-colors outline-none select-none cursor-pointer ${
+                    currentView === "memory"
+                      ? "text-foreground font-semibold"
+                      : "text-muted-foreground hover:text-foreground font-medium"
+                  }`}
+                >
+                  {currentView === "memory" && (
+                    <motion.span
+                      layoutId="scenes-view-pill"
+                      transition={SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-xl border border-border/70 bg-card shadow-xs dark:border-border/55 dark:bg-card/95"
+                    />
+                  )}
+                  <span className="relative z-10 inline-flex items-center gap-1">
+                    <Database className={`w-3.5 h-3.5 ${currentView === "memory" ? "text-chart-3" : "text-muted-foreground"}`} />
+                    <span>
+                      <span className="hidden xs:inline">剧本</span>记忆
+                    </span>
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
         </div>
+
+        {/* Mobile Compact Active Scene Strip (< sm) */}
+        {activeScene && (
+          <div className="sm:hidden border-t border-border/50 bg-muted/25 px-3 py-1.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0 text-xs">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="shrink-0">{activeScene.icon || "🎭"}</span>
+              <span className="font-semibold text-foreground truncate">{activeScene.name}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => navigate(`/chat/${personaId}`)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary text-primary-foreground text-[11px] font-semibold cursor-pointer"
+              >
+                <Play className="w-2.5 h-2.5 fill-current" />
+                进入
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOpenMemory(activeScene.id)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-border/65 bg-card text-muted-foreground hover:text-foreground text-[11px] font-medium cursor-pointer"
+              >
+                记忆
+              </button>
+              <button
+                type="button"
+                onClick={() => deactivateSceneMutation.mutate({ personaId })}
+                disabled={deactivateSceneMutation.isPending}
+                className="inline-flex items-center px-2 py-1 rounded-lg text-destructive hover:bg-destructive/10 text-[11px] font-medium cursor-pointer"
+              >
+                退出
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* ── Main View Content ────────────────────────────────────────── */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-3 sm:p-6 md:p-8">
         {/* ════ VIEW 1: GALLERY ════════════════════════════════════════ */}
         {currentView === "gallery" && (
-          <div className="space-y-4 sm:space-y-6 animate-scale-in">
-            {/* Filter, Sort & Search Bar (Mobile Horizontal Scroll) */}
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 bg-card p-2 sm:p-3 rounded-2xl border border-border/70 shadow-xs">
+          <div className="space-y-4 sm:space-y-6 animate-fade-in">
+            {/* Filter, Sort & Search Bar */}
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 warm-card warm-card-static p-2.5 sm:p-3 border-border/70">
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Tabs */}
-                <div className="flex items-center gap-1 bg-muted/40 p-1 rounded-xl border border-border/40 overflow-x-auto no-scrollbar shrink-0">
-                  <button
-                    onClick={() => setActiveTab("all")}
-                    className={`px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${
-                      activeTab === "all"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    全部 ({scenes.length})
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("custom")}
-                    className={`px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${
-                      activeTab === "custom"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    自建 ({scenes.filter(s => !s.isBuiltin).length})
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("builtin")}
-                    className={`px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${
-                      activeTab === "builtin"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    预置 ({scenes.filter(s => Boolean(s.isBuiltin)).length})
-                  </button>
-                  {activeScene && (
-                    <button
-                      onClick={() => setActiveTab("active")}
-                      className={`px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${
-                        activeTab === "active"
-                          ? "bg-primary text-primary-foreground shadow-sm"
-                          : "text-primary hover:bg-primary/10"
-                      }`}
-                    >
-                      进行中
-                    </button>
-                  )}
+                {/* Filter Segmented Control with Shared layoutId Pill */}
+                <div
+                  role="tablist"
+                  aria-label="场景分类筛选"
+                  className="inline-flex items-center gap-0.5 bg-muted/55 p-1 rounded-xl border border-border/60 overflow-x-auto no-scrollbar shrink-0"
+                >
+                  {(
+                    [
+                      { key: "all" as FilterTab, label: "全部", count: scenes.length },
+                      { key: "custom" as FilterTab, label: "自建", count: scenes.filter(s => !s.isBuiltin).length },
+                      { key: "builtin" as FilterTab, label: "预置", count: scenes.filter(s => Boolean(s.isBuiltin)).length },
+                      ...(activeScene ? [{ key: "active" as FilterTab, label: "进行中", count: 1 }] : []),
+                    ] as const
+                  ).map(tab => {
+                    const isSelected = activeTab === tab.key;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={isSelected}
+                        onClick={() => setActiveTab(tab.key)}
+                        className={`relative px-2.5 sm:px-3 py-1.5 text-xs rounded-lg transition-colors shrink-0 outline-none select-none cursor-pointer ${
+                          isSelected
+                            ? "text-foreground font-semibold"
+                            : "text-muted-foreground hover:text-foreground font-medium"
+                        }`}
+                      >
+                        {isSelected && (
+                          <motion.span
+                            layoutId="scenes-filter-pill"
+                            transition={SPRING_SNAPPY}
+                            className="pointer-events-none absolute inset-0 rounded-lg border border-border/70 bg-card shadow-2xs dark:border-border/55 dark:bg-card/95"
+                          />
+                        )}
+                        <span className="relative z-10 inline-flex items-center gap-1">
+                          {tab.key === "active" && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          )}
+                          <span>{tab.label}</span>
+                          {tab.key !== "active" && (
+                            <span className="text-[10.5px] font-mono tabular-nums text-muted-foreground/85">
+                              {tab.count}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Sort Selector */}
-                <div className="flex items-center gap-1.5 bg-muted/40 px-2.5 py-1 rounded-xl border border-border/40 text-xs shrink-0 shadow-2xs">
-                  <ArrowUpDown className="w-3.5 h-3.5 text-primary shrink-0" />
-                  <span className="text-muted-foreground hidden sm:inline font-medium">排序:</span>
+                <div className="flex items-center gap-1.5 bg-muted/35 px-2.5 py-1.5 rounded-xl border border-border/60 text-xs shrink-0">
+                  <ArrowUpDown className="w-3.5 h-3.5 text-primary/80 shrink-0" />
+                  <span className="text-muted-foreground hidden sm:inline font-medium">排序</span>
                   <select
                     value={sortBy}
                     onChange={e => setSortBy(e.target.value as SortOption)}
-                    className="bg-transparent text-xs font-semibold text-foreground focus:outline-hidden cursor-pointer"
+                    className="bg-transparent text-xs font-medium text-foreground focus:outline-hidden cursor-pointer pr-5"
                   >
                     <option value="recent">最近使用 / 活跃</option>
                     <option value="created_desc">添加时间 (最新)</option>
@@ -823,41 +935,76 @@ export default function ScenesPage() {
                 </div>
               </div>
 
-              <div className="relative flex-1 sm:max-w-xs">
+              <div className="relative flex-1 md:max-w-xs">
                 <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder="搜索场景、身份、时代设定…"
-                  className="h-8.5 pl-8 text-xs bg-muted/30 rounded-xl"
+                  className="h-9 pl-8.5 pr-8 text-xs bg-muted/25 border-border/65 rounded-xl"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    aria-label="清空搜索"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
 
             {/* Scene Cards Grid */}
             {scenesQuery.isLoading ? (
-              <div className="h-64 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                <div className="w-8 h-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                <p className="text-xs">正在载入剧场场景…</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    className="warm-card warm-card-static border-border/70 overflow-hidden p-0 h-72 flex flex-col"
+                  >
+                    <div className="h-24 bg-muted/50 animate-pulse" />
+                    <div className="p-4 sm:p-5 flex-1 space-y-3">
+                      <div className="h-4 w-2/5 rounded bg-muted/65 animate-pulse" />
+                      <div className="h-3 w-full rounded bg-muted/40 animate-pulse" />
+                      <div className="h-3 w-4/5 rounded bg-muted/40 animate-pulse" />
+                      <div className="mt-auto pt-4 flex justify-between">
+                        <div className="h-8 w-20 rounded-xl bg-muted/50 animate-pulse" />
+                        <div className="h-8 w-24 rounded-xl bg-muted/65 animate-pulse" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : displayScenes.length === 0 ? (
-              <div className="py-12 sm:py-16 flex flex-col items-center justify-center text-center p-6 sm:p-8 rounded-3xl border border-dashed border-border/80 bg-card/50">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-3xl bg-muted/50 flex items-center justify-center text-2xl sm:text-3xl mb-3 shadow-inner">
+              <div className="py-14 sm:py-18 flex flex-col items-center justify-center text-center p-6 sm:p-8 rounded-3xl border border-dashed border-border/70 bg-card/55">
+                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-muted/55 border border-border/60 flex items-center justify-center text-2xl mb-3.5">
                   🎬
                 </div>
-                <h3 className="text-sm sm:text-base font-bold text-foreground">没有找到匹配的剧本情境</h3>
-                <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                <h3 className="text-sm sm:text-base font-semibold text-foreground">没有找到匹配的剧本情境</h3>
+                <p className="text-xs text-muted-foreground mt-1.5 max-w-sm leading-relaxed">
                   {searchQuery
                     ? "尝试使用不同的关键词搜索，或新建一个你专属的情境剧本"
                     : "还没有创建过自定义场景，点击下方按钮开始创作吧"}
                 </p>
-                <Button size="sm" onClick={handleOpenCreate} className="mt-4 gap-1.5 rounded-xl text-xs font-semibold shadow-sm">
+                <Button
+                  size="sm"
+                  onClick={handleOpenCreate}
+                  className="mt-4 gap-1.5 rounded-xl text-xs font-semibold shadow-2xs cursor-pointer"
+                >
                   <Plus className="w-4 h-4" />
                   新建第一个剧本
                 </Button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-5">
+              <motion.div
+                key={`${activeTab}-${sortBy}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5"
+              >
                 {displayScenes.map(scene => {
                   const isActive = scene.id === persona?.activeSceneId;
                   const hasCustomPersonaRole = Boolean(scene.personaIdentityOverride?.trim());
@@ -865,85 +1012,100 @@ export default function ScenesPage() {
                   const hasPersonaRef = Boolean(scene.scenePersonaRefKey);
                   const hasUserRef = Boolean(scene.sceneUserRefKey);
                   const hasEnvRef = Boolean(scene.sceneEnvRefKey);
+                  const coverKey = scene.sceneEnvRefKey || scene.scenePersonaRefKey || null;
                   const stat = memoryStats.get(scene.id);
 
                   return (
-                    <div
+                    <article
                       key={scene.id}
-                      className={`group relative rounded-2xl sm:rounded-3xl border transition-all duration-300 flex flex-col overflow-hidden bg-card hover:-translate-y-1 ${
+                      className={`group relative rounded-3xl border transition-all duration-300 flex flex-col overflow-hidden bg-card hover:-translate-y-0.5 ${
                         isActive
-                          ? "border-primary shadow-lg ring-1 ring-primary/30 bg-primary/[0.02]"
-                          : "border-border/80 hover:border-primary/40 hover:shadow-md"
+                          ? "border-primary/65 shadow-md ring-1 ring-primary/20"
+                          : "border-border/70 hover:border-border hover:shadow-md"
                       }`}
                     >
-                      {/* Top highlight gradient bar */}
-                      <div
-                        className={`h-1.5 sm:h-2 w-full transition-opacity ${
-                          isActive
-                            ? "bg-primary opacity-100"
-                            : "bg-gradient-to-r from-primary/40 via-chart-3/40 to-transparent opacity-0 group-hover:opacity-100"
-                        }`}
-                      />
+                      {/* Editorial Film-Still Cover Banner with Soft Vignette */}
+                      <div className="relative h-24 sm:h-28 w-full overflow-hidden border-b border-border/50 bg-muted/35">
+                        {coverKey ? (
+                          <>
+                            <img
+                              src={`/uploads/${coverKey}`}
+                              alt={scene.name}
+                              loading="lazy"
+                              className="w-full h-full object-cover object-center transition-transform duration-700 ease-out group-hover:scale-[1.05]"
+                            />
+                            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-card via-card/45 to-black/20" />
+                          </>
+                        ) : (
+                          <>
+                            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,var(--color-primary)_0%,transparent_68%)] opacity-[0.09] transition-transform duration-700 ease-out group-hover:scale-105" />
+                            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-muted/20 via-transparent to-card" />
+                          </>
+                        )}
 
-                      <div className="p-4 sm:p-5 flex-1 flex flex-col">
-                        {/* Card Header: Icon, Name, Badges */}
-                        <div className="flex items-start justify-between gap-2 mb-2.5 sm:mb-3">
-                          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-                            <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-primary/20 via-chart-3/15 to-primary/5 border border-primary/25 flex items-center justify-center text-2xl sm:text-3xl shrink-0 group-hover:scale-105 transition-all shadow-sm ring-1 ring-primary/10 select-none">
-                              <span className="drop-shadow-xs">{scene.icon || "🎭"}</span>
-                            </div>
-                            <div className="min-w-0">
-                              <h3 className="text-xs sm:text-sm font-bold text-foreground truncate group-hover:text-primary transition-colors">
-                                {scene.name}
-                              </h3>
-                              <div className="flex items-center gap-1 sm:gap-1.5 mt-0.5 flex-wrap">
-                                {scene.isBuiltin ? (
-                                  <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-muted-foreground font-semibold">
-                                    预置
-                                  </span>
-                                ) : (
-                                  <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-md bg-primary/10 text-primary font-semibold">
-                                    自建
-                                  </span>
-                                )}
-                                {isActive && (
-                                  <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 font-bold flex items-center gap-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                    进行中
-                                  </span>
-                                )}
-                                {(hasPersonaRef || hasUserRef || hasEnvRef) && (
-                                  <span className="text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded-md bg-chart-3/10 text-chart-3 font-semibold flex items-center gap-0.5">
-                                    <ImageIcon className="w-2.5 h-2.5" /> 专属配图
-                                  </span>
-                                )}
-                              </div>
-                            </div>
+                        {/* Top Floating Badges & Edit Trigger */}
+                        <div className="absolute top-3 inset-x-3.5 flex items-center justify-between gap-2 z-10">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded-full backdrop-blur-md border font-medium ${
+                                scene.isBuiltin
+                                  ? "bg-card/85 border-border/70 text-muted-foreground"
+                                  : "bg-card/90 border-primary/25 text-primary"
+                              }`}
+                            >
+                              {scene.isBuiltin ? "预置剧目" : "自建剧本"}
+                            </span>
+                            {isActive && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full backdrop-blur-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold inline-flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                进行中
+                              </span>
+                            )}
+                            {(hasPersonaRef || hasUserRef || hasEnvRef) && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full backdrop-blur-md bg-card/85 border border-border/70 text-foreground/80 font-medium inline-flex items-center gap-1">
+                                <ImageIcon className="w-2.5 h-2.5 text-chart-3" />
+                                剧照基线
+                              </span>
+                            )}
                           </div>
 
-                          {/* Edit button */}
                           {!scene.isBuiltin && (
                             <button
+                              type="button"
                               onClick={() => handleOpenEdit(scene)}
-                              className="p-1.5 sm:p-2 rounded-xl text-muted-foreground hover:bg-muted hover:text-primary transition-colors opacity-80 group-hover:opacity-100"
+                              className="h-7 w-7 rounded-xl backdrop-blur-md bg-card/85 border border-border/70 text-muted-foreground hover:text-foreground hover:border-border flex items-center justify-center transition-all cursor-pointer shadow-2xs"
                               title="编辑剧本"
                             >
-                              <Pencil className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                              <Pencil className="w-3.5 h-3.5" />
                             </button>
                           )}
                         </div>
 
+                        {/* Floating Scene Emblem */}
+                        <div className="absolute bottom-2.5 left-4 z-10 flex items-end gap-2.5 min-w-0 right-4">
+                          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-card/95 backdrop-blur-md border border-border/75 flex items-center justify-center text-xl sm:text-2xl shrink-0 shadow-xs transition-transform duration-300 group-hover:scale-[1.03] select-none">
+                            <span>{scene.icon || "🎭"}</span>
+                          </div>
+                          <div className="min-w-0 pb-0.5">
+                            <h3 className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">
+                              {scene.name}
+                            </h3>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-4 sm:p-5 pt-3.5 flex-1 flex flex-col">
                         {/* Description */}
-                        <p className="text-[11px] sm:text-xs text-muted-foreground line-clamp-2 leading-relaxed mb-3 flex-1">
+                        <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed mb-3.5 flex-1">
                           {scene.description || "暂无剧本简述"}
                         </p>
 
                         {/* Dual Role Badges */}
-                        {(hasCustomPersonaRole || hasCustomUserRole) ? (
-                          <div className="mb-3.5 p-2 sm:p-2.5 rounded-2xl bg-muted/30 border border-border/50 space-y-1">
+                        {hasCustomPersonaRole || hasCustomUserRole ? (
+                          <div className="mb-3.5 p-2.5 rounded-2xl bg-muted/25 border border-border/60 space-y-1.5">
                             {hasCustomPersonaRole && (
-                              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px]">
-                                <span className="font-semibold text-foreground/80 shrink-0">
+                              <div className="flex items-center gap-1.5 text-[11px]">
+                                <span className="font-semibold text-foreground/85 shrink-0">
                                   {personaName}：
                                 </span>
                                 <span className="text-muted-foreground truncate">
@@ -952,8 +1114,8 @@ export default function ScenesPage() {
                               </div>
                             )}
                             {hasCustomUserRole && (
-                              <div className="flex items-center gap-1.5 text-[10px] sm:text-[11px]">
-                                <span className="font-semibold text-foreground/80 shrink-0">你：</span>
+                              <div className="flex items-center gap-1.5 text-[11px]">
+                                <span className="font-semibold text-foreground/85 shrink-0">你：</span>
                                 <span className="text-muted-foreground truncate">
                                   {scene.userIdentityOverride}
                                 </span>
@@ -961,35 +1123,34 @@ export default function ScenesPage() {
                             )}
                           </div>
                         ) : (
-                          <div className="mb-3.5 text-[10px] sm:text-[11px] text-muted-foreground/60 italic flex items-center gap-1">
-                            <Compass className="w-3 h-3" />
-                            双方沿用日常身份设定
+                          <div className="mb-3.5 text-[11px] text-muted-foreground/70 italic flex items-center gap-1.5">
+                            <Compass className="w-3 h-3 shrink-0" />
+                            <span>双方沿用日常身份设定</span>
                           </div>
                         )}
 
                         {/* Key progress stats (turns & last update) */}
                         {stat && (stat.turn > 0 || stat.updatedAt) && (
-                          <div className="mb-3.5 grid grid-cols-2 gap-1.5 text-[10px] sm:text-[11px]">
+                          <div className="mb-3.5 grid grid-cols-2 gap-2 text-[11px]">
                             <button
                               type="button"
-                              onClick={(e) => {
+                              onClick={e => {
                                 e.stopPropagation();
                                 handleOpenSceneHistory(scene);
                               }}
-                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-primary/5 hover:bg-primary/15 border border-primary/20 hover:border-primary/40 text-primary transition-all group/turn cursor-pointer text-left shadow-2xs hover:shadow-xs"
+                              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-primary/6 hover:bg-primary/12 border border-primary/18 hover:border-primary/35 text-primary transition-all group/turn cursor-pointer text-left"
                               title="点击直接查看该剧本全部历史聊天记录与回合"
                             >
-                              <Flame className="w-3.5 h-3.5 text-primary shrink-0 group-hover/turn:scale-110 transition-transform" />
-                              <span className="text-foreground/80 font-medium group-hover/turn:text-primary">回合</span>
-                              <span className="font-bold text-primary ml-auto flex items-center gap-0.5">
+                              <Flame className="w-3.5 h-3.5 text-primary shrink-0" />
+                              <span className="text-foreground/80 font-medium">回合</span>
+                              <span className="font-semibold font-mono tabular-nums text-primary ml-auto flex items-center gap-0.5">
                                 {stat.turn}
                                 <ChevronRight className="w-3 h-3 opacity-60 group-hover/turn:opacity-100 group-hover/turn:translate-x-0.5 transition-all" />
                               </span>
                             </button>
-                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-muted/30 border border-border/50 min-w-0">
-                              <Clock className="w-3.5 h-3.5 text-chart-3 shrink-0" />
-                              <span className="text-muted-foreground shrink-0">更新</span>
-                              <span className="font-semibold text-foreground truncate ml-auto">
+                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-muted/25 border border-border/55 min-w-0">
+                              <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                              <span className="font-medium font-mono tabular-nums text-foreground/85 truncate ml-auto text-[10.5px]">
                                 {stat.updatedAt ? formatBeijingTime(new Date(stat.updatedAt)) : "—"}
                               </span>
                             </div>
@@ -997,12 +1158,12 @@ export default function ScenesPage() {
                         )}
 
                         {/* Card Footer Actions */}
-                        <div className="pt-2.5 sm:pt-3 border-t border-border/60 flex items-center justify-between gap-2 mt-auto">
+                        <div className="pt-3 border-t border-border/55 flex items-center justify-between gap-2 mt-auto">
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => handleOpenMemory(scene.id)}
-                            className="h-8 text-xs text-muted-foreground hover:text-foreground px-2 sm:px-2.5 rounded-xl gap-1 font-semibold"
+                            className="h-8 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 px-2.5 rounded-xl gap-1.5 font-medium cursor-pointer"
                           >
                             <Database className="w-3.5 h-3.5 text-chart-3" />
                             <span>记忆线索</span>
@@ -1012,7 +1173,7 @@ export default function ScenesPage() {
                             <Button
                               size="sm"
                               onClick={() => navigate(`/chat/${personaId}`)}
-                              className="h-8 text-xs font-bold px-3 sm:px-3.5 rounded-xl bg-chart-3 text-white hover:bg-chart-3/90 shadow-xs flex items-center gap-1.5"
+                              className="h-8 text-xs font-semibold px-3.5 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs flex items-center gap-1.5 cursor-pointer"
                               title="点击一键进入当前运行的剧场对话"
                             >
                               <Play className="w-3 h-3 fill-current" />
@@ -1021,9 +1182,10 @@ export default function ScenesPage() {
                           ) : (
                             <Button
                               size="sm"
+                              variant="outline"
                               onClick={() => activateSceneMutation.mutate({ personaId, sceneId: scene.id })}
                               disabled={activateSceneMutation.isPending}
-                              className="h-8 text-xs font-bold px-3.5 sm:px-4 rounded-xl shadow-xs hover:shadow transition-all gap-1"
+                              className="h-8 text-xs font-semibold px-3.5 rounded-xl border-border/75 hover:border-primary/40 hover:bg-primary/8 hover:text-primary transition-all gap-1.5 cursor-pointer"
                             >
                               <Play className="w-3 h-3 fill-current" />
                               <span>进入剧场</span>
@@ -1031,24 +1193,24 @@ export default function ScenesPage() {
                           )}
                         </div>
                       </div>
-                    </div>
+                    </article>
                   );
                 })}
-              </div>
+              </motion.div>
             )}
           </div>
         )}
 
         {/* ════ VIEW 2: STUDIO (Create / Edit) ═════════════════════════ */}
         {currentView === "studio" && (
-          <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 animate-scale-in">
-            <div className="flex items-center justify-between border-b border-border/70 pb-3 sm:pb-4">
+          <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 animate-fade-in">
+            <div className="flex items-center justify-between border-b border-border/70 pb-3 sm:pb-4 gap-3">
               <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-lg sm:text-xl shadow-inner ring-1 ring-primary/20 shrink-0">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-primary/10 border border-primary/18 text-primary flex items-center justify-center text-lg sm:text-xl shrink-0">
                   <Film className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-sm sm:text-base md:text-lg font-bold text-foreground truncate">
+                  <h2 className="text-sm sm:text-base md:text-lg font-semibold text-foreground truncate tracking-tight">
                     {studioForm.id ? "编辑剧本场景工坊" : "设计新剧本情境"}
                   </h2>
                   <p className="text-[11px] sm:text-xs text-muted-foreground truncate">
@@ -1057,22 +1219,35 @@ export default function ScenesPage() {
                 </div>
               </div>
 
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setCurrentView("gallery")}
-                className="text-xs rounded-xl shrink-0"
-              >
-                返回大厅
-              </Button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {studioForm.id && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleOpenCreate}
+                    className="text-xs rounded-xl border-border/70 gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span className="hidden xs:inline">新建剧本</span>
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setCurrentView("gallery")}
+                  className="text-xs rounded-xl shrink-0 cursor-pointer"
+                >
+                  返回大厅
+                </Button>
+              </div>
             </div>
 
             {/* Inspiration Templates (New Only) */}
             {!studioForm.id && (
-              <div className="rounded-2xl sm:rounded-3xl border border-primary/20 bg-primary/[0.03] p-3.5 sm:p-5 shadow-xs">
+              <div className="warm-card warm-card-static border-border/70 p-4 sm:p-5">
                 <div className="flex items-center gap-2 mb-2.5 sm:mb-3">
                   <Lightbulb className="w-4 h-4 text-primary" />
-                  <span className="text-xs font-bold text-foreground">
+                  <span className="text-xs font-semibold text-foreground">
                     灵感模板库（点击一键套用）
                   </span>
                 </div>
@@ -1082,11 +1257,11 @@ export default function ScenesPage() {
                       key={tmpl.title}
                       type="button"
                       onClick={() => handleApplyTemplate(tmpl)}
-                      className="p-3 rounded-2xl border border-border/70 bg-card hover:border-primary hover:shadow-sm text-left transition-all group"
+                      className="p-3 rounded-2xl border border-border/70 bg-muted/15 hover:bg-card hover:border-primary/45 hover:shadow-2xs text-left transition-all group cursor-pointer"
                     >
                       <div className="flex items-center gap-1.5 mb-1">
                         <span className="text-base">{tmpl.icon}</span>
-                        <span className="text-xs font-bold text-foreground group-hover:text-primary transition-colors truncate">
+                        <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors truncate">
                           {tmpl.title}
                         </span>
                       </div>
@@ -1100,7 +1275,7 @@ export default function ScenesPage() {
             )}
 
             {/* 1. Basic Info Card */}
-            <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-4 shadow-sm">
+            <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-4">
               <div className="flex items-center gap-2 text-xs font-bold text-foreground border-b border-border/50 pb-2">
                 <BookOpen className="w-4 h-4 text-primary" />
                 <span>剧本基础概况</span>
@@ -1173,7 +1348,7 @@ export default function ScenesPage() {
             </div>
 
             {/* 2. Dual Character Identity Card */}
-            <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+            <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3.5 sm:space-y-4">
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-foreground">
                   <Users className="w-4 h-4 text-primary" />
@@ -1230,7 +1405,7 @@ export default function ScenesPage() {
             </div>
 
             {/* 3. System Prompt & Narration Card */}
-            <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+            <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3.5 sm:space-y-4">
               <div className="flex items-center justify-between border-b border-border/50 pb-2 flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-foreground">
                   <Wand2 className="w-4 h-4 text-primary" />
@@ -1274,14 +1449,14 @@ export default function ScenesPage() {
                 onChange={e =>
                   setStudioForm(f => ({ ...f, systemPromptOverlay: e.target.value }))
                 }
-                placeholder="例如：角色在档案馆与调查搭档核对地图，通过提问与线索推进情节。"
+                placeholder="例如：角色在档案馆核对地图，通过提问与线索推进情节。"
                 rows={5}
                 className="text-xs leading-relaxed rounded-xl font-mono"
               />
             </div>
 
             {/* 4. Scene Visual Assets & Baseline Card (Mobile Responsive) */}
-            <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+            <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3.5 sm:space-y-4">
               <div className="border-b border-border/50 pb-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-foreground">
                   <Palette className="w-4 h-4 text-primary" />
@@ -1486,7 +1661,7 @@ export default function ScenesPage() {
             </div>
 
             {/* 5. Context Seed & Continuation Card */}
-            <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+            <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3.5 sm:space-y-4">
               <div className="flex items-center gap-2 text-xs font-bold text-foreground border-b border-border/50 pb-2">
                 <Compass className="w-4 h-4 text-primary" />
                 <span>前情切入点与开场白</span>
@@ -1499,7 +1674,7 @@ export default function ScenesPage() {
                 <Textarea
                   value={studioForm.contextSeed}
                   onChange={e => setStudioForm(f => ({ ...f, contextSeed: e.target.value }))}
-                  placeholder="例如：角色在档案馆与调查搭档核对地图，通过提问与线索推进情节。"
+                  placeholder="例如：角色在档案馆核对地图，通过提问与线索推进情节。"
                   rows={3}
                   className="text-xs leading-relaxed rounded-xl"
                   maxLength={4000}
@@ -1549,13 +1724,9 @@ export default function ScenesPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      if (studioForm.id && window.confirm("确定删除这个剧本场景？此操作不可撤销。")) {
-                        deleteSceneMutation.mutate({ id: studioForm.id });
-                      }
-                    }}
+                    onClick={() => setConfirmDeleteSceneOpen(true)}
                     disabled={deleteSceneMutation.isPending}
-                    className="text-xs text-destructive hover:bg-destructive/10 gap-1 rounded-xl px-2.5"
+                    className="text-xs text-destructive hover:bg-destructive/10 gap-1 rounded-xl px-2.5 cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span className="hidden xs:inline">删除剧本</span>
@@ -1569,7 +1740,7 @@ export default function ScenesPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => setCurrentView("gallery")}
-                  className="text-xs rounded-xl px-3"
+                  className="text-xs rounded-xl px-3 cursor-pointer"
                 >
                   取消
                 </Button>
@@ -1578,7 +1749,7 @@ export default function ScenesPage() {
                   size="sm"
                   onClick={handleSaveStudio}
                   disabled={createSceneMutation.isPending || updateSceneMutation.isPending}
-                  className="text-xs font-bold px-4 sm:px-6 rounded-xl gap-1.5 shadow-sm hover:shadow"
+                  className="text-xs font-semibold px-4 sm:px-6 rounded-xl gap-1.5 shadow-2xs cursor-pointer"
                 >
                   <Save className="w-3.5 h-3.5" />
                   {createSceneMutation.isPending || updateSceneMutation.isPending
@@ -1594,7 +1765,7 @@ export default function ScenesPage() {
 
         {/* ════ VIEW 3: MEMORY & PROGRESS ═════════════════════════════ */}
         {currentView === "memory" && (
-          <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 animate-scale-in">
+          <div className="max-w-4xl mx-auto space-y-4 sm:space-y-6 animate-fade-in">
             {detailQuery.isLoading ? (
               <div className="h-64 flex flex-col items-center justify-center gap-3 text-muted-foreground">
                 <div className="w-8 h-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
@@ -1612,20 +1783,20 @@ export default function ScenesPage() {
                 {/* Memory Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/70 pb-3 sm:pb-4">
                   <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-                    <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-2xl bg-chart-3/10 text-chart-3 flex items-center justify-center text-xl sm:text-2xl shadow-inner ring-1 ring-chart-3/20 shrink-0">
+                    <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-2xl bg-chart-3/10 border border-chart-3/20 text-chart-3 flex items-center justify-center text-xl sm:text-2xl shrink-0">
                       {currentDetailScene.icon || "🎭"}
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <h2 className="text-sm sm:text-base md:text-lg font-bold text-foreground truncate">
+                        <h2 className="text-sm sm:text-base md:text-lg font-semibold text-foreground truncate tracking-tight">
                           {currentDetailScene.name} · 记忆中枢
                         </h2>
                         {currentDetailScene.isBuiltin ? (
-                          <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-semibold">
+                          <span className="text-[9px] sm:text-[10px] px-2 py-0.5 rounded-full bg-muted border border-border/60 text-muted-foreground font-medium">
                             预置
                           </span>
                         ) : (
-                          <span className="text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">
+                          <span className="text-[9px] sm:text-[10px] px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-primary font-medium">
                             自建
                           </span>
                         )}
@@ -1641,7 +1812,7 @@ export default function ScenesPage() {
                       size="sm"
                       variant="outline"
                       onClick={() => handleOpenEdit(currentDetailScene)}
-                      className="text-xs rounded-xl gap-1 h-7.5 px-2.5"
+                      className="text-xs rounded-xl border-border/70 gap-1 h-8 px-2.5 cursor-pointer"
                     >
                       <Pencil className="w-3 h-3" />
                       <span className="hidden xs:inline">编辑设定与配图</span>
@@ -1653,7 +1824,7 @@ export default function ScenesPage() {
                         variant="outline"
                         onClick={() => copySceneMutation.mutate({ sceneId: currentDetailScene.id })}
                         disabled={copySceneMutation.isPending}
-                        className="text-xs rounded-xl gap-1 h-7.5 px-2.5"
+                        className="text-xs rounded-xl border-border/70 gap-1 h-8 px-2.5 cursor-pointer"
                       >
                         <Copy className="w-3 h-3" />
                         <span className="hidden xs:inline">另存为我的剧本</span>
@@ -1664,7 +1835,7 @@ export default function ScenesPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => setCurrentView("gallery")}
-                      className="text-xs rounded-xl h-7.5 px-2.5"
+                      className="text-xs rounded-xl h-8 px-2.5 cursor-pointer"
                     >
                       大厅
                     </Button>
@@ -1674,54 +1845,58 @@ export default function ScenesPage() {
                 {/* Dashboard Tiles (2 columns on mobile, 4 on desktop) */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
                   <button
+                    type="button"
                     onClick={() => setShowSceneChatManager(true)}
-                    className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-xs text-left w-full hover:bg-muted/30 hover:border-primary/30 hover:shadow-sm transition-all cursor-pointer"
+                    className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-2xs text-left w-full hover:bg-muted/30 hover:border-primary/35 transition-all cursor-pointer"
                   >
-                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-semibold">
+                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                       <Flame className="w-3.5 h-3.5 text-primary" />
                       对话回合
                     </p>
-                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-bold text-foreground">
-                      {currentMemory?.storyState?.turn ?? 0} <span className="text-[10px] sm:text-xs font-normal text-muted-foreground">回合</span>
+                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-semibold font-mono tabular-nums text-foreground">
+                      {currentMemory?.storyState?.turn ?? 0}{" "}
+                      <span className="text-[10px] sm:text-xs font-sans font-normal text-muted-foreground">回合</span>
                     </p>
                   </button>
 
-                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-xs">
-                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-semibold">
+                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-2xs">
+                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                       <Clock className="w-3.5 h-3.5 text-chart-3" />
                       剧情更新
                     </p>
-                    <p className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs font-bold text-foreground truncate">
+                    <p className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs font-semibold font-mono tabular-nums text-foreground truncate">
                       {currentMemory?.storyState?.updatedAt ?? "暂无活动"}
                     </p>
                   </div>
 
-                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-xs">
-                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-semibold">
+                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-2xs">
+                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                       <Activity className="w-3.5 h-3.5 text-emerald-500" />
                       已确认事实
                     </p>
-                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-bold text-foreground">
-                      {memoryFacts.length} <span className="text-[10px] sm:text-xs font-normal text-muted-foreground">条</span>
+                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-semibold font-mono tabular-nums text-foreground">
+                      {memoryFacts.length}{" "}
+                      <span className="text-[10px] sm:text-xs font-sans font-normal text-muted-foreground">条</span>
                     </p>
                   </div>
 
-                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-xs">
-                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-semibold">
+                  <div className="rounded-2xl border border-border/70 bg-card p-3 sm:p-4 shadow-2xs">
+                    <p className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground font-medium">
                       <CheckCircle2 className="w-3.5 h-3.5 text-amber-500" />
                       未完成线索
                     </p>
-                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-bold text-foreground">
-                      {memoryThreads.length} <span className="text-[10px] sm:text-xs font-normal text-muted-foreground">条</span>
+                    <p className="mt-1 sm:mt-1.5 text-base sm:text-lg font-semibold font-mono tabular-nums text-foreground">
+                      {memoryThreads.length}{" "}
+                      <span className="text-[10px] sm:text-xs font-sans font-normal text-muted-foreground">条</span>
                     </p>
                   </div>
                 </div>
 
                 {/* Summary Card */}
-                <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+                <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3.5 sm:space-y-4">
                   <div className="flex items-center justify-between border-b border-border/50 pb-2 flex-wrap gap-2">
                     <div>
-                      <h3 className="font-bold text-xs sm:text-sm text-foreground">滚动前情摘要</h3>
+                      <h3 className="font-semibold text-xs sm:text-sm text-foreground">滚动前情摘要</h3>
                       <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5">
                         再次进入该场景时先读取这段摘要，快速接续剧情线索。
                       </p>
@@ -1736,7 +1911,7 @@ export default function ScenesPage() {
                         })
                       }
                       disabled={summarizeMemoryMutation.isPending}
-                      className="text-xs rounded-xl gap-1 text-primary border-primary/30 hover:bg-primary/10 h-7 px-2.5"
+                      className="text-xs rounded-xl gap-1 text-primary border-primary/30 hover:bg-primary/10 h-7.5 px-2.5 cursor-pointer"
                     >
                       <Sparkles className="w-3 h-3" />
                       {summarizeMemoryMutation.isPending ? "提炼中…" : "提炼最新摘要"}
@@ -1748,7 +1923,7 @@ export default function ScenesPage() {
                     onChange={e => setSummaryDraft(e.target.value)}
                     rows={4}
                     maxLength={2000}
-                    className="rounded-2xl text-xs leading-relaxed font-mono"
+                    className="rounded-2xl text-xs leading-relaxed font-mono bg-muted/20 border-border/70"
                     placeholder="还没有生成摘要。在场景里聊几轮后点击上方「提炼最新摘要」，或在此处手动写一段前情。"
                   />
 
@@ -1757,7 +1932,7 @@ export default function ScenesPage() {
                       size="sm"
                       onClick={handleSaveSummary}
                       disabled={updateMemoryMutation.isPending}
-                      className="text-xs font-bold px-3.5 sm:px-4 rounded-xl gap-1 h-7.5"
+                      className="text-xs font-semibold px-3.5 sm:px-4 rounded-xl gap-1 h-8 cursor-pointer"
                     >
                       <Save className="w-3 h-3" />
                       保存摘要
@@ -1766,10 +1941,10 @@ export default function ScenesPage() {
                 </div>
 
                 {/* Facts Card */}
-                <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3 sm:space-y-4 shadow-sm">
+                <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3 sm:space-y-4">
                   <div className="flex items-center justify-between border-b border-border/50 pb-2 flex-wrap gap-2">
                     <div>
-                      <h3 className="font-bold text-xs sm:text-sm text-foreground">剧本内已确认事实</h3>
+                      <h3 className="font-semibold text-xs sm:text-sm text-foreground">剧本内已确认事实</h3>
                       <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5">
                         下次进入场景时，这些事实会随记忆一同注入，AI 会自动记住重要时刻与习惯默契。
                       </p>
@@ -1784,7 +1959,7 @@ export default function ScenesPage() {
                         })
                       }
                       disabled={extractFactsMutation.isPending}
-                      className="text-xs rounded-xl gap-1 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10 h-7 px-2.5"
+                      className="text-xs rounded-xl gap-1 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10 h-7.5 px-2.5 cursor-pointer"
                     >
                       <Sparkles className="w-3 h-3" />
                       {extractFactsMutation.isPending ? "提炼事实中…" : "✨ 智能提炼事实"}
@@ -1792,7 +1967,7 @@ export default function ScenesPage() {
                   </div>
 
                   {memoryFacts.length === 0 ? (
-                    <p className="text-xs text-muted-foreground bg-muted/30 border border-border/40 rounded-2xl p-3.5">
+                    <p className="text-xs text-muted-foreground bg-muted/25 border border-border/50 rounded-2xl p-3.5">
                       暂无剧本专属事实。在对话中达成重要约定或产生默契后，系统会自动提炼，您也可以在此手动输入。
                     </p>
                   ) : (
@@ -1802,8 +1977,8 @@ export default function ScenesPage() {
                           key={fact.id}
                           className={`inline-flex items-center gap-1 sm:gap-1.5 rounded-full border px-2.5 sm:px-3.5 py-1 text-xs text-foreground transition-all ${
                             fact.source === "llm"
-                              ? "border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15 text-emerald-950 dark:text-emerald-100"
-                              : "border-border/80 bg-muted/40 hover:bg-muted/70"
+                              ? "border-emerald-500/30 bg-emerald-500/6 hover:bg-emerald-500/15 text-emerald-950 dark:text-emerald-100"
+                              : "border-border/70 bg-muted/35 hover:bg-muted/65"
                           }`}
                         >
                           {fact.source === "llm" && (
@@ -1813,8 +1988,9 @@ export default function ScenesPage() {
                           )}
                           <span>{fact.fact}</span>
                           <button
+                            type="button"
                             onClick={() => handleRemoveFact(fact.id)}
-                            className="text-muted-foreground hover:text-destructive transition-colors ml-0.5 p-0.5"
+                            className="text-muted-foreground hover:text-destructive transition-colors ml-0.5 p-0.5 cursor-pointer"
                             title="删除这条事实"
                           >
                             <X className="w-3 h-3" />
@@ -1829,7 +2005,7 @@ export default function ScenesPage() {
                       value={factDraft}
                       onChange={e => setFactDraft(e.target.value)}
                       placeholder="输入一条剧本事实，按回车添加…"
-                      className="text-xs rounded-xl h-8.5"
+                      className="text-xs rounded-xl h-9 bg-muted/20 border-border/70"
                       onKeyDown={e => {
                         if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                           e.preventDefault();
@@ -1842,7 +2018,7 @@ export default function ScenesPage() {
                       variant="outline"
                       onClick={handleAddFact}
                       disabled={!factDraft.trim() || updateMemoryMutation.isPending}
-                      className="text-xs rounded-xl shrink-0 gap-1 font-semibold h-8.5 px-3"
+                      className="text-xs rounded-xl border-border/70 shrink-0 gap-1 font-semibold h-9 px-3 cursor-pointer"
                     >
                       <Plus className="w-3 h-3" />
                       添加
@@ -1852,9 +2028,9 @@ export default function ScenesPage() {
 
                 {/* Open Threads Card (if any) */}
                 {memoryThreads.length > 0 && (
-                  <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3 sm:space-y-4 shadow-sm">
+                  <div className="warm-card warm-card-static border-border/70 p-4 sm:p-6 space-y-3 sm:space-y-4">
                     <div className="border-b border-border/50 pb-2">
-                      <h3 className="font-bold text-xs sm:text-sm text-foreground">未完成的剧情线索</h3>
+                      <h3 className="font-semibold text-xs sm:text-sm text-foreground">未完成的剧情线索</h3>
                       <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5">
                         在接下来的对话中提醒人物自然推进这些事件。
                       </p>
@@ -1869,7 +2045,7 @@ export default function ScenesPage() {
                           {thread.status === "open" ? (
                             <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
                           ) : (
-                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0 mt-0.5" />
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
                           )}
                           <span
                             className={
@@ -1887,9 +2063,9 @@ export default function ScenesPage() {
                 )}
 
                 {/* Reset Action */}
-                <div className="rounded-2xl sm:rounded-3xl border border-destructive/20 bg-destructive/[0.02] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="rounded-3xl border border-destructive/22 bg-destructive/[0.025] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="space-y-0.5">
-                    <h4 className="text-xs font-bold text-destructive">清空剧情记忆重开</h4>
+                    <h4 className="text-xs font-semibold text-destructive">清空剧情记忆重开</h4>
                     <p className="text-[10px] sm:text-[11px] text-muted-foreground">
                       仅清空该场景内的剧情记忆缓存与前情摘要，不会删除角色原有的聊天消息。
                     </p>
@@ -1897,16 +2073,9 @@ export default function ScenesPage() {
                   <Button
                     size="sm"
                     variant="destructive"
-                    onClick={() => {
-                      if (window.confirm("确定清空这个场景的剧情记忆并重新开始？聊天记录不会被删除。")) {
-                        clearMemoryMutation.mutate({
-                          sceneId: currentDetailScene.id,
-                          personaId,
-                        });
-                      }
-                    }}
+                    onClick={() => setConfirmClearMemoryOpen(true)}
                     disabled={clearMemoryMutation.isPending}
-                    className="text-xs rounded-xl gap-1.5 h-8 shrink-0 self-end sm:self-auto"
+                    className="text-xs rounded-xl gap-1.5 h-8 shrink-0 self-end sm:self-auto cursor-pointer"
                   >
                     <RotateCcw className="w-3 h-3" />
                     清空记忆重开
@@ -1917,6 +2086,113 @@ export default function ScenesPage() {
           </div>
         )}
       </main>
+
+      {/* Secondary Confirmation Modal: Delete Scene */}
+      <MotionModal
+        open={confirmDeleteSceneOpen}
+        onClose={() => {
+          if (!deleteSceneMutation.isPending) setConfirmDeleteSceneOpen(false);
+        }}
+        ariaLabel="删除剧本确认"
+        className="max-w-md p-6"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-destructive/10 border border-destructive/20 text-destructive flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="space-y-1 min-w-0">
+              <h3 className="text-sm font-semibold text-foreground">确定删除这个剧本场景？</h3>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                即将永久移除剧本「<span className="font-medium text-foreground">{studioForm.name || "未命名场景"}</span>」及其专属配图设定。此操作不可撤销。
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={deleteSceneMutation.isPending}
+              onClick={() => setConfirmDeleteSceneOpen(false)}
+              className="rounded-xl text-xs cursor-pointer"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteSceneMutation.isPending || !studioForm.id}
+              onClick={() => {
+                if (studioForm.id) {
+                  deleteSceneMutation.mutate({ id: studioForm.id });
+                }
+              }}
+              className="rounded-xl text-xs font-semibold gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {deleteSceneMutation.isPending ? "删除中…" : "确认删除"}
+            </Button>
+          </div>
+        </div>
+      </MotionModal>
+
+      {/* Secondary Confirmation Modal: Clear Scene Memory */}
+      <MotionModal
+        open={confirmClearMemoryOpen}
+        onClose={() => {
+          if (!clearMemoryMutation.isPending) setConfirmClearMemoryOpen(false);
+        }}
+        ariaLabel="清空剧情记忆确认"
+        className="max-w-md p-6"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-destructive/10 border border-destructive/20 text-destructive flex items-center justify-center shrink-0">
+              <RotateCcw className="w-5 h-5" />
+            </div>
+            <div className="space-y-1 min-w-0">
+              <h3 className="text-sm font-semibold text-foreground">清空剧情记忆并重新开始？</h3>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                将清空「<span className="font-medium text-foreground">{currentDetailScene?.name || "当前场景"}</span>」内的滚动前情摘要、已确认事实与未完成线索，下次进入时从头开场。历史聊天记录不会被删除。
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={clearMemoryMutation.isPending}
+              onClick={() => setConfirmClearMemoryOpen(false)}
+              className="rounded-xl text-xs cursor-pointer"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={clearMemoryMutation.isPending || !currentDetailScene?.id}
+              onClick={() => {
+                if (currentDetailScene?.id) {
+                  clearMemoryMutation.mutate({
+                    sceneId: currentDetailScene.id,
+                    personaId,
+                  });
+                }
+              }}
+              className="rounded-xl text-xs font-semibold gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              {clearMemoryMutation.isPending ? "清空中…" : "确认清空重开"}
+            </Button>
+          </div>
+        </div>
+      </MotionModal>
 
       {showSceneChatManager && (historyScene || currentDetailScene) && (
         <SceneChatHistoryManager

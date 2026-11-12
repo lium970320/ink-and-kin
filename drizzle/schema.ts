@@ -813,3 +813,6 @@ export * from "./proactive-schema";
 export * from "./runtime-state-schema";
 
 export { voiceConfigs } from "./voice-schema";
+
+export * from "./scene-image-config-schema";
+export * from "./scene-image-job-schema";

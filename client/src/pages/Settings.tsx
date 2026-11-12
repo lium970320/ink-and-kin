@@ -1,6 +1,7 @@
 import VoiceSettingsCard from "@/components/VoiceSettingsCard";
 import { useState, useEffect, useMemo, useCallback, useRef, useId, type ChangeEvent, type ReactNode } from "react";
 import { useLocation } from "wouter";
+import { motion, useReducedMotion } from "framer-motion";
 import { trpc } from "@/lib/trpc";
 import { formatBeijingDate, formatBeijingDateTime } from "@/lib/beijing-time";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -20,7 +21,7 @@ import {
   Leaf, Eye, EyeOff, Activity, Server, Cpu, Volume2, ImageIcon, Radio,
   RefreshCw, Terminal, Copy, ExternalLink, Plus, Sparkles,
 } from "lucide-react";
-import { useTilt } from "@/hooks/useTilt";
+import { SPRING_SNAPPY } from "@/components/ui/motion";
 import { toast } from "sonner";
 
 // ─── TAB CONFIG ──────────────────────────────────────────────────────────────
@@ -42,15 +43,17 @@ function SliderField({ label, value, onChange, min, max, step, unit }: {
   min: number; max: number; step: number; unit?: string;
 }) {
   return (
-    <div className="space-y-3 p-4 bg-muted/20 border border-border/30 rounded-xl">
-      <div className="flex items-center justify-between">
-        <Label className="text-sm font-semibold text-foreground/90">{label}</Label>
-        <span className="text-sm font-bold text-primary bg-primary/8 px-2.5 py-0.5 rounded-full">{value}{unit}</span>
+    <div className="space-y-3 p-4 bg-muted/20 border border-border/70 rounded-2xl transition-colors hover:border-border">
+      <div className="flex items-center justify-between gap-3">
+        <Label className="text-xs sm:text-sm font-semibold text-foreground/90">{label}</Label>
+        <span className="text-xs font-semibold font-mono tabular-nums text-primary bg-primary/10 border border-primary/20 px-2.5 py-0.5 rounded-lg">
+          {value}{unit}
+        </span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-2 bg-muted rounded-full appearance-none cursor-pointer accent-primary" />
-      <div className="flex justify-between text-[11px] text-muted-foreground/80 font-medium px-0.5">
+        className="w-full h-1.5 bg-muted rounded-full appearance-none cursor-pointer accent-primary" />
+      <div className="flex justify-between text-[11px] font-mono tabular-nums text-muted-foreground/80 px-0.5">
         <span>{min}{unit}</span><span>{max}{unit}</span>
       </div>
     </div>
@@ -172,10 +175,10 @@ function SettingsDisclosure({ title, subtitle, icon: Icon, children }: {
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
-    <section className="warm-card overflow-hidden">
+    <section className="warm-card warm-card-static overflow-hidden">
       <h2>
         <button type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} aria-controls={id}
-          className="ai-disclosure-trigger flex w-full items-center gap-3 p-4 text-left sm:p-5">
+          className="ai-disclosure-trigger flex w-full items-center gap-3 p-4 text-left sm:p-5 cursor-pointer">
           <span className="section-chip"><Icon className="h-4.5 w-4.5" /></span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold">{title}</span>
@@ -185,7 +188,7 @@ function SettingsDisclosure({ title, subtitle, icon: Icon, children }: {
         </button>
       </h2>
       <div id={id} className="collapse-grid" data-open={open} aria-hidden={!open} inert={!open}>
-        <div><div className="border-t border-border/40 p-4 sm:p-5">{children}</div></div>
+        <div><div className="border-t border-border/50 p-4 sm:p-5">{children}</div></div>
       </div>
     </section>
   );
@@ -582,13 +585,13 @@ function ProviderConfigRow({ provider, expanded, onToggle, isDefault, isFallback
 
 function StatItem({ icon: Icon, label, value }: { icon: any; label: string; value: string | number }) {
   return (
-    <div className="flex items-center gap-3 p-3 bg-muted/20 rounded-xl">
-      <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
-        <Icon className="w-4 h-4 text-primary/70" />
+    <div className="flex items-center gap-3 p-3.5 bg-muted/20 border border-border/65 rounded-2xl">
+      <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/15 flex items-center justify-center flex-shrink-0">
+        <Icon className="w-4 h-4 text-primary/80" />
       </div>
-      <div>
-        <div className="text-sm font-semibold text-foreground">{value}</div>
-        <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="min-w-0">
+        <div className="text-sm font-semibold font-mono tabular-nums text-foreground truncate">{value}</div>
+        <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
       </div>
     </div>
   );
@@ -683,7 +686,7 @@ function DiagnosticCard({ icon, title, subtitle, action, hue, children }: {
   children: ReactNode;
 }) {
   return (
-    <section className="warm-card p-5 space-y-4">
+    <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
       <SectionHeader icon={icon} title={title} subtitle={subtitle} action={action} hue={hue} />
       {children}
     </section>
@@ -716,9 +719,9 @@ function DiagnosticRow({ label, value, mono = false, badge }: {
 
 function DiagGroup({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
   return (
-    <div className="hud-corners rounded-lg border border-border/50 bg-muted/10 p-3">
-      <div className="flex items-baseline justify-between gap-2 pb-2 mb-1 border-b border-border/40">
-        <span className="text-xs font-semibold tracking-wide text-foreground/80">{title}</span>
+    <div className="rounded-xl border border-border/65 bg-muted/15 p-3.5">
+      <div className="flex items-baseline justify-between gap-2 pb-2 mb-1.5 border-b border-border/45">
+        <span className="text-xs font-semibold tracking-wide text-foreground/85">{title}</span>
         {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}
       </div>
       {children}
@@ -733,9 +736,9 @@ function StatTile({ value, label, sub, tone }: { value: ReactNode; label: string
     : tone === "warn" ? "text-amber-600 dark:text-amber-400"
     : "stat-tile-number";
   return (
-    <div className="stat-tile px-3 py-2.5 min-w-0" title={fullValue}>
-      <div className={`text-lg font-bold tabular-nums truncate leading-tight ${numberClass}`}>{display}</div>
-      <div className="mt-0.5 text-[11px] text-muted-foreground leading-tight">{label}</div>
+    <div className="stat-tile rounded-xl border border-border/65 bg-muted/15 px-3.5 py-3 min-w-0" title={fullValue}>
+      <div className={`text-lg font-semibold font-mono tabular-nums truncate leading-tight ${numberClass}`}>{display}</div>
+      <div className="mt-1 text-[11px] text-muted-foreground leading-tight">{label}</div>
       {sub && <div className="text-[10px] text-muted-foreground/80 leading-tight mt-0.5">{sub}</div>}
     </div>
   );
@@ -762,18 +765,17 @@ function KpiTile({ value, text, label, sub, tone }: {
   value?: number; text?: string; label: string; sub?: string; tone?: StatusTone;
 }) {
   const animated = useCountUp(value ?? 0);
-  const tilt = useTilt(6);
   const display = text ?? formatCompact(animated);
   const numberClass = tone === "error" ? "text-red-600 dark:text-red-400"
     : tone === "warn" ? "text-amber-600 dark:text-amber-400"
     : "stat-tile-number";
   return (
-    <div ref={tilt.ref} onMouseMove={tilt.onMouseMove} onMouseLeave={tilt.onMouseLeave}
-      className="stat-tile glow-border tilt-card rounded-xl px-4 py-3.5 min-w-0"
+    <div
+      className="stat-tile rounded-2xl border border-border/70 bg-card/95 px-4 py-3.5 min-w-0 shadow-2xs"
       title={typeof value === "number" ? value.toLocaleString("zh-CN") : undefined}>
       <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-2xl font-bold tabular-nums leading-tight truncate ${numberClass}`}>{display}</div>
-      {sub && <div className="mt-1 text-[11px] text-muted-foreground/80 truncate">{sub}</div>}
+      <div className={`mt-1.5 text-2xl font-semibold font-mono tabular-nums leading-tight truncate ${numberClass}`}>{display}</div>
+      {sub && <div className="mt-1 text-[11px] font-mono tabular-nums text-muted-foreground/80 truncate">{sub}</div>}
     </div>
   );
 }
@@ -1006,8 +1008,8 @@ function sceneImageLogSourceLabel(source: string | null | undefined): string {
 
 function sceneImageReferenceModeLabel(mode: string | null | undefined): string {
   const labels: Record<string, string> = {
-    grok_single_image_edit: "仅人物主图已通过 Grok 单图编辑请求提交",
-    grok_multi_image_edit: "人物主图与用户图已通过 Grok 多图编辑请求提交",
+    grok_single_image_edit: "已将一张参考图按角色标记提交 Grok 编辑",
+    grok_multi_image_edit: "已将多张参考图按角色标记提交 Grok 编辑",
     google_single_image_input: "仅人物主图已作为 Google 单图输入提交",
     google_multi_image_input: "人物主图与用户图已作为 Google 多图输入提交",
     compatibility_single_image_edit: "仅人物主图已通过兼容接口的标准单图编辑请求提交",
@@ -1015,7 +1017,10 @@ function sceneImageReferenceModeLabel(mode: string | null | undefined): string {
     compatibility_single_reference_input: "仅人物主图已按兼容字段提交；上游是否采用需以该站说明为准",
     compatibility_reference_input: "人物主图与用户图已按兼容字段提交；上游是否采用需以该站说明为准",
     merged_reference_image: "人物主图与用户图已合并为一张图后提交（兼容回退）",
-    no_reference: "本次是无参考图的中性测试",
+    no_reference: "本次没有提交参考图",
+    openai_edit: "已按人物、用户、环境标记提交参考图",
+    gemini_inline: "已按人物、用户、环境标记提交内联参考图",
+    comfyui_workflow: "已按工作流指定节点提交参考图",
     reference_unavailable: "人物主图或用户图当时不可读取",
     not_attempted: "本次未开始图片接口调用",
   };
@@ -1023,8 +1028,8 @@ function sceneImageReferenceModeLabel(mode: string | null | undefined): string {
 }
 
 function sceneImageOutputUrl(key: string | null | undefined): string | null {
-  const normalized = (key ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
-  return /^(?:scene-images|scene-image-tests)\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(normalized)
+  const normalized = (key ?? "").replace(/^\/uploads\//, "");
+  return /^(?:scene-images|scene-image-tests)\/[1-9][0-9]*\/[A-Za-z0-9_-][A-Za-z0-9._-]*\.(?:png|jpe?g|webp)$/i.test(normalized)
     ? `/uploads/${normalized}`
     : null;
 }
@@ -1112,7 +1117,7 @@ function ProfileTab() {
   return (
     <div className="space-y-6 card-stagger">
       {/* Avatar + Basic Info */}
-      <div className="warm-card p-6">
+      <div className="warm-card warm-card-static p-6">
         <div className="flex items-start gap-5">
           <div className="relative">
             <div className="w-20 h-20 rounded-xl bg-primary/10 border border-primary/15 flex items-center justify-center">
@@ -1177,7 +1182,7 @@ function ProfileTab() {
 
       {/* Account Stats */}
       {accountStats && (
-        <div className="warm-card p-5 space-y-4">
+        <div className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
           <SectionHeader icon={Database} title="账户统计" subtitle="账号内各类数据的总量" />
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <StatItem icon={Users} label="数字分身" value={accountStats.totalPersonas} />
@@ -1191,7 +1196,7 @@ function ProfileTab() {
       )}
 
       {/* Security */}
-      <div className="warm-card p-5 space-y-4">
+      <div className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={Shield} title="安全设置" subtitle="密码与登录方式" />
         <div className="space-y-3">
           <div className="flex items-center justify-between p-3 bg-muted/20 rounded-xl">
@@ -1352,12 +1357,13 @@ type SceneImageRelaySummary = {
 type SceneImageRelayDraft = SceneImageRelaySummary & {
   clientId: string;
   apiKey: string;
+  clearKey: boolean;
 };
 
 type SceneImageRelayTestMode = "neutral" | "scene";
 
 type SceneImageTestResult = {
-  status: "running" | "success" | "error";
+  status: "running" | "cancelling" | "cancelled" | "success" | "error";
   durationMs?: number;
   imageUrl?: string | null;
   reason?: string | null;
@@ -1375,6 +1381,7 @@ type SceneImageModelOption = {
 };
 
 type SceneImageModelLookup = {
+  target?: string;
   status: "loading" | "success" | "error";
   models?: SceneImageModelOption[];
   protocol?: Exclude<SceneImageProtocol, "auto">;
@@ -1391,6 +1398,7 @@ type SceneImagePromptRewriteRelayOption = {
 };
 
 type SceneImageSettingsSummary = {
+  revision: number;
   source: "saved" | "environment" | "none";
   hasSavedConfig: boolean;
   enabled: boolean;
@@ -1407,7 +1415,7 @@ type SceneImageSettingsSummary = {
   userReference: SceneImageReference | null;
   personaReferences: SceneImageReference[];
   activePersonaReferenceKey: string | null;
-  /** null 表示自动优先 Claude。 */
+  /** null 表示按当前账号的默认规则选择。 */
   promptRewriteRelayId: number | null;
   promptRewriteDefaultRelayId: number | null;
   promptRewriteRelayOptions: SceneImagePromptRewriteRelayOption[];
@@ -1415,7 +1423,7 @@ type SceneImageSettingsSummary = {
 };
 
 function createSceneImageRelayDraft(relay: SceneImageRelaySummary, index: number): SceneImageRelayDraft {
-  return { ...relay, clientId: relay.id === null ? `environment-${index}` : `saved-${relay.id}`, apiKey: "" };
+  return { ...relay, clientId: relay.id === null ? `environment-${index}` : `saved-${relay.id}`, apiKey: "", clearKey: false };
 }
 
 function createNewSceneImageRelayDraft(index: number): SceneImageRelayDraft {
@@ -1427,6 +1435,7 @@ function createNewSceneImageRelayDraft(index: number): SceneImageRelayDraft {
     enabled: true,
     apiKeyConfigured: false,
     apiKey: "",
+    clearKey: false,
     baseUrl: "",
     model: "",
     protocol: "openai",
@@ -1474,9 +1483,35 @@ function readImageFileAsBase64(file: File): Promise<string> {
   });
 }
 
+const SCENE_WORKFLOW_MAX_BYTES = 128 * 1024;
+
+function validateWorkflowDraft(json: string) {
+  if (new TextEncoder().encode(json).byteLength > SCENE_WORKFLOW_MAX_BYTES) throw new Error("工作流文件不能超过 128 KiB。");
+  const value = JSON.parse(json);
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length) {
+    throw new Error("请输入 ComfyUI 导出的 API 工作流对象。");
+  }
+}
+
+function sceneImageRelayTarget(relay: Pick<SceneImageRelaySummary, "baseUrl" | "protocol">) {
+  let base = relay.baseUrl.trim().replace(/\/+$/, "");
+  try {
+    const url = new URL(base);
+    if (!url.username && !url.password && !url.search && !url.hash) base = url.origin + url.pathname.replace(/\/+$/, "");
+  } catch { /* Keep invalid draft addresses distinct from a valid saved one. */ }
+  return `${relay.protocol}:${base}`;
+}
+
 function SceneImageSettingsCard() {
+  const utils = trpc.useUtils();
   const configQuery = trpc.sceneImageConfig.get.useQuery();
-  const config = configQuery.data as SceneImageSettingsSummary | undefined;
+  const remoteConfig = configQuery.data as SceneImageSettingsSummary | undefined;
+  const [config, setConfig] = useState<SceneImageSettingsSummary>();
+  const configRef = useRef<SceneImageSettingsSummary | undefined>(undefined);
+  const [conflict, setConflict] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [writing, setWriting] = useState(false);
+  const writeRef = useRef(false);
   const [enabled, setEnabled] = useState(false);
   const [priorityStrategy, setPriorityStrategy] = useState<"comfyui_first" | "relay_first" | "comfyui_only" | "relay_only">("comfyui_first");
   const [comfyPromptTemplate, setComfyPromptTemplate] = useState<string>("");
@@ -1492,72 +1527,108 @@ function SceneImageSettingsCard() {
   const [relayTestMode, setRelayTestMode] = useState<SceneImageRelayTestMode>("neutral");
   const [relayTestScenePrompt, setRelayTestScenePrompt] = useState("");
   const [modelLookups, setModelLookups] = useState<Record<string, SceneImageModelLookup>>({});
-  const automaticModelLookupIds = useRef(new Set<string>());
+  const testOperations = useRef(new Map<string, { id: string; cancelling: boolean }>());
+  const modelLookupsInFlight = useRef(new Set<string>());
 
-  useEffect(() => {
-    if (!config) return;
-    setEnabled(config.enabled);
-    setPriorityStrategy(config.priorityStrategy ?? "comfyui_first");
-    setComfyPromptTemplate(config.comfyPromptTemplate ?? "");
-    setUserReference(config.userReference);
-    setPersonaReferences(config.personaReferences);
-    setActivePersonaReferenceKey(config.activePersonaReferenceKey);
+  const acceptConfig = useCallback((next: SceneImageSettingsSummary) => {
+    configRef.current = next;
+    setConfig(next);
+  }, []);
+  const resetDrafts = useCallback((next: SceneImageSettingsSummary) => {
+    acceptConfig(next);
+    setEnabled(next.enabled);
+    setPriorityStrategy(next.priorityStrategy ?? "comfyui_first");
+    setComfyPromptTemplate(next.comfyPromptTemplate ?? "");
+    setUserReference(next.userReference);
+    setPersonaReferences(next.personaReferences);
+    setActivePersonaReferenceKey(next.activePersonaReferenceKey);
     setPromptRewriteRelayId(
-      config.promptRewriteRelayId && config.promptRewriteRelayOptions.some(option => option.relayId === config.promptRewriteRelayId)
-        ? config.promptRewriteRelayId
+      next.promptRewriteRelayId && next.promptRewriteRelayOptions.some(option => option.relayId === next.promptRewriteRelayId)
+        ? next.promptRewriteRelayId
         : null,
     );
-    setRelayDrafts(config.relays.map(createSceneImageRelayDraft));
+    setRelayDrafts(next.relays.map(createSceneImageRelayDraft));
     setModelLookups({});
-    automaticModelLookupIds.current.clear();
-  }, [config]);
+    setConflict(false);
+  }, [acceptConfig]);
+  useEffect(() => {
+    if (remoteConfig && !configRef.current) resetDrafts(remoteConfig);
+  }, [remoteConfig, resetDrafts]);
 
-  const saveConfig = trpc.sceneImageConfig.save.useMutation({
-    onSuccess: () => {
-      toast.success("场景配图设置已保存");
-      configQuery.refetch();
-    },
-    onError: error => toast.error(error.message),
+  const stale = conflict || Boolean(config && remoteConfig && remoteConfig.revision > config.revision);
+  const noteConfigError = (error: unknown, fallback: string) => {
+    if ((error as { data?: { code?: string } } | null)?.data?.code === "CONFLICT") setConflict(true);
+    toast.error(error instanceof Error ? error.message : fallback);
+  };
+  const reloadConfig = async () => {
+    if (writeRef.current || uploadingTarget || testOperations.current.size || modelLookupsInFlight.current.size
+      || (configRef.current && !window.confirm("重载将丢弃本页未保存的配图设置，是否继续？"))) return;
+    setReloading(true);
+    try {
+      const { data } = await configQuery.refetch({ throwOnError: true });
+      if (data) resetDrafts(data);
+    } catch (error) {
+      noteConfigError(error, "无法读取最新配图设置，草稿已保留。");
+    } finally {
+      setReloading(false);
+    }
+  };
+  const writeConfig = async (work: (revision: number) => Promise<void>) => {
+    if (!configRef.current || stale || reloading || writeRef.current) return false;
+    writeRef.current = true;
+    setWriting(true);
+    try {
+      await work(configRef.current.revision);
+      return true;
+    } catch (error) {
+      noteConfigError(error, "无法保存场景配图设置。");
+      return false;
+    } finally {
+      writeRef.current = false;
+      setWriting(false);
+    }
+  };
+  const saveConfig = trpc.sceneImageConfig.save.useMutation({ retry: false });
+  const saveRelay = trpc.sceneImageConfig.saveRelay.useMutation({ retry: false });
+  const deleteRelay = trpc.sceneImageConfig.deleteRelay.useMutation({ retry: false });
+  const uploadReference = trpc.sceneImageConfig.uploadReference.useMutation({ retry: false });
+  const testRelay = trpc.sceneImageConfig.testRelay.useMutation({ retry: false });
+  const listRelayModels = trpc.sceneImageConfig.listRelayModels.useMutation({ retry: false });
+  const { mutateAsync: cancelTestOperation } = trpc.sceneImageConfig.cancelOperation.useMutation({ retry: false });
+  const acceptWrite = (next: SceneImageSettingsSummary) => {
+    acceptConfig(next);
+    utils.sceneImageConfig.get.setData(undefined, previous =>
+      previous && previous.revision > next.revision ? previous : next as typeof previous);
+  };
+  useEffect(() => () => {
+    const operations = Array.from(testOperations.current.values());
+    testOperations.current.clear();
+    for (const operation of operations) {
+      if (!operation.cancelling) void cancelTestOperation({ operationId: operation.id }).catch(() => {});
+    }
+  }, [cancelTestOperation]);
+
+  const persistSceneImageConfig = () => writeConfig(async expectedRevision => {
+    const saved = await saveConfig.mutateAsync({
+      expectedRevision, enabled,
+      userReferenceKey: userReference?.key ?? null,
+      personaReferenceKeys: personaReferences.map(reference => reference.key),
+      activePersonaReferenceKey: activePersonaReferenceKey && personaReferences.some(reference => reference.key === activePersonaReferenceKey)
+        ? activePersonaReferenceKey
+        : null,
+      promptRewriteRelayId, priorityStrategy,
+      comfyPromptTemplate: comfyPromptTemplate.trim() || null,
+    });
+    acceptWrite(saved);
+    toast.success("场景配图设置已保存");
   });
-  const persistSceneImageConfig = () => saveConfig.mutateAsync({
-    enabled,
-    userReferenceKey: userReference?.key ?? null,
-    personaReferenceKeys: personaReferences.map(reference => reference.key),
-    activePersonaReferenceKey: activePersonaReferenceKey && personaReferences.some(reference => reference.key === activePersonaReferenceKey)
-      ? activePersonaReferenceKey
-      : null,
-    promptRewriteRelayId,
-    priorityStrategy,
-    comfyPromptTemplate: comfyPromptTemplate.trim() || null,
-  });
-  const uploadReference = trpc.sceneImageConfig.uploadReference.useMutation({
-    onError: error => toast.error(error.message),
-  });
-  const importLocalReferences = trpc.sceneImageConfig.importLocalReferences.useMutation({
-    onSuccess: () => {
-      toast.success("本机已有的用户主图、人物主图和备用图已导入当前账户");
-      configQuery.refetch();
-    },
-    onError: error => toast.error(error.message),
-  });
-  const saveRelay = trpc.sceneImageConfig.saveRelay.useMutation({
-    onSuccess: () => {
-      toast.success("图片设置已保存");
-      configQuery.refetch();
-    },
-    onError: error => toast.error(error.message),
-  });
-  const deleteRelay = trpc.sceneImageConfig.deleteRelay.useMutation({
-    onSuccess: () => {
-      toast.success("图片设置已移除");
-      configQuery.refetch();
-    },
-    onError: error => toast.error(error.message),
-  });
-  const testRelay = trpc.sceneImageConfig.testRelay.useMutation();
-  const listRelayModels = trpc.sceneImageConfig.listRelayModels.useMutation();
 
   const uploadReferenceFile = async (target: "user" | "personaMain" | "personaBackup", file: File) => {
+    if (!configRef.current || stale || reloading || uploadingTarget) return;
+    if (target !== "user" && personaReferences.length >= 8) {
+      toast.error("最多保存 8 张人物参考图，请先移除一张。");
+      return;
+    }
     const allowedTypes = ["image/png", "image/jpeg", "image/webp"];
     if (!allowedTypes.includes(file.type)) {
       toast.error("参考图仅支持 PNG、JPEG 或 WebP 格式");
@@ -1581,7 +1652,7 @@ function SceneImageSettingsCard() {
         if (target === "personaMain") setActivePersonaReferenceKey(reference.key);
         else setActivePersonaReferenceKey(previous => previous ?? reference.key);
       }
-      toast.success("参考图已加入，点击保存后才会用于出图");
+      toast.success("参考图已上传到当前账号，点击保存后才会用于出图");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "参考图上传失败");
     } finally {
@@ -1597,12 +1668,18 @@ function SceneImageSettingsCard() {
 
   const handleWorkflowJsonUpload = (clientId: string, event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
+    if (!file.size || file.size > SCENE_WORKFLOW_MAX_BYTES) {
+      toast.error("工作流文件应为非空 JSON，大小不能超过 128 KiB。");
+      return;
+    }
     const reader = new FileReader();
+    reader.onerror = () => toast.error("无法读取工作流文件。");
     reader.onload = (e) => {
       try {
         const text = String(e.target?.result || "");
-        JSON.parse(text);
+        validateWorkflowDraft(text);
         updateRelayDraft(clientId, { workflowJson: text });
         toast.success(`已成功读取并导入工作流：${file.name}`);
       } catch {
@@ -1610,7 +1687,6 @@ function SceneImageSettingsCard() {
       }
     };
     reader.readAsText(file);
-    event.target.value = "";
   };
 
   const removePersonaReference = (key: string) => {
@@ -1633,6 +1709,7 @@ function SceneImageSettingsCard() {
           enabled: true,
           apiKeyConfigured: false,
           apiKey: "",
+          clearKey: false,
           baseUrl: "",
           model: "",
           protocol: "comfyui",
@@ -1650,19 +1727,27 @@ function SceneImageSettingsCard() {
   };
 
   const removeRelayDraft = (relay: SceneImageRelayDraft) => {
+    if (writeRef.current || stale || reloading || testOperations.current.has(relay.clientId)) return;
     if (relay.id !== null) {
-      deleteRelay.mutate({ id: relay.id });
+      const id = relay.id;
+      void writeConfig(async expectedRevision => {
+        const saved = await deleteRelay.mutateAsync({ id, expectedRevision });
+        acceptWrite(saved);
+        setRelayDrafts(previous => previous.filter(item => item.clientId !== relay.clientId));
+        toast.success("图片设置已移除");
+      });
       return;
     }
     setRelayDrafts(previous => previous.filter(item => item.clientId !== relay.clientId));
   };
 
-  const relayPayload = useCallback((relay: SceneImageRelayDraft) => ({
+  const relayPayload = (relay: SceneImageRelayDraft, expectedRevision: number) => ({
     ...(relay.id !== null ? { id: relay.id } : {}),
+    expectedRevision,
     relayName: relay.relayName.trim() || (relay.protocol === "comfyui" ? "本地 ComfyUI" : "未命名图片中转站"),
     priority: relay.priority,
     enabled: relay.enabled,
-    apiKey: relay.apiKey.trim() || undefined,
+    apiKey: relay.clearKey ? null : relay.apiKey.trim() || undefined,
     baseUrl: relay.baseUrl.trim(),
     model: relay.model.trim(),
     protocol: relay.protocol,
@@ -1671,81 +1756,126 @@ function SceneImageSettingsCard() {
     formalReferenceEnabled: relay.protocol === "comfyui" ? true : relay.formalReferenceEnabled,
     workflowJson: relay.workflowJson ?? null,
     extraConfig: (relay.extraConfig as Record<string, any> | null) ?? null,
-  }), []);
+  });
 
-  const loadRelayModels = useCallback(async (relay: SceneImageRelayDraft) => {
-    const isComfy = relay.protocol === "comfyui";
-    if (!isComfy && !relay.apiKey.trim() && !relay.apiKeyConfigured) {
-      toast.error("获取模型前请先填写图片接口密钥");
-      return;
+  const relayNeedsKeyDecision = (relay: SceneImageRelayDraft) => {
+    const saved = configRef.current?.relays.find(item => item.id === relay.id && relay.id !== null);
+    return Boolean(saved?.apiKeyConfigured && sceneImageRelayTarget(saved) !== sceneImageRelayTarget(relay));
+  };
+  const validateRelayCredential = (relay: SceneImageRelayDraft, forRequest: boolean) => {
+    if (relayNeedsKeyDecision(relay) && !relay.clearKey && !relay.apiKey.trim()) {
+      toast.error("服务地址或协议已变更，请重新输入密钥或明确清除原密钥。");
+      return false;
     }
+    if (forRequest && relay.protocol !== "comfyui" && (relay.clearKey || (!relay.apiKey.trim() && !relay.apiKeyConfigured))) {
+      toast.error("请先填写图片接口密钥。");
+      return false;
+    }
+    return true;
+  };
+  const persistRelay = (relay: SceneImageRelayDraft) => {
+    if (!validateRelayCredential(relay, false)) return;
+    void writeConfig(async expectedRevision => {
+      const saved = await saveRelay.mutateAsync(relayPayload(relay, expectedRevision));
+      const canonical = saved.relays.find(item => item.id === saved.savedRelayId);
+      acceptWrite(saved);
+      if (canonical) {
+        const committed = { ...createSceneImageRelayDraft(canonical, 0), clientId: relay.clientId };
+        setRelayDrafts(previous => previous.some(item => item.clientId === relay.clientId)
+          ? previous.map(item => {
+            if (item.clientId !== relay.clientId) return item;
+            if (item === relay) return committed;
+            return {
+              ...item, id: canonical.id, apiKeyConfigured: canonical.apiKeyConfigured,
+              apiKey: item.apiKey === relay.apiKey ? "" : item.apiKey,
+              clearKey: item.clearKey === relay.clearKey ? false : item.clearKey,
+            };
+          })
+          : [...previous, committed]);
+      }
+      toast.success("图片设置已保存");
+    });
+  };
+
+  const loadRelayModels = async (relay: SceneImageRelayDraft) => {
+    if (!configRef.current || stale || reloading || writeRef.current || modelLookupsInFlight.current.has(relay.clientId)
+      || !validateRelayCredential(relay, true)) return;
+    const target = sceneImageRelayTarget(relay);
+    modelLookupsInFlight.current.add(relay.clientId);
     setModelLookups(previous => ({
       ...previous,
-      [relay.clientId]: { status: "loading", models: [], filteredToImageModels: true, message: null },
+      [relay.clientId]: { target, status: "loading", models: [], filteredToImageModels: true, message: null },
     }));
     try {
-      const result = await listRelayModels.mutateAsync(relayPayload(relay));
+      const result = await listRelayModels.mutateAsync(relayPayload(relay, configRef.current.revision));
       setModelLookups(previous => ({
         ...previous,
         [relay.clientId]: {
-          status: "success",
+          target, status: "success",
           models: result.models,
           filteredToImageModels: result.filteredToImageModels,
           message: result.message,
         },
       }));
-      if (result.models.length > 0 && (!relay.model || !result.models.some(model => model.id === relay.model))) {
-        if (!isComfy) {
-          updateRelayDraft(relay.clientId, { model: result.models[0].id });
-        }
+      if (relay.protocol !== "comfyui" && result.models.length > 0 && (!relay.model || !result.models.some(model => model.id === relay.model))) {
+        setRelayDrafts(previous => previous.map(item =>
+          item.clientId === relay.clientId && sceneImageRelayTarget(item) === target && item.model === relay.model
+            ? { ...item, model: result.models[0].id }
+            : item));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "获取图片模型失败";
       setModelLookups(previous => ({
         ...previous,
         [relay.clientId]: {
-          status: "error",
+          target, status: "error",
           models: [],
           filteredToImageModels: true,
           message,
         },
       }));
-      toast.error(message);
+      noteConfigError(error, message);
+    } finally {
+      modelLookupsInFlight.current.delete(relay.clientId);
     }
-  }, [listRelayModels, relayPayload]);
+  };
 
   const runRelayTest = async (relay: SceneImageRelayDraft) => {
+    const revision = configRef.current?.revision;
+    if (revision === undefined || stale || reloading || writeRef.current || testOperations.current.has(relay.clientId)
+      || !validateRelayCredential(relay, true)) return;
     const isComfy = relay.protocol === "comfyui";
-    if (!isComfy && !relay.apiKey.trim() && !relay.apiKeyConfigured) {
-      toast.error("测试前请先填写图片接口密钥");
-      return;
-    }
     if (relayTestMode === "scene" && !relayTestScenePrompt.trim()) {
       toast.error("场景提示词测试需要填写一段画面描述");
       return;
     }
+    const operation = { id: crypto.randomUUID(), cancelling: false };
+    testOperations.current.set(relay.clientId, operation);
     setTestResults(previous => ({
       ...previous,
       [relay.clientId]: { status: "running", testMode: relayTestMode },
     }));
     try {
       const result = await testRelay.mutateAsync({
-        ...relayPayload(relay),
+        ...relayPayload(relay, revision),
+        operationId: operation.id,
         testMode: relayTestMode,
         scenePrompt: relayTestMode === "scene" ? relayTestScenePrompt.trim() : undefined,
       });
+      if (testOperations.current.get(relay.clientId) !== operation || operation.cancelling) return;
       setTestResults(previous => ({
         ...previous,
         [relay.clientId]: {
           status: result.success ? "success" : "error",
-          imageUrl: result.imageUrl,
+          imageUrl: sceneImageOutputUrl(result.imageUrl),
           durationMs: result.durationMs,
           reason: result.reason,
           errorMessage: result.errorMessage,
           testMode: result.testMode,
           referenceMode: result.referenceMode,
           recorded: Boolean(result.recorded),
-          enabledForSceneImages: relay.enabled,
+          isSavedRelay: result.isSavedRelay,
+          enabledForSceneImages: result.enabledForSceneImages,
         },
       }));
       if (result.success) {
@@ -1754,6 +1884,7 @@ function SceneImageSettingsCard() {
         toast.error(result.errorMessage ? `测试未成功：${result.errorMessage}` : "图片接口没有返回可用图片");
       }
     } catch (error) {
+      if (testOperations.current.get(relay.clientId) !== operation || operation.cancelling) return;
       const message = error instanceof Error ? error.message : "图片中转站测试失败";
       setTestResults(previous => ({
         ...previous,
@@ -1766,7 +1897,30 @@ function SceneImageSettingsCard() {
           enabledForSceneImages: relay.enabled,
         },
       }));
-      toast.error(message);
+      noteConfigError(error, message);
+    } finally {
+      if (testOperations.current.get(relay.clientId) === operation && !operation.cancelling) {
+        testOperations.current.delete(relay.clientId);
+      }
+    }
+  };
+
+  const cancelRelayTest = async (relay: SceneImageRelayDraft) => {
+    const operation = testOperations.current.get(relay.clientId);
+    if (!operation || operation.cancelling) return;
+    operation.cancelling = true;
+    setTestResults(previous => ({ ...previous, [relay.clientId]: { ...previous[relay.clientId], status: "cancelling" } }));
+    try {
+      await cancelTestOperation({ operationId: operation.id });
+      if (testOperations.current.get(relay.clientId) !== operation) return;
+      setTestResults(previous => ({ ...previous, [relay.clientId]: { ...previous[relay.clientId], status: "cancelled" } }));
+    } catch {
+      if (testOperations.current.get(relay.clientId) !== operation) return;
+      setTestResults(previous => ({ ...previous, [relay.clientId]: {
+        ...previous[relay.clientId], status: "error", errorMessage: "取消请求未送达，请核对配图记录。",
+      } }));
+    } finally {
+      if (testOperations.current.get(relay.clientId) === operation) testOperations.current.delete(relay.clientId);
     }
   };
 
@@ -1783,6 +1937,7 @@ function SceneImageSettingsCard() {
     enabled: true,
     apiKeyConfigured: false,
     apiKey: "",
+    clearKey: false,
     baseUrl: "",
     model: "",
     protocol: "comfyui" as const,
@@ -1807,13 +1962,22 @@ function SceneImageSettingsCard() {
 
   return (
     <section className="space-y-6">
+      {(!config || stale) && (
+        <div role={stale || configQuery.isError ? "alert" : "status"} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+          <span>{stale ? "其他页面已更新配图设置。当前草稿已保留，重新读取前不能提交。" :
+            configQuery.isError ? "无法读取配图设置。" : "正在读取配图设置…"}</span>
+          {(stale || configQuery.isError) && <Button type="button" size="sm" variant="outline"
+            disabled={reloading || writing || Boolean(uploadingTarget) || testOperations.current.size > 0 || modelLookupsInFlight.current.size > 0}
+            onClick={() => void reloadConfig()}>重新读取已保存的设置</Button>}
+        </div>
+      )}
       {/* 1. 顶部全局开关与提示词模型 */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 p-4 rounded-xl border border-border/60 bg-muted/20">
         <div className="space-y-1 max-w-2xl">
           <div className="flex items-center gap-2">
             <Label className="text-base font-semibold text-foreground">剧情场景配图（/p 指令）</Label>
             <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${enabled ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>
-              {enabled ? "已全局启用" : "未开启"}
+              {enabled !== config?.enabled && config ? "更改待保存" : enabled ? "已全局启用" : "未开启"}
             </span>
           </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
@@ -1829,12 +1993,12 @@ function SceneImageSettingsCard() {
       <div className="space-y-3 rounded-xl border border-border/50 bg-background/35 p-4">
         <div>
           <Label className="text-sm font-semibold text-foreground">出图渠道优先级</Label>
-          <p className="mt-0.5 text-xs text-muted-foreground">自由决定优先由本地 ComfyUI 还是云端中转站生图；一方失败或未配置时自动故障转移。</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">选择本地或云端的优先顺序。是否尝试下一渠道取决于本次失败原因，已拒绝或结果不明的请求不会自动重试。</p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
           {[
-            { key: "comfyui_first", title: "⚡ 优先本地 ComfyUI", desc: "本地优先出图，失败自动回退到云端中转站（推荐）" },
-            { key: "relay_first", title: "☁️ 优先云端中转站", desc: "云端中转站优先，失败自动尝试本地 ComfyUI" },
+            { key: "comfyui_first", title: "⚡ 优先本地 ComfyUI", desc: "优先使用本地工作流，符合条件时再尝试云端中转站" },
+            { key: "relay_first", title: "☁️ 优先云端中转站", desc: "优先使用云端中转站，符合条件时再尝试本地工作流" },
             { key: "comfyui_only", title: "🖥️ 仅使用本地 ComfyUI", desc: "只使用本地算力，不消耗外部中转站额度" },
             { key: "relay_only", title: "🌐 仅使用云端中转站", desc: "只使用云端图片中转站生图" },
           ].map(strat => (
@@ -1851,10 +2015,10 @@ function SceneImageSettingsCard() {
       {/* 3. 提示词改写模型 */}
       <div className="space-y-2 rounded-xl border border-border/50 bg-muted/10 p-4">
         <Label className="text-sm font-semibold text-foreground">提示词编写模型（由文字中转站提供）</Label>
-        <p className="text-xs text-muted-foreground">改写模型负责将当前剧情提炼为具有视觉张力的写实电影剧照分镜。本地 ComfyUI 生图将完全放开敏感审核与打码限制。</p>
+        <p className="text-xs text-muted-foreground">改写模型使用当前场景的相关文字整理分镜。选择中转站后，相关场景文字会发送到该站点。</p>
         <select value={promptRewriteRelayId ?? ""} onChange={event => setPromptRewriteRelayId(event.target.value ? Number(event.target.value) : null)}
           className="w-full h-9 px-3 bg-muted/50 border border-border rounded-lg text-xs text-foreground mt-1">
-          <option value="">{defaultPromptRewriteRelay ? `自动优先（当前将使用：${defaultPromptRewriteRelay.relayName}）` : "自动优先 Claude 文字中转站"}</option>
+          <option value="">{defaultPromptRewriteRelay ? `自动选择（当前：${defaultPromptRewriteRelay.relayName}）` : "自动选择（暂无可用的改写站）"}</option>
           {promptRewriteOptions.map(option => (
             <option key={option.relayId} value={option.relayId}>
               {option.relayName}（{option.providerName} / {option.model || "未指定模型"} / 优先级 {option.priority}）
@@ -1966,7 +2130,8 @@ function SceneImageSettingsCard() {
       {(() => {
         const relay = comfyRelay;
         const result = testResults[relay.clientId];
-        const modelLookup = modelLookups[relay.clientId];
+        const lookup = modelLookups[relay.clientId];
+        const modelLookup = lookup?.target === sceneImageRelayTarget(relay) ? lookup : undefined;
         const upstreamModels = modelLookup?.models ?? [];
         const modelOptions = relay.model && !upstreamModels.some(m => m.id === relay.model)
           ? [{ id: relay.model, displayName: null }, ...upstreamModels]
@@ -1982,11 +2147,12 @@ function SceneImageSettingsCard() {
                   <Cpu className="w-4 h-4 text-primary" />
                   <Label className="text-base font-semibold text-foreground">本地 ComfyUI 工作流生图</Label>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${relay.enabled ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>
-                    {relay.enabled ? "已启用本地生图" : "已停用"}
+                    {relay.id == null ? "尚未保存" : config?.relays.find(item => item.id === relay.id)?.enabled !== relay.enabled
+                      ? "更改待保存" : relay.enabled ? "已启用本地生图" : "已停用"}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  直接连接本地运行的 ComfyUI 实例，支持全自动参数注入（正向/负向提示词、尺寸、随机种子），完全放开提示词审核限制。
+                  连接已配置的本地 ComfyUI 实例，可为受支持的工作流节点设置提示词、尺寸和随机种子。
                 </p>
               </div>
             </div>
@@ -1995,15 +2161,28 @@ function SceneImageSettingsCard() {
               <div className="space-y-1.5 md:col-span-2">
                 <Label className="text-xs text-foreground/70">ComfyUI 接口地址</Label>
                 <Input value={relay.baseUrl} onChange={event => updateRelayDraft(relay.clientId, { baseUrl: event.target.value })}
-                  placeholder="http://127.0.0.1:8188（留空默认此地址）"
+                  placeholder="http://127.0.0.1:8188"
                   className="h-9 bg-background/60 border-border rounded-lg font-mono text-xs" />
               </div>
+              {(relay.apiKeyConfigured || relayNeedsKeyDecision(relay)) && (
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs text-foreground/70">本地接口密钥（可留空）</Label>
+                  <Input value={relay.apiKey} onChange={event => updateRelayDraft(relay.clientId, { apiKey: event.target.value })}
+                    type="password" autoComplete="new-password" disabled={relay.clearKey} placeholder="密钥已保存" />
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input type="checkbox" checked={relay.clearKey}
+                      onChange={event => updateRelayDraft(relay.clientId, { clearKey: event.target.checked, apiKey: "" })} />
+                    保存时清除原密钥
+                  </label>
+                  {relayNeedsKeyDecision(relay) && <p className="text-xs text-destructive">地址或协议已变更，请重填或清除原密钥。</p>}
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <Label className="text-xs text-foreground/70">Checkpoint 模型（本地选择）</Label>
                   <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 rounded-md px-2 text-[11px]"
-                    disabled={modelLookup?.status === "loading"}
+                    disabled={!config || stale || reloading || writing || modelLookupsInFlight.current.has(relay.clientId)}
                     onClick={() => void loadRelayModels(relay)}>
                     <Download className="mr-1 h-3 w-3" />
                     {modelLookup?.status === "loading" ? "获取中..." : "获取本地模型"}
@@ -2089,14 +2268,14 @@ function SceneImageSettingsCard() {
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
                       <Sparkles className="w-3.5 h-3.5 text-primary" />
-                      <Label className="text-xs font-semibold text-foreground">AI 提示词生成模板（思考模式）</Label>
+                      <Label className="text-xs font-semibold text-foreground">AI 提示词生成模板</Label>
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${comfyPromptTemplate.trim() ? "bg-purple-500/15 text-purple-700 dark:text-purple-300" : "bg-muted text-muted-foreground"}`}>
                         <span className="w-1.5 h-1.5 rounded-full bg-current" />
                         {comfyPromptTemplate.trim() ? "已配置专属提示词模板" : "使用内置高表现力分镜格式"}
                       </span>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      大模型为 ComfyUI 编写分镜提示词时将强制开启思考模式（Reasoning），并严格按此模板结构输出（如 MiniMax H3 / Flux 专属指令）。
+                      使用提示词改写时，可指定分镜描述的结构和重点，例如人物动作、光线与构图。
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2122,19 +2301,28 @@ function SceneImageSettingsCard() {
                 {relay.enabled ? "已启用：点击停用" : "已停用：点击启用"}
               </Button>
               <Button size="sm" className="h-8 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground"
-                disabled={saveRelay.isPending} onClick={() => saveRelay.mutate(relayPayload(relay))}>
+                disabled={!config || stale || reloading || writing} onClick={() => persistRelay(relay)}>
                 <Check className="w-3.5 h-3.5 mr-1" />{saveRelay.isPending ? "保存中..." : "保存本地工作流设置"}
               </Button>
               <Button size="sm" variant="outline" className="h-8 rounded-lg"
-                disabled={testRelay.isPending || sceneTestBlocked} onClick={() => void runRelayTest(relay)}>
+                disabled={!config || stale || reloading || writing || testRelay.isPending || sceneTestBlocked || testOperations.current.has(relay.clientId)}
+                onClick={() => void runRelayTest(relay)}>
                 <ImageIcon className="w-3.5 h-3.5 mr-1" />{result?.status === "running" ? "正在实际生成..." : relayTestMode === "scene" ? "场景提示词测试" : "中性实际生成测试"}
               </Button>
+              {(result?.status === "running" || result?.status === "cancelling") && (
+                <Button type="button" size="sm" variant="ghost" className="h-8 rounded-lg"
+                  disabled={result.status === "cancelling"} onClick={() => void cancelRelayTest(relay)}>
+                  {result.status === "cancelling" ? "正在请求取消…" : "取消测试"}
+                </Button>
+              )}
             </div>
 
             {result && (
-              <div className={`rounded-lg border p-2.5 text-xs ${result.status === "success" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200" : result.status === "running" ? "border-primary/30 bg-primary/5 text-foreground" : "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300"}`}>
+              <div role="status" className={`rounded-lg border p-2.5 text-xs ${result.status === "success" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200" : result.status === "error" ? "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300" : "border-primary/30 bg-primary/5 text-foreground"}`}>
                 {result.status === "running" ? (
                   result.testMode === "scene" ? "正在调用本地 ComfyUI 执行场景生图测试..." : "正在调用本地 ComfyUI 执行中性测试..."
+                ) : result.status === "cancelling" ? "正在请求停止本次测试…" : result.status === "cancelled" ? (
+                  "已请求停止测试；请以实际配图记录为准。"
                 ) : result.status === "success" ? (
                   <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
                     <span>ComfyUI 生图测试成功，用时 {Math.max(1, Math.round((result.durationMs ?? 0) / 1000))} 秒。</span>
@@ -2175,7 +2363,8 @@ function SceneImageSettingsCard() {
           </p>
         ) : cloudRelays.map((relay, index) => {
           const result = testResults[relay.clientId];
-          const modelLookup = modelLookups[relay.clientId];
+          const lookup = modelLookups[relay.clientId];
+          const modelLookup = lookup?.target === sceneImageRelayTarget(relay) ? lookup : undefined;
           const upstreamModels = modelLookup?.models ?? [];
           const modelOptions = relay.model && !upstreamModels.some(m => m.id === relay.model)
             ? [{ id: relay.model, displayName: null }, ...upstreamModels]
@@ -2189,7 +2378,7 @@ function SceneImageSettingsCard() {
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-primary/10 px-1.5 text-xs font-semibold text-primary">{index + 1}</span>
                   <p className="text-sm font-semibold text-foreground truncate">{relay.relayName || "未命名图片中转站"}</p>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] ${relay.enabled ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>{relay.enabled ? "参与配图" : "已停用"}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] ${relay.enabled ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>{relay.id == null ? "尚未保存" : config?.relays.find(item => item.id === relay.id)?.enabled !== relay.enabled ? "更改待保存" : relay.enabled ? "参与配图" : "已停用"}</span>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] ${relay.formalReferenceEnabled ? "bg-sky-500/10 text-sky-700 dark:text-sky-300" : "bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}>
                     {relay.formalReferenceEnabled ? "允许正式人物配图" : "仅测试"}
                   </span>
@@ -2217,14 +2406,21 @@ function SceneImageSettingsCard() {
                 <div className="space-y-1.5 md:col-span-2">
                   <Label className="text-xs text-foreground/70">图片接口密钥</Label>
                   <Input value={relay.apiKey} onChange={event => updateRelayDraft(relay.clientId, { apiKey: event.target.value })} type="password"
+                    disabled={relay.clearKey}
                     placeholder={relay.apiKeyConfigured ? "已保存；留空即保持不变" : "填写该中转站的图片接口密钥"}
                     autoComplete="new-password" className="h-9 bg-muted/40 border-border rounded-lg" />
+                  {relay.apiKeyConfigured && <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input type="checkbox" checked={relay.clearKey}
+                      onChange={event => updateRelayDraft(relay.clientId, { clearKey: event.target.checked, apiKey: "" })} />
+                    保存时清除原密钥
+                  </label>}
+                  {relayNeedsKeyDecision(relay) && <p className="text-xs text-destructive">地址或协议已变更，请重填或清除原密钥。</p>}
                 </div>
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <Label className="text-xs text-foreground/70">图片模型（从上游选择）</Label>
                     <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 rounded-md px-2 text-[11px]"
-                      disabled={modelLookup?.status === "loading"}
+                      disabled={!config || stale || reloading || writing || modelLookupsInFlight.current.has(relay.clientId)}
                       onClick={() => void loadRelayModels(relay)}>
                       <Download className="mr-1 h-3 w-3" />
                       {modelLookup?.status === "loading" ? "获取中..." : "获取上游模型"}
@@ -2288,24 +2484,34 @@ function SceneImageSettingsCard() {
                   {sceneImageRelaySupportsReferences(relay) ? "已确认协议：正式配图固定开启" : "允许正式人物配图"}
                 </label>
                 <Button size="sm" className="h-8 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground"
-                  disabled={saveRelay.isPending || !relay.model.trim()} onClick={() => saveRelay.mutate(relayPayload(relay))}>
+                  disabled={!config || stale || reloading || writing || !relay.model.trim()} onClick={() => persistRelay(relay)}>
                   <Check className="w-3.5 h-3.5 mr-1" />{saveRelay.isPending ? "保存中..." : "保存此中转站"}
                 </Button>
                 <Button size="sm" variant="outline" className="h-8 rounded-lg"
-                  disabled={testRelay.isPending || !relay.model.trim() || sceneTestBlocked} onClick={() => void runRelayTest(relay)}>
+                  disabled={!config || stale || reloading || writing || testRelay.isPending || !relay.model.trim() || sceneTestBlocked || testOperations.current.has(relay.clientId)}
+                  onClick={() => void runRelayTest(relay)}>
                   <ImageIcon className="w-3.5 h-3.5 mr-1" />{result?.status === "running" ? "正在实际生成..." : relayTestMode === "scene" ? "场景提示词测试" : "中性实际生成测试"}
                 </Button>
+                {(result?.status === "running" || result?.status === "cancelling") && (
+                  <Button type="button" size="sm" variant="ghost" className="h-8 rounded-lg"
+                    disabled={result.status === "cancelling"} onClick={() => void cancelRelayTest(relay)}>
+                    {result.status === "cancelling" ? "正在请求取消…" : "取消测试"}
+                  </Button>
+                )}
                 <Button size="sm" variant="ghost" className="h-8 rounded-lg text-muted-foreground hover:text-destructive"
-                  disabled={deleteRelay.isPending} onClick={() => removeRelayDraft(relay)}>
+                  disabled={!config || stale || reloading || writing || testOperations.current.has(relay.clientId)}
+                  onClick={() => removeRelayDraft(relay)}>
                   <Trash2 className="w-3.5 h-3.5 mr-1" />移除
                 </Button>
               </div>
 
               {result && (
-                <div className={`rounded-lg border p-2.5 text-xs ${result.status === "success" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200" : result.status === "running" ? "border-primary/30 bg-primary/5 text-foreground" : "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300"}`}>
+                <div role="status" className={`rounded-lg border p-2.5 text-xs ${result.status === "success" ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200" : result.status === "error" ? "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300" : "border-primary/30 bg-primary/5 text-foreground"}`}>
                   {result.status === "running" ? result.testMode === "scene"
                     ? "正在用当前填写的场景提示词生成测试图，并提交已保存的用户主图和人物主图；不会写入聊天或 QQ。"
                     : "正在用固定的中性静物提示词生成一张测试图；不会读取人物、场景、参考图或聊天记录。"
+                    : result.status === "cancelling" ? "正在请求停止本次测试…"
+                    : result.status === "cancelled" ? "已请求停止测试；请以实际配图记录为准。"
                     : result.status === "success" ? (
                     <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
                       <span>{result.testMode === "scene" ? "场景提示词测试" : "中性静物测试"}成功，用时 {Math.max(1, Math.round((result.durationMs ?? 0) / 1000))} 秒。{result.testMode === "scene" ? `参考图：${sceneImageReferenceModeLabel(result.referenceMode)}。` : "未使用人物或用户参考图。"}{result.recorded ? "测试记录已写入场景配图记录。" : "测试记录暂未写入场景配图记录。"}{result.enabledForSceneImages ? "这张已启用的中转站会参与场景配图。" : "但这张中转站当前停用，日常场景配图不会使用它。"}</span>
@@ -2327,9 +2533,9 @@ function SceneImageSettingsCard() {
       </div>
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
-        <p className="text-xs text-muted-foreground">{enabled && relayDrafts.length === 0 ? "启用前还需要至少保存一个图片中转站。" : "场景配图不再设置冷却或每小时上限；是否生成完全由你发出的 /p 指令控制。"}</p>
+        <p className="text-xs text-muted-foreground">{enabled && !config?.relays.some(relay => relay.enabled) ? "启用前还需要至少保存并开启一个图片渠道。" : "只有手动发送 /p 或点击实际测试，才会请求生成图片。"}</p>
         <Button className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl"
-          disabled={saveConfig.isPending || uploadingTarget !== null}
+          disabled={!config || stale || reloading || writing || uploadingTarget !== null}
           onClick={() => void persistSceneImageConfig()}>
           <Check className="w-3.5 h-3.5 mr-1.5" />
           {saveConfig.isPending ? "保存中..." : "保存配图设置"}
@@ -2342,10 +2548,10 @@ function SceneImageSettingsCard() {
           <DialogHeader>
             <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-primary" />
-              ComfyUI AI 提示词生成模板（思考模式）
+              ComfyUI AI 提示词生成模板
             </DialogTitle>
             <p className="text-xs text-muted-foreground">
-              在此输入自定义的提示词模板结构。大模型在为本地 ComfyUI 编写分镜提示词时，将强制开启深度思考模式（Reasoning），并严格遵循此结构将剧情分镜要素填入对应字段。
+              在此编辑给改写模型的模板，保存后用于整理发往本地 ComfyUI 的分镜提示词。
             </p>
           </DialogHeader>
           <div className="flex-1 min-h-[360px] my-2 flex flex-col gap-2">
@@ -2424,8 +2630,8 @@ Silent; a still image.`
                 关闭（未保存）
               </Button>
               <Button type="button" size="sm" className="h-8 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90"
-                disabled={saveConfig.isPending}
-                onClick={() => void persistSceneImageConfig().then(() => setEditingPromptTemplateDialog(false))}>
+                disabled={!config || stale || reloading || writing || uploadingTarget !== null}
+                onClick={() => void persistSceneImageConfig().then(saved => { if (saved) setEditingPromptTemplateDialog(false); })}>
                 <Check className="w-3.5 h-3.5 mr-1" />
                 {saveConfig.isPending ? "保存中..." : "保存并应用"}
               </Button>
@@ -2479,9 +2685,10 @@ Silent; a still image.`
                   const trimmed = editingWorkflowDraft.json.trim();
                   if (trimmed) {
                     try {
-                      JSON.parse(trimmed);
-                    } catch {
-                      toast.error("当前输入的不是合法的 JSON 格式，请检查语法");
+                      validateWorkflowDraft(trimmed);
+                    } catch (error) {
+                      toast.error(error instanceof SyntaxError ? "当前输入的不是合法的 JSON 格式，请检查语法。" :
+                        error instanceof Error ? error.message : "工作流格式无效。");
                       return;
                     }
                   }
@@ -2554,7 +2761,7 @@ function AISettingsTab() {
 
   return (
     <div className="space-y-6 card-stagger">
-      <section className="warm-card ai-provider-section p-4 sm:p-6 space-y-4">
+      <section className="warm-card warm-card-static ai-provider-section p-4 sm:p-6 space-y-4">
         <SectionHeader icon={Settings2} title="AI 提供商" subtitle="集中管理提供商，按需展开连接配置。"
           action={<span className="ai-count-badge"><span className="h-1.5 w-1.5 rounded-full bg-primary" />{configuredCount} / {allProviders.length} 已配置</span>} />
         <div className="ai-provider-overview">
@@ -2907,7 +3114,7 @@ function QqTab() {
 
   return (
     <div className="space-y-6 card-stagger">
-      <section className="warm-card p-5 space-y-4">
+      <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={bot?.connected && !config.error && !previewUnavailable ? Wifi : WifiOff} title="QQ OneBot 接入"
           subtitle="使用自有 OneBot HTTP API，每个账号只配置一个机器人和一个私聊目标"
           action={<StatusBadge label={status.label} tone={status.tone} />} />
@@ -3022,7 +3229,7 @@ function QqTab() {
         {issue && <p className="text-xs text-destructive" role="alert">{issue}</p>}
       </section>
 
-      <section className="warm-card p-5 space-y-4">
+      <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={Users} title="QQ 联系人绑定" subtitle="为指定的一对一私聊选择一个已就绪角色"
           action={<StatusBadge label={bot?.personaId && bot.targetId ? "已有绑定" : "未绑定"} tone={bot?.personaId && bot.targetId ? "ok" : "muted"} />} />
         <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
@@ -3064,7 +3271,7 @@ function QqTab() {
         </div>
       </section>
 
-      <section className="warm-card p-5 space-y-4">
+      <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={Clock} title="最近 QQ 交付" subtitle="仅列出当前账号的交付记录"
           action={<Button size="sm" variant="outline" className="rounded-xl border-border"
             onClick={() => void deliveries.refetch()} disabled={deliveries.isFetching}>
@@ -3166,7 +3373,7 @@ function OperationsDiagnosticsTab() {
 
   if (diagnostics.isLoading) {
     return (
-      <div className="warm-card p-6 text-sm text-muted-foreground">
+      <div className="warm-card warm-card-static p-6 text-sm text-muted-foreground">
         正在读取运行诊断...
       </div>
     );
@@ -3174,7 +3381,7 @@ function OperationsDiagnosticsTab() {
 
   if (diagnostics.error || !data || data.previewUnavailable) {
     return (
-      <div className="warm-card p-5 space-y-4 border-destructive/20">
+      <div className="warm-card warm-card-static p-5 sm:p-6 space-y-4 border-destructive/25">
         <div className="flex items-center gap-2 text-destructive">
           <AlertTriangle className="w-4 h-4" />
           <span className="text-sm font-medium">{data?.previewUnavailable ? "诊断未接通（界面预览）" : "诊断读取失败"}</span>
@@ -3220,7 +3427,7 @@ function OperationsDiagnosticsTab() {
 
   return (
     <div className="space-y-6 card-stagger">
-      <section className="warm-card p-5">
+      <section className="warm-card warm-card-static p-5 sm:p-6">
         <SectionHeader icon={Activity} title="运维诊断"
           subtitle={`${formatDiagnosticTime(data.generatedAt)} · ${data.runtime?.nodeEnv ?? "development"}`}
           action={
@@ -3438,88 +3645,87 @@ function OperationsDiagnosticsTab() {
             </Button>
           </div>
         }>
-        <div className="space-y-3">
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">开始时间</Label>
+        <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 rounded-2xl border border-border/65 bg-muted/15 p-3.5">
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">开始时间</Label>
                 <Input type="datetime-local" value={usageFilters.from}
                   onChange={e => setUsageFilters(filters => ({ ...filters, from: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">结束时间</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">结束时间</Label>
                 <Input type="datetime-local" value={usageFilters.to}
                   onChange={e => setUsageFilters(filters => ({ ...filters, to: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
               </div>
               {isAdmin && (
-                <div className="space-y-1">
-                  <Label className="text-[11px] text-muted-foreground">用户 ID</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-[11px] font-medium text-muted-foreground">用户 ID</Label>
                   <Input value={usageFilters.userId} inputMode="numeric" placeholder="全部"
                     onChange={e => setUsageFilters(filters => ({ ...filters, userId: e.target.value }))}
-                    className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                    className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
                 </div>
               )}
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">角色 ID</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">角色 ID</Label>
                 <Input value={usageFilters.personaId} inputMode="numeric" placeholder="全部"
                   onChange={e => setUsageFilters(filters => ({ ...filters, personaId: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">入口</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">入口</Label>
                 <Input value={usageFilters.route} placeholder="social.qq"
                   onChange={e => setUsageFilters(filters => ({ ...filters, route: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Provider</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">Provider</Label>
                 <Input value={usageFilters.provider} placeholder="DeepSeek"
                   onChange={e => setUsageFilters(filters => ({ ...filters, provider: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">Purpose</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">Purpose</Label>
                 <Input value={usageFilters.purpose} placeholder="chat"
                   onChange={e => setUsageFilters(filters => ({ ...filters, purpose: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono" />
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">结果</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">结果</Label>
                 <select value={usageFilters.success}
                   onChange={e => setUsageFilters(filters => ({ ...filters, success: e.target.value }))}
-                  className="w-full h-9 px-2 bg-background/60 border border-border/60 rounded-lg text-xs text-foreground">
+                  className="w-full h-9 px-2.5 bg-background/75 border border-border/70 rounded-xl text-xs text-foreground">
                   <option value="all">全部</option>
                   <option value="success">成功</option>
                   <option value="failed">失败</option>
                 </select>
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">条数</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-medium text-muted-foreground">条数</Label>
                 <Input value={usageFilters.limit} inputMode="numeric"
                   onChange={e => setUsageFilters(filters => ({ ...filters, limit: e.target.value }))}
-                  className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                  className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
               </div>
             </div>
 
             {usageDetailsData && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div className="rounded-md bg-background/45 px-2.5 py-2">
-                  <div className="text-sm font-semibold text-foreground">{usageDetailsData.summary?.calls ?? 0}</div>
-                  <div className="text-[11px] text-muted-foreground">调用</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                  <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{usageDetailsData.summary?.calls ?? 0}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">调用</div>
                 </div>
-                <div className="rounded-md bg-background/45 px-2.5 py-2">
-                  <div className="text-sm font-semibold text-foreground">{usageDetailsData.summary?.failedCalls ?? 0}</div>
-                  <div className="text-[11px] text-muted-foreground">失败</div>
+                <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                  <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{usageDetailsData.summary?.failedCalls ?? 0}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">失败</div>
                 </div>
-                <div className="rounded-md bg-background/45 px-2.5 py-2">
-                  <div className="text-sm font-semibold text-foreground">{usageDetailsData.summary?.totalTokens ?? 0}</div>
-                  <div className="text-[11px] text-muted-foreground">tokens</div>
+                <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                  <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{(usageDetailsData.summary?.totalTokens ?? 0).toLocaleString("zh-CN")}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">tokens</div>
                 </div>
-                <div className="rounded-md bg-background/45 px-2.5 py-2">
-                  <div className="text-sm font-semibold text-foreground">{usageDetailsData.summary?.averageDurationMs ?? 0}ms</div>
-                  <div className="text-[11px] text-muted-foreground">平均耗时</div>
+                <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                  <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{usageDetailsData.summary?.averageDurationMs ?? 0} ms</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">平均耗时</div>
                 </div>
               </div>
             )}
@@ -3612,69 +3818,69 @@ function OperationsDiagnosticsTab() {
         }>
         <div className="space-y-3">
           <div className="rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            这里记录场景配图和图片中转站实际生成测试的开始时间、入口、尝试次数、中转站、模型、结果、耗时、参考图提交方式，以及实际提交给图片接口的已收敛提示词。不会保存原始聊天正文、密钥或参考图内容。图片失败不会再向人物聊天发送技术提示。
+            这里记录场景配图和图片中转站实际生成测试的开始时间、入口、尝试次数、中转站、模型、结果、耗时、参考图提交方式，以及实际提交给图片接口的已收敛提示词。提示词可能包含本轮提供的场景与对话内容；记录不包含密钥或参考图字节。图片失败不会再向人物聊天发送技术提示。
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">开始时间</Label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 rounded-2xl border border-border/65 bg-muted/15 p-3.5">
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">开始时间</Label>
               <Input type="datetime-local" value={sceneImageLogFilters.from}
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, from: e.target.value }))}
-                className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
             </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">结束时间</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">结束时间</Label>
               <Input type="datetime-local" value={sceneImageLogFilters.to}
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, to: e.target.value }))}
-                className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
             </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">角色 ID</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">角色 ID</Label>
               <Input value={sceneImageLogFilters.personaId} inputMode="numeric" placeholder="全部"
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, personaId: e.target.value }))}
-                className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
             </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">中转站 ID</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">中转站 ID</Label>
               <Input value={sceneImageLogFilters.relayId} inputMode="numeric" placeholder="全部"
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, relayId: e.target.value }))}
-                className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
             </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">结果</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">结果</Label>
               <select value={sceneImageLogFilters.success}
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, success: e.target.value }))}
-                className="w-full h-9 px-2 bg-background/60 border border-border/60 rounded-lg text-xs text-foreground">
+                className="w-full h-9 px-2.5 bg-background/75 border border-border/70 rounded-xl text-xs text-foreground">
                 <option value="all">全部</option>
                 <option value="success">成功</option>
                 <option value="failed">失败</option>
               </select>
             </div>
-            <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">条数</Label>
+            <div className="space-y-1.5">
+              <Label className="text-[11px] font-medium text-muted-foreground">条数</Label>
               <Input value={sceneImageLogFilters.limit} inputMode="numeric"
                 onChange={e => setSceneImageLogFilters(filters => ({ ...filters, limit: e.target.value }))}
-                className="h-9 bg-background/60 border-border/60 rounded-lg text-xs" />
+                className="h-9 bg-background/75 border-border/70 rounded-xl text-xs font-mono tabular-nums" />
             </div>
           </div>
 
           {sceneImageLogData && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div className="rounded-md bg-background/45 px-2.5 py-2">
-                <div className="text-sm font-semibold text-foreground">{sceneImageLogData.summary?.calls ?? 0}</div>
-                <div className="text-[11px] text-muted-foreground">记录</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{sceneImageLogData.summary?.calls ?? 0}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">记录</div>
               </div>
-              <div className="rounded-md bg-background/45 px-2.5 py-2">
-                <div className="text-sm font-semibold text-foreground">{sceneImageLogData.summary?.successfulCalls ?? 0}</div>
-                <div className="text-[11px] text-muted-foreground">成功</div>
+              <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{sceneImageLogData.summary?.successfulCalls ?? 0}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">成功</div>
               </div>
-              <div className="rounded-md bg-background/45 px-2.5 py-2">
-                <div className="text-sm font-semibold text-foreground">{sceneImageLogData.summary?.failedCalls ?? 0}</div>
-                <div className="text-[11px] text-muted-foreground">失败</div>
+              <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{sceneImageLogData.summary?.failedCalls ?? 0}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">失败</div>
               </div>
-              <div className="rounded-md bg-background/45 px-2.5 py-2">
-                <div className="text-sm font-semibold text-foreground">{sceneImageLogData.summary?.averageDurationMs ?? 0}ms</div>
-                <div className="text-[11px] text-muted-foreground">平均耗时</div>
+              <div className="rounded-xl border border-border/55 bg-muted/15 px-3 py-2.5">
+                <div className="text-sm font-semibold font-mono tabular-nums text-foreground">{sceneImageLogData.summary?.averageDurationMs ?? 0} ms</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">平均耗时</div>
               </div>
             </div>
           )}
@@ -3700,14 +3906,15 @@ function OperationsDiagnosticsTab() {
           {sceneImageLogRecords.length > 0 && (
             <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
               {sceneImageLogRecords.map((record: any) => {
-                const outputUrl = sceneImageOutputUrl(record.outputKey);
+                const outputUrl = sceneImageOutputUrl(record.outputUrl) ?? sceneImageOutputUrl(record.outputKey);
                 return (
                   <div key={record.id} className="rounded-lg border border-border/50 bg-background/45 px-3 py-2.5 min-w-0">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-[11px] text-muted-foreground">{formatDiagnosticTime(record.startedAt)}</span>
-                          <StatusBadge label={record.success ? "成功" : "失败"} tone={record.success ? "ok" : "error"} />
+                          <StatusBadge label={record.status === "pending" ? "等待中" : record.status === "running" ? "生成中" : record.status === "cancelled" ? "已取消" : record.status === "unknown" ? "结果未知" : record.success ? "成功" : "失败"}
+                            tone={record.success ? "ok" : record.status === "pending" || record.status === "running" ? "warn" : record.status === "cancelled" ? "muted" : "error"} />
                           <span className="text-[11px] text-muted-foreground">
                             {sceneImageLogSourceLabel(record.source)} · {sceneImageChannelLabel(record.channel)} · {(record.attempt ?? 0) > 0 ? `第 ${record.attempt} 次` : "未调用图片接口"}
                           </span>
@@ -3721,9 +3928,9 @@ function OperationsDiagnosticsTab() {
                         <div className="mt-1 text-[11px] text-muted-foreground break-words">
                           参考图：{sceneImageReferenceModeLabel(record.referenceMode)}
                         </div>
-                        {!record.success && (
+                        {!record.success && record.status !== "pending" && record.status !== "running" && (
                           <div className="mt-2 rounded-md bg-red-500/5 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300 break-words">
-                            {sceneImageLogReasonLabel(record.reason)}
+                            {record.errorMessage || sceneImageLogReasonLabel(record.reason)}
                           </div>
                         )}
                         {record.promptText ? (
@@ -3732,7 +3939,7 @@ function OperationsDiagnosticsTab() {
                             <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap break-words font-sans leading-relaxed text-foreground/85">{record.promptText}</pre>
                           </details>
                         ) : (
-                          <div className="mt-2 text-[11px] text-muted-foreground">这条历史记录生成于提示词记录功能启用之前，未保存最终提示词。</div>
+                          <div className="mt-2 text-[11px] text-muted-foreground">本记录未保存最终提示词正文。</div>
                         )}
                       </div>
                       <div className="flex flex-col items-end gap-2 sm:min-w-[160px]">
@@ -3834,18 +4041,18 @@ function DataManagementTab() {
     <div className="space-y-6 card-stagger">
       {/* Storage Overview */}
       {accountStats && (
-        <section className="warm-card p-5 space-y-4">
+        <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
           <SectionHeader icon={HardDrive} title="存储概览" subtitle="数据库记录与上传文件占用" />
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">已用空间</span>
-              <span className="font-medium text-foreground">{formatBytes(accountStats.storageUsed)}</span>
+              <span className="font-semibold font-mono tabular-nums text-foreground">{formatBytes(accountStats.storageUsed)}</span>
             </div>
-            <div className="h-2 bg-muted rounded-full overflow-hidden">
-              <div className="h-full bg-primary/60 rounded-full transition-all"
+            <div className="h-2 bg-muted/80 rounded-full overflow-hidden">
+              <div className="h-full bg-primary/70 rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(100, (accountStats.storageUsed / (100 * 1048576)) * 100)}%` }} />
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
               <StatTile value={accountStats.totalPersonas} label="分身" />
               <StatTile value={accountStats.totalMessages} label="消息" />
               <StatTile value={accountStats.totalFiles} label="文件" />
@@ -3861,7 +4068,7 @@ function DataManagementTab() {
       )}
 
       {/* Export */}
-      <section className="warm-card p-5 space-y-4">
+      <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={Download} title="数据导出"
           subtitle="导出账户资料、分身、角色运行态、对话、记忆、资料库、日记、Roleplay 频道、平台绑定、LLM 用量和场景配图记录。JSON 不包含密码哈希、会话 Cookie、LLM API Key、本机上传文件实体、TTS 缓存或本机数据库文件。" />
         <Button size="sm" variant="outline" className="rounded-xl border-border"
@@ -3873,7 +4080,7 @@ function DataManagementTab() {
       </section>
 
       {/* Danger Zone */}
-      <section className="warm-card p-5 space-y-4 border-destructive/20">
+      <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4 border-destructive/25">
         <SectionHeader icon={AlertTriangle} title="危险操作" tone="danger" subtitle="不可撤销的账户级操作" />
         <div className="p-4 bg-destructive/5 rounded-xl border border-destructive/10">
           <p className="text-sm text-foreground font-medium mb-1">删除账户</p>
@@ -3931,6 +4138,8 @@ function DataManagementTab() {
 export default function SettingsPage() {
   const [, navigate] = useLocation();
   const { user } = useAuth({ redirectOnUnauthenticated: true });
+  const tabsId = useId();
+  const reduceMotion = useReducedMotion();
   const [activeTab, setActiveTabState] = useState<TabKey>(() => {
     const fromUrl = new URLSearchParams(window.location.search).get("tab");
     return TABS.some(tab => tab.key === fromUrl) ? (fromUrl as TabKey) : "profile";
@@ -3946,11 +4155,11 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-background relative">
-      <div className="gradient-mesh-bg" /><div className="tech-particles" />
-      <header className="sticky top-0 z-40 app-header">
+      <div className="gradient-mesh-bg" />
+      <header className="sticky top-0 z-40 app-header border-b border-border/60 bg-background/85 backdrop-blur-xl">
         <div className="container app-nav">
           <button onClick={() => navigate("/")}
-            className="app-nav-back -ml-1 gap-1">
+            className="app-nav-back -ml-1 gap-1 cursor-pointer">
             <ArrowLeft className="w-4 h-4" /><span className="text-sm">返回</span>
           </button>
           <div className="app-nav-divider" />
@@ -3966,32 +4175,62 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <main className="container py-6 max-w-6xl mx-auto px-4 relative z-10">
-        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-8 items-start">
-          {/* 左侧侧边栏 (大屏常驻，移动端横向滚动) */}
-          <aside className="flex md:flex-col gap-1 p-1.5 bg-card/60 backdrop-blur-md border border-border/40 rounded-2xl md:sticky md:top-20 overflow-x-auto scrollbar-hide">
-            {TABS.map(tab => {
+      <main className="container py-6 sm:py-8 max-w-6xl mx-auto px-4 relative z-10">
+        <div className="grid grid-cols-1 md:grid-cols-[224px_1fr] gap-6 lg:gap-8 items-start">
+          {/* 左侧侧边栏 (大屏常驻，移动端横向胶囊条，共享弹簧高亮底块) */}
+          <aside
+            role="tablist"
+            aria-label="用户中心分区导航"
+            className="flex md:flex-col gap-1 p-1.5 bg-card/75 backdrop-blur-xl border border-border/70 rounded-2xl md:sticky md:top-20 overflow-x-auto scrollbar-hide shadow-2xs"
+          >
+            {TABS.map((tab, index) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.key;
               return (
-                <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-                  className={`flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm font-medium transition-all flex-shrink-0 md:w-full relative ${
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  id={`${tabsId}-${tab.key}`}
+                  aria-selected={isActive}
+                  aria-controls={`${tabsId}-panel`}
+                  tabIndex={isActive ? 0 : -1}
+                  onClick={() => setActiveTab(tab.key)}
+                  onKeyDown={event => {
+                    const last = TABS.length - 1;
+                    const next = event.key === "Home" ? 0 : event.key === "End" ? last
+                      : event.key === "ArrowRight" || event.key === "ArrowDown" ? (index + 1) % TABS.length
+                      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (index + last) % TABS.length : undefined;
+                    if (next === undefined) return;
+                    event.preventDefault();
+                    const key = TABS[next].key;
+                    setActiveTab(key);
+                    document.getElementById(`${tabsId}-${key}`)?.focus();
+                  }}
+                  className={`relative flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-sm transition-colors flex-shrink-0 md:w-full outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary select-none cursor-pointer ${
                     isActive
-                      ? "bg-gradient-to-r from-primary/15 to-primary/5 text-primary font-semibold shadow-sm"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/30 hover:translate-x-0.5"
-                  }`}>
+                      ? "text-foreground font-semibold"
+                      : "text-muted-foreground hover:text-foreground font-medium"
+                  }`}
+                >
                   {isActive && (
-                    <span className="absolute left-0 top-3 bottom-3 w-1 bg-primary rounded-full hidden md:block" />
+                    <motion.span
+                      layoutId={reduceMotion ? undefined : `${tabsId}-active`}
+                      transition={reduceMotion ? { duration: 0 } : SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-xl border border-border/70 bg-muted/65 shadow-2xs dark:bg-muted/40"
+                    />
                   )}
-                  <Icon className={`w-4.5 h-4.5 ${isActive ? "text-primary" : "text-muted-foreground/80"}`} />
-                  <span>{tab.label}</span>
+                  <span className="relative z-10 inline-flex items-center gap-2.5">
+                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "text-muted-foreground/80"}`} />
+                    <span>{tab.label}</span>
+                  </span>
                 </button>
               );
             })}
           </aside>
 
           {/* 右侧内容 */}
-          <div className="space-y-6 min-w-0">
+          <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${activeTab}`} className="space-y-6 min-w-0">
             {activeTab === "profile" && <ProfileTab />}
             {activeTab === "ai" && <AISettingsTab />}
             {activeTab === "qq" && <QqTab />}

@@ -10,13 +10,14 @@ import { Textarea } from "@/components/ui/textarea";
 import PersonaStatePanel from "@/components/PersonaStatePanel";
 import QqDeliveryPanel from "@/components/QqDeliveryPanel";
 import { isQqDeliveryComplete } from "@shared/qq-delivery";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  CollapseSection,
+  MotionDrawer,
+  MotionModal,
+  MotionPopover,
+  SPRING_SNAPPY,
+} from "@/components/ui/motion";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -177,14 +178,14 @@ const QUICK_ACTION_CATEGORIES = [
     ],
   },
   {
-    category: "🤝 协作交流",
+    category: "🤍 亲昵照顾",
     icon: "🤍",
     actions: [
       "轻轻拍了拍对方的肩膀安慰",
       "相视一笑，彼此心照不宣",
       "轻声询问对方接下来的打算",
-      "将桌上的地图转向对方",
-      "并肩查看地图，讨论路线",
+      "伸手探了探对方额头的温度",
+      "并肩靠在沙发上，静静陪伴",
     ],
   },
   {
@@ -331,6 +332,7 @@ export default function Roleplay() {
   const [showEmotionModal, setShowEmotionModal] = useState(false);
   const [showTheaterDrawer, setShowTheaterDrawer] = useState(false);
   const [showSearchPanel, setShowSearchPanel] = useState(false);
+  const [showMobileWorkspaceDrawer, setShowMobileWorkspaceDrawer] = useState(false);
   const [collapsedThoughtIds, setCollapsedThoughtIds] = useState<Set<number>>(new Set());
 
   const toggleThoughtCollapse = (msgId: number) => {
@@ -349,11 +351,11 @@ export default function Roleplay() {
   type StudioTab = "overview" | "cast" | "prompt" | "history";
   const [studioTab, setStudioTab] = useState<StudioTab>("overview");
   const [studioChannelId, setStudioChannelId] = useState<number | null>(null);
-  const [studioName, setStudioName] = useState("驿站议事");
+  const [studioName, setStudioName] = useState("客厅温存");
   const [studioIcon, setStudioIcon] = useState("🛋️");
-  const [studioDescription, setStudioDescription] = useState("两位旅行者在驿站整理线索、讨论下一步行程。");
-  const [studioScenePrompt, setStudioScenePrompt] = useState("傍晚，驿站亮起灯光，桌上放着地图和旅行笔记。");
-  const [studioSystemPromptOverlay, setStudioSystemPromptOverlay] = useState("通过对话与具体动作推进情节，描写环境、服饰与关键道具。");
+  const [studioDescription, setStudioDescription] = useState("两个人在客厅里喝茶闲聊、互相关照。");
+  const [studioScenePrompt, setStudioScenePrompt] = useState("晚上，屋里安静，适合闲聊、照顾和自然相处。");
+  const [studioSystemPromptOverlay, setStudioSystemPromptOverlay] = useState("动作和语气更靠近一些，多写触感、温度等生活细节。");
   const [studioPersona1Role, setStudioPersona1Role] = useState("");
   const [studioPersona2Role, setStudioPersona2Role] = useState("");
   const [studioContextSeed, setStudioContextSeed] = useState("");
@@ -372,6 +374,12 @@ export default function Roleplay() {
   const [showSceneImportDialog, setShowSceneImportDialog] = useState(false);
   const [showChannelCloneDialog, setShowChannelCloneDialog] = useState(false);
   const [sceneSearchQuery, setSceneSearchQuery] = useState("");
+  const [studioConfirmDialog, setStudioConfirmDialog] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const [note, setNote] = useState("");
 
@@ -506,7 +514,7 @@ export default function Roleplay() {
 
   useEffect(() => {
     if (channel?.members?.length > 0) {
-      // 频道成员变更时，确保工作台当前角色属于该频道；越界则回退到第一位成员
+      // 频道成员变更时，确保工作台当前分身属于该频道；越界则回退到第一位成员
       setWorkbenchPersonaId(prev => {
         if (prev && channel.members.some((m: any) => m.personaId === prev)) return prev;
         return channel.members[0].personaId;
@@ -516,6 +524,7 @@ export default function Roleplay() {
 
   // 切换频道时关闭工作台弹窗，避免面板显示上一个频道的数据
   const handleSelectChannel = (channelId: number) => {
+    setShowMobileWorkspaceDrawer(false);
     if (channelId === selectedChannelId) return;
     if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
     setShowMoodModal(false);
@@ -526,6 +535,9 @@ export default function Roleplay() {
     setShowEmotionModal(false);
     setShowTheaterDrawer(false);
     setShowSearchPanel(false);
+    setShowTurnCountMenu(false);
+    setShowSpeakerMenu(false);
+    setShowQuickActionMatrix(false);
     setSelectedChannelId(channelId);
   };
 
@@ -860,6 +872,7 @@ export default function Roleplay() {
 
   const handleOpenEditStudio = (targetChannel: any) => {
     if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
+    setShowMobileWorkspaceDrawer(false);
     setStudioChannelId(targetChannel.id);
     setStudioName(targetChannel.name || "");
     setStudioIcon(targetChannel.icon || "🛋️");
@@ -881,12 +894,13 @@ export default function Roleplay() {
 
   const handleOpenCreateStudio = () => {
     if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
+    setShowMobileWorkspaceDrawer(false);
     setStudioChannelId(null);
     setStudioName("");
     setStudioIcon("🎭");
     setStudioDescription("");
     setStudioScenePrompt("");
-    setStudioSystemPromptOverlay("通过对话与具体动作推进情节，描写环境、服饰与关键道具。");
+    setStudioSystemPromptOverlay("动作和语气更靠近一些，多写触感、温度等生活细节。");
     setStudioPersona1Role("");
     setStudioPersona2Role("");
     setStudioContextSeed("");
@@ -919,7 +933,7 @@ export default function Roleplay() {
       return;
     }
     if (studioMemberIds.length < 2) {
-      toast.error("至少选择两位参与角色");
+      toast.error("至少选择两位参与分身");
       return;
     }
 
@@ -1008,6 +1022,7 @@ export default function Roleplay() {
   };
 
   const toggleExpandThoughts = () => {
+    setCollapsedThoughtIds(new Set());
     setExpandThoughts(prev => {
       const next = !prev;
       try {
@@ -1071,10 +1086,19 @@ export default function Roleplay() {
 
   const handleBatchDeleteMessages = () => {
     if (!studioChannelReady || !studioChannelId || contextSelectedIds.size === 0) return;
-    if (!confirm(`确定要删除选中的 ${contextSelectedIds.size} 条消息吗？`)) return;
-    deleteMessagesMutation.mutate({
-      channelId: studioChannelId,
-      messageIds: Array.from(contextSelectedIds),
+    const targetIds = Array.from(contextSelectedIds);
+    const targetChannelId = studioChannelId;
+    setStudioConfirmDialog({
+      title: "批量删除历史消息",
+      description: `确定要永久删除已选中的 ${targetIds.length} 条历史对话记录吗？此操作无法撤销。`,
+      confirmLabel: "确认删除",
+      onConfirm: () => {
+        deleteMessagesMutation.mutate({
+          channelId: targetChannelId,
+          messageIds: targetIds,
+        });
+        setStudioConfirmDialog(null);
+      },
     });
   };
 
@@ -1108,9 +1132,35 @@ export default function Roleplay() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-9 h-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center animate-pulse">
-          <Users className="w-5 h-5" />
+      <div className="min-h-screen bg-background flex flex-col">
+        <div className="h-14 border-b border-border/50 bg-background/85 backdrop-blur-xl">
+          <div className="container max-w-6xl h-full flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8.5 h-8.5 rounded-xl bg-muted/60 animate-pulse" />
+              <div className="space-y-1.5">
+                <div className="w-32 h-3.5 rounded-md bg-muted/70 animate-pulse" />
+                <div className="w-48 h-2.5 rounded-md bg-muted/45 animate-pulse hidden sm:block" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-20 h-8 rounded-xl bg-muted/55 animate-pulse" />
+              <div className="w-20 h-8 rounded-xl bg-muted/55 animate-pulse" />
+            </div>
+          </div>
+        </div>
+        <div className="container max-w-6xl py-4 flex-1 grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
+          <div className="hidden lg:flex flex-col gap-3">
+            <div className="warm-card warm-card-static p-4 h-48 animate-pulse bg-muted/25" />
+            <div className="warm-card warm-card-static p-4 flex-1 animate-pulse bg-muted/25" />
+          </div>
+          <div className="warm-card warm-card-static p-5 h-[calc(100vh-140px)] min-h-[520px] flex flex-col justify-between animate-pulse bg-muted/20">
+            <div className="w-48 h-4 rounded-md bg-muted/60" />
+            <div className="space-y-4">
+              <div className="w-2/3 h-16 rounded-2xl bg-muted/45" />
+              <div className="w-2/3 h-16 rounded-2xl bg-muted/45 ml-auto" />
+            </div>
+            <div className="w-full h-11 rounded-xl bg-muted/50" />
+          </div>
         </div>
       </div>
     );
@@ -1133,7 +1183,7 @@ export default function Roleplay() {
         <div className="gradient-mesh-bg" />
 
         {/* Studio Top Header (1:1 with Scenes) */}
-        <header className="sticky top-0 z-30 app-header border-b border-border/50 bg-background/90 backdrop-blur-xl">
+        <header className="sticky top-0 z-30 app-header border-b border-border/60 bg-background/88 backdrop-blur-xl">
           <div className="container max-w-4xl h-14 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
               <button
@@ -1143,11 +1193,11 @@ export default function Roleplay() {
               >
                 <ArrowLeft className="w-4 h-4" />
               </button>
-              <div className="w-9 h-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-lg shadow-inner ring-1 ring-primary/20 shrink-0">
+              <div className="w-9 h-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-lg ring-1 ring-primary/20 shrink-0">
                 <Film className="w-4 h-4 sm:w-5 sm:h-5" />
               </div>
               <div className="min-w-0">
-                <h1 className="text-sm sm:text-base font-bold text-foreground truncate">
+                <h1 className="text-sm sm:text-base font-semibold tracking-tight text-foreground truncate">
                   {studioChannelId ? "编辑生活频道工坊" : "设计新生活频道情境"}
                 </h1>
                 <p className="text-[11px] sm:text-xs text-muted-foreground truncate hidden sm:block">
@@ -1184,9 +1234,13 @@ export default function Roleplay() {
         </header>
 
         {/* Studio Content Form (Tabbed Multi-Step / Section View) */}
-        <main className="container max-w-4xl py-6 space-y-5 sm:space-y-6 animate-scale-in">
-          {/* Top Modern Tab Switcher */}
-          <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-muted/40 border border-border/70 shadow-2xs overflow-x-auto scrollbar-hide">
+        <main className="container max-w-4xl py-6 space-y-5 sm:space-y-6">
+          {/* Top Modern Tab Switcher with Shared Spring Pill */}
+          <div
+            role="tablist"
+            aria-label="生活频道工坊编辑分区"
+            className="flex items-center gap-1 p-1.5 rounded-2xl bg-muted/50 border border-border/70 backdrop-blur-sm shadow-2xs overflow-x-auto scrollbar-hide"
+          >
             {[
               { id: "overview", label: "基础与场景", icon: BookOpen, desc: "剧本名 / 氛围 / 场景" },
               { id: "cast", label: "角色与身份", icon: Users, desc: "左右站位 / 时代身份", badge: `${studioMemberIds.length}位` },
@@ -1199,26 +1253,33 @@ export default function Roleplay() {
                 <button
                   key={tab.id}
                   type="button"
+                  role="tab"
+                  aria-selected={isActive}
                   onClick={() => setStudioTab(tab.id as StudioTab)}
-                  className={`flex-1 min-w-[140px] py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer select-none ${
+                  className={`relative flex-1 min-w-[140px] py-2 px-3 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer select-none ${
                     isActive
-                      ? "bg-card text-primary shadow-xs border border-border/80 ring-1 ring-primary/20"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                  <div className="text-left leading-tight min-w-0">
-                    <div className="flex items-center gap-1">
-                      <span className="truncate">{tab.label}</span>
-                      {tab.badge && (
-                        <span className={`text-[9.5px] px-1.5 py-0.2 rounded-full font-mono font-normal ${
-                          isActive ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
-                        }`}>
-                          {tab.badge}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                  {isActive && (
+                    <motion.span
+                      layoutId="roleplay-studio-tab-pill"
+                      transition={SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-xl bg-card border border-border/75 shadow-xs"
+                    />
+                  )}
+                  <span className="relative z-10 flex items-center gap-2 min-w-0">
+                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+                    <span className="truncate">{tab.label}</span>
+                    {tab.badge && (
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono tabular-nums font-normal ${
+                        isActive ? "bg-primary/12 text-primary" : "bg-foreground/6 text-muted-foreground"
+                      }`}>
+                        {tab.badge}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
@@ -1226,11 +1287,16 @@ export default function Roleplay() {
 
           {/* TAB 1: 基础概况与场景 (Overview) */}
           {studioTab === "overview" && (
-            <div className="space-y-4 sm:space-y-5 animate-fade-in">
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={SPRING_SNAPPY}
+              className="space-y-4 sm:space-y-5"
+            >
               {/* Quick Import & Clone Toolbar */}
-              <div className="rounded-2xl sm:rounded-3xl border border-primary/20 bg-primary/[0.03] p-3.5 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div className="warm-card warm-card-static p-3.5 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-border/70">
                 <div className="space-y-0.5 min-w-0">
-                  <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                     <Layers className="w-4 h-4 text-primary" />
                     <span>剧本导入与频道克隆</span>
                   </div>
@@ -1256,7 +1322,7 @@ export default function Roleplay() {
                     variant="outline"
                     size="sm"
                     onClick={() => setShowChannelCloneDialog(true)}
-                    className="flex-1 sm:flex-initial h-8 px-3 rounded-xl border-border hover:bg-muted text-muted-foreground hover:text-foreground gap-1.5 text-xs font-medium cursor-pointer shadow-2xs"
+                    className="flex-1 sm:flex-initial h-8 px-3 rounded-xl border-border/70 hover:bg-muted text-muted-foreground hover:text-foreground gap-1.5 text-xs font-medium cursor-pointer shadow-2xs"
                   >
                     <Copy className="w-3.5 h-3.5" />
                     <span>从已有频道克隆</span>
@@ -1266,10 +1332,10 @@ export default function Roleplay() {
 
               {/* Inspiration Templates (New Only) */}
               {!studioChannelId && (
-                <div className="rounded-2xl sm:rounded-3xl border border-primary/20 bg-primary/[0.03] p-3.5 sm:p-5 shadow-xs">
+                <div className="warm-card warm-card-static p-3.5 sm:p-5 border-border/70">
                   <div className="flex items-center gap-2 mb-2.5 sm:mb-3">
                     <Lightbulb className="w-4 h-4 text-primary" />
-                    <span className="text-xs font-bold text-foreground">
+                    <span className="text-xs font-semibold text-foreground">
                       灵感模板库（点击一键套用）
                     </span>
                   </div>
@@ -1279,11 +1345,11 @@ export default function Roleplay() {
                         key={tmpl.title}
                         type="button"
                         onClick={() => handleApplyTemplate(tmpl)}
-                        className="p-3 rounded-2xl border border-border/70 bg-card hover:border-primary hover:shadow-sm text-left transition-all group cursor-pointer"
+                        className="p-3 rounded-2xl border border-border/70 bg-background/60 hover:bg-card hover:border-primary/45 hover:shadow-2xs text-left transition-all group cursor-pointer"
                       >
                         <div className="flex items-center gap-1.5 mb-1">
                           <span className="text-base">{tmpl.icon}</span>
-                          <span className="text-xs font-bold text-foreground group-hover:text-primary transition-colors truncate">
+                          <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors truncate">
                             {tmpl.title}
                           </span>
                         </div>
@@ -1297,8 +1363,8 @@ export default function Roleplay() {
               )}
 
               {/* 1. Basic Info Card */}
-              <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-4 shadow-sm">
-                <div className="flex items-center gap-2 text-xs font-bold text-foreground border-b border-border/50 pb-2">
+              <div className="warm-card warm-card-static p-4 sm:p-6 space-y-4 border-border/70">
+                <div className="flex items-center gap-2 text-xs font-semibold text-foreground border-b border-border/50 pb-2">
                   <BookOpen className="w-4 h-4 text-primary" />
                   <span>频道剧本基础概况</span>
                 </div>
@@ -1340,8 +1406,8 @@ export default function Roleplay() {
                           onClick={() => setStudioIcon(e)}
                           className={`w-7.5 h-7.5 rounded-xl text-base flex items-center justify-center transition-all cursor-pointer ${
                             studioIcon === e
-                              ? "bg-primary/20 text-primary border border-primary/40 shadow-2xs scale-110"
-                              : "hover:bg-card/90 hover:scale-110 text-foreground/85"
+                              ? "bg-primary/15 text-primary border border-primary/35 shadow-2xs scale-105"
+                              : "hover:bg-card/90 hover:scale-105 text-foreground/85"
                           }`}
                         >
                           {e}
@@ -1376,10 +1442,10 @@ export default function Roleplay() {
 
               {/* Starters & Visual Baseline */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-5 space-y-3 shadow-sm">
+                <div className="warm-card warm-card-static p-4 sm:p-5 space-y-3 border-border/70">
                   <div className="flex items-center gap-2 border-b border-border/50 pb-2">
                     <MessageSquareQuote className="w-4 h-4 text-primary" />
-                    <span className="text-xs font-bold text-foreground">破冰开场台词</span>
+                    <span className="text-xs font-semibold text-foreground">破冰开场台词</span>
                   </div>
                   <Textarea
                     value={studioStarters}
@@ -1390,10 +1456,10 @@ export default function Roleplay() {
                   />
                 </div>
 
-                <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-5 space-y-3 shadow-sm">
+                <div className="warm-card warm-card-static p-4 sm:p-5 space-y-3 border-border/70">
                   <div className="flex items-center gap-2 border-b border-border/50 pb-2">
                     <Palette className="w-4 h-4 text-primary" />
-                    <span className="text-xs font-bold text-foreground">画面视觉基准（/p 专属）</span>
+                    <span className="text-xs font-semibold text-foreground">画面视觉基准（/p 专属）</span>
                   </div>
                   <Textarea
                     value={studioVisualBaseline}
@@ -1404,20 +1470,25 @@ export default function Roleplay() {
                   />
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
 
           {/* TAB 2: 角色配置与时代身份 (Cast & Standings) */}
           {studioTab === "cast" && (
-            <div className="space-y-4 sm:space-y-5 animate-fade-in">
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={SPRING_SNAPPY}
+              className="space-y-4 sm:space-y-5"
+            >
               {/* Character Members Card */}
-              <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-4 shadow-sm">
+              <div className="warm-card warm-card-static p-4 sm:p-6 space-y-4 border-border/70">
                 <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                     <Users className="w-4 h-4 text-primary" />
                     <span>参与角色配置与左右站位</span>
                   </div>
-                  <span className="text-[11px] text-muted-foreground">已选 {studioMemberIds.length} 位角色（至少2位）</span>
+                  <span className="text-[11px] text-muted-foreground font-mono tabular-nums">已选 {studioMemberIds.length} 位角色（至少2位）</span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -1478,62 +1549,67 @@ export default function Roleplay() {
               </div>
 
               {/* Dual Character Identity Card */}
-              <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+              <div className="warm-card warm-card-static p-4 sm:p-6 space-y-3.5 sm:space-y-4 border-border/70">
                 <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                     <Users className="w-4 h-4 text-primary" />
                     <span>双角色身份与时代设定（可选）</span>
                   </div>
                   <span className="text-[10px] sm:text-[11px] text-muted-foreground hidden xs:inline">留空沿用日常身份</span>
                 </div>
 
-                <div className="p-3 rounded-2xl bg-amber-500/5 border border-amber-500/20 text-[10px] sm:text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed flex items-start gap-2">
-                  <Info className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                <div className="p-3 rounded-2xl bg-muted/35 border border-border/60 text-[10px] sm:text-[11px] text-muted-foreground leading-relaxed flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
                   <span>
-                    <b>守则提示：</b>
+                    <b className="text-foreground">守则提示：</b>
                     只改变该场景下的职业角色、年龄数字与时代背景。原人物性格、身材骨架、外貌、嗓音、健康状态及深层情感纽带保持不变；退出场景后自动失效。
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-                  <div className="p-3.5 rounded-2xl border border-primary/30 bg-primary/5 space-y-1.5">
-                    <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <div className="p-3.5 rounded-2xl border border-primary/25 bg-primary/[0.04] space-y-1.5">
+                    <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-primary" />
                       左位角色在本场景的身份微调
                     </label>
                     <Textarea
                       value={studioPersona1Role}
                       onChange={e => setStudioPersona1Role(e.target.value)}
-                      placeholder="例如：角色在档案馆与调查搭档核对地图，通过提问与线索推进情节。"
+                      placeholder="例如：角色在档案馆核对地图，通过提问与线索推进情节。"
                       rows={3}
                       className="text-xs leading-relaxed resize-none rounded-xl bg-card"
                     />
                   </div>
 
-                  <div className="p-3.5 rounded-2xl border border-chart-3/30 bg-chart-3/5 space-y-1.5">
-                    <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <div className="p-3.5 rounded-2xl border border-chart-3/25 bg-chart-3/[0.04] space-y-1.5">
+                    <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-chart-3" />
                       右位角色在本场景的身份微调
                     </label>
                     <Textarea
                       value={studioPersona2Role}
                       onChange={e => setStudioPersona2Role(e.target.value)}
-                      placeholder="例如：角色在档案馆与调查搭档核对地图，通过提问与线索推进情节。"
+                      placeholder="例如：角色在档案馆核对地图，通过提问与线索推进情节。"
                       rows={3}
                       className="text-xs leading-relaxed resize-none rounded-xl bg-card"
                     />
                   </div>
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
 
           {/* TAB 3: 心智与提示词偏好 (Prompt & Behavior) */}
           {studioTab === "prompt" && (
-            <div className="space-y-4 sm:space-y-5 animate-fade-in">
-              <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-3.5 sm:space-y-4 shadow-sm">
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={SPRING_SNAPPY}
+              className="space-y-4 sm:space-y-5"
+            >
+              <div className="warm-card warm-card-static p-4 sm:p-6 space-y-3.5 sm:space-y-4 border-border/70">
                 <div className="flex items-center justify-between border-b border-border/50 pb-2 flex-wrap gap-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                     <Wand2 className="w-4 h-4 text-primary" />
                     <span>专属行为与旁白写法偏好</span>
                   </div>
@@ -1561,16 +1637,21 @@ export default function Roleplay() {
                   className="text-xs leading-relaxed rounded-xl font-mono"
                 />
               </div>
-            </div>
+            </motion.div>
           )}
 
           {/* TAB 4: 记忆与上下文管理 (History & Memory) */}
           {studioTab === "history" && (
-            <div className="space-y-4 sm:space-y-5 animate-fade-in">
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={SPRING_SNAPPY}
+              className="space-y-4 sm:space-y-5"
+            >
               {/* Context Seed Card & Continuation Toggle */}
-              <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-4 shadow-sm">
+              <div className="warm-card warm-card-static p-4 sm:p-6 space-y-4 border-border/70">
                 <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                     <Database className="w-4 h-4 text-primary" />
                     <span>前情提要与上下文种子 (Context Seed)</span>
                   </div>
@@ -1581,7 +1662,7 @@ export default function Roleplay() {
                   <Textarea
                     value={studioContextSeed}
                     onChange={e => setStudioContextSeed(e.target.value)}
-                    placeholder="例如：角色在档案馆与调查搭档核对地图，通过提问与线索推进情节。"
+                    placeholder="例如：角色在档案馆核对地图，通过提问与线索推进情节。"
                     rows={3}
                     className="text-xs rounded-xl bg-muted/20 leading-relaxed"
                   />
@@ -1589,7 +1670,7 @@ export default function Roleplay() {
 
                 <label className="flex items-center justify-between p-3.5 rounded-2xl border border-border/60 bg-muted/20 cursor-pointer hover:border-primary/40 transition-colors">
                   <div className="space-y-0.5 pr-2">
-                    <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5 text-primary" />
                       持续推演时自动承接前情记忆
                     </div>
@@ -1606,12 +1687,12 @@ export default function Roleplay() {
 
               {/* History & Context Manager Card */}
               {studioChannelId && (
-                <div className="rounded-2xl sm:rounded-3xl border border-border/80 bg-card p-4 sm:p-6 space-y-4 shadow-sm">
+                <div className="warm-card warm-card-static p-4 sm:p-6 space-y-4 border-border/70">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/50 pb-3">
                     <div className="flex items-center gap-2">
                       <History className="w-4 h-4 text-chart-3" />
-                      <span className="text-xs font-bold text-foreground">历史对话与上下文精细管理</span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                      <span className="text-xs font-semibold text-foreground">历史对话与上下文精细管理</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-mono tabular-nums font-medium">
                         共 {studioMessages.length} 条
                       </span>
                     </div>
@@ -1673,10 +1754,17 @@ export default function Roleplay() {
                         variant="ghost"
                         size="sm"
                         onClick={() => {
-                          if (!studioChannelReady) return;
-                          if (confirm("确定要清空该频道的全部聊天记录吗？")) {
-                            clearAllMessagesMutation.mutate({ channelId: studioChannelId });
-                          }
+                          if (!studioChannelReady || !studioChannelId) return;
+                          const targetChannelId = studioChannelId;
+                          setStudioConfirmDialog({
+                            title: "清空全部历史记录",
+                            description: "确定要清空该频道内的全部历史对话记录吗？清空后无法恢复。",
+                            confirmLabel: "确认清空",
+                            onConfirm: () => {
+                              clearAllMessagesMutation.mutate({ channelId: targetChannelId });
+                              setStudioConfirmDialog(null);
+                            },
+                          });
                         }}
                         disabled={!studioChannelReady || clearAllMessagesMutation.isPending}
                         className="h-7 text-[11px] px-2 rounded-xl text-rose-500 hover:bg-rose-500/10 cursor-pointer"
@@ -1798,12 +1886,20 @@ export default function Roleplay() {
                                   variant="ghost"
                                   size="sm"
                                   onClick={() => {
-                                    if (confirm("确定删除这条消息吗？")) {
-                                      deleteMessagesMutation.mutate({
-                                        channelId: studioChannelId,
-                                        messageIds: [m.id],
-                                      });
-                                    }
+                                    if (!studioChannelId) return;
+                                    const targetChannelId = studioChannelId;
+                                    setStudioConfirmDialog({
+                                      title: "删除该条对话记录",
+                                      description: `确定要删除 #${idx + 1}（${m.speakerName || "场景旁白"}）这条消息吗？`,
+                                      confirmLabel: "删除消息",
+                                      onConfirm: () => {
+                                        deleteMessagesMutation.mutate({
+                                          channelId: targetChannelId,
+                                          messageIds: [m.id],
+                                        });
+                                        setStudioConfirmDialog(null);
+                                      },
+                                    });
                                   }}
                                   className="h-6.5 text-[11px] px-2 rounded-lg text-muted-foreground hover:text-rose-600 cursor-pointer"
                                 >
@@ -1856,7 +1952,7 @@ export default function Roleplay() {
                   </div>
                 </div>
               )}
-            </div>
+            </motion.div>
           )}
 
           {/* Bottom Action Footer */}
@@ -1921,117 +2017,339 @@ export default function Roleplay() {
         </main>
 
         {/* Modal: Import from Scenes */}
-        <Dialog open={showSceneImportDialog} onOpenChange={setShowSceneImportDialog}>
-          <DialogContent className="bg-card border-border rounded-2xl max-w-xl max-h-[80vh] flex flex-col p-0 overflow-hidden shadow-xl">
-            <DialogHeader className="px-5 py-4 border-b border-border/50 bg-muted/20">
-              <DialogTitle className="text-sm font-bold text-foreground flex items-center gap-2">
-                <Film className="w-4 h-4 text-primary" />
-                从情景模式剧本库导入
-              </DialogTitle>
-            </DialogHeader>
+        <MotionModal
+          open={showSceneImportDialog}
+          onClose={() => setShowSceneImportDialog(false)}
+          ariaLabel="从情景模式剧本库导入"
+          className="max-w-xl max-h-[82vh] flex flex-col p-0 overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-border/60 bg-muted/20 flex items-center justify-between shrink-0">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Film className="w-4 h-4 text-primary" />
+              <span>从情景模式剧本库导入</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setShowSceneImportDialog(false)}
+              className="w-7.5 h-7.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
 
-            <div className="p-4 border-b border-border/40">
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={sceneSearchQuery}
-                  onChange={e => setSceneSearchQuery(e.target.value)}
-                  placeholder="搜索情景剧本名称或描述..."
-                  className="pl-8 h-8 text-xs rounded-xl bg-muted/20"
-                />
-              </div>
+          <div className="p-4 border-b border-border/45 shrink-0">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={sceneSearchQuery}
+                onChange={e => setSceneSearchQuery(e.target.value)}
+                placeholder="搜索情景剧本名称或描述..."
+                className="pl-8 h-8.5 text-xs rounded-xl bg-muted/20"
+              />
             </div>
+          </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-96">
-              {filteredScenes.length === 0 ? (
-                <div className="text-center py-8 text-xs text-muted-foreground">没有找到匹配的情景剧本</div>
-              ) : (
-                filteredScenes.map(sc => (
+          <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-96">
+            {filteredScenes.length === 0 ? (
+              <div className="text-center py-8 text-xs text-muted-foreground">没有找到匹配的情景剧本</div>
+            ) : (
+              filteredScenes.map(sc => (
+                <div
+                  key={sc.id}
+                  className="p-3 rounded-2xl border border-border/70 bg-background/60 hover:bg-card hover:border-primary/45 transition-all flex items-center justify-between gap-3 group"
+                >
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="font-semibold text-xs text-foreground flex items-center gap-1.5">
+                      <span className="text-base">{sc.icon || "🎬"}</span>
+                      <span>{sc.name}</span>
+                      {sc.isBuiltin && (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-muted text-muted-foreground font-normal">预置</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground line-clamp-1">
+                      {sc.description || "无场景描述"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => handleImportFromScene(sc)}
+                    className="h-7 text-xs px-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shrink-0 cursor-pointer font-semibold shadow-2xs"
+                  >
+                    一键导入
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </MotionModal>
+
+        {/* Modal: Clone from Channel */}
+        <MotionModal
+          open={showChannelCloneDialog}
+          onClose={() => setShowChannelCloneDialog(false)}
+          ariaLabel="从已有生活频道克隆"
+          className="max-w-md max-h-[78vh] flex flex-col p-0 overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-border/60 bg-muted/20 flex items-center justify-between shrink-0">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Copy className="w-4 h-4 text-primary" />
+              <span>从已有生活频道克隆</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setShowChannelCloneDialog(false)}
+              className="w-7.5 h-7.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {channels.filter(c => c.id !== studioChannelId).length === 0 ? (
+              <div className="text-center py-8 text-xs text-muted-foreground">暂无可克隆的其他频道</div>
+            ) : (
+              channels
+                .filter(c => c.id !== studioChannelId)
+                .map(ch => (
                   <div
-                    key={sc.id}
-                    className="p-3 rounded-2xl border border-border/70 bg-card hover:border-primary/50 hover:bg-primary/[0.02] transition-all flex items-center justify-between gap-3 group"
+                    key={ch.id}
+                    className="p-3 rounded-2xl border border-border/70 bg-background/60 hover:bg-card hover:border-primary/45 transition-all flex items-center justify-between gap-3"
                   >
                     <div className="min-w-0 space-y-0.5">
-                      <div className="font-semibold text-xs text-foreground flex items-center gap-1.5">
-                        <span className="text-base">{sc.icon || "🎬"}</span>
-                        <span>{sc.name}</span>
-                        {sc.isBuiltin && (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-muted text-muted-foreground font-normal">预置</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-muted-foreground line-clamp-1">
-                        {sc.description || "无场景描述"}
+                      <span className="font-semibold text-xs text-foreground truncate block">{ch.name}</span>
+                      <p className="text-[10px] text-muted-foreground line-clamp-1">
+                        {ch.scenePrompt ? ch.scenePrompt.split("\n")[0] : (ch.description || "无场景描写")}
                       </p>
                     </div>
                     <Button
                       size="sm"
-                      onClick={() => handleImportFromScene(sc)}
-                      className="h-7 text-xs px-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shrink-0 cursor-pointer font-semibold shadow-2xs"
+                      variant="outline"
+                      onClick={() => handleCloneFromChannel(ch)}
+                      className="h-7 text-xs px-3 rounded-xl border-border/70 hover:bg-muted shrink-0 cursor-pointer"
                     >
-                      一键导入
+                      克隆配置
                     </Button>
                   </div>
                 ))
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
+            )}
+          </div>
+        </MotionModal>
 
-        {/* Modal: Clone from Channel */}
-        <Dialog open={showChannelCloneDialog} onOpenChange={setShowChannelCloneDialog}>
-          <DialogContent className="bg-card border-border rounded-2xl max-w-md max-h-[75vh] flex flex-col p-0 overflow-hidden shadow-xl">
-            <DialogHeader className="px-5 py-4 border-b border-border/50 bg-muted/20">
-              <DialogTitle className="text-sm font-bold text-foreground flex items-center gap-2">
-                <Copy className="w-4 h-4 text-primary" />
-                从已有生活频道克隆
-              </DialogTitle>
-            </DialogHeader>
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              {channels.filter(c => c.id !== studioChannelId).length === 0 ? (
-                <div className="text-center py-8 text-xs text-muted-foreground">暂无可克隆的其他频道</div>
-              ) : (
-                channels
-                  .filter(c => c.id !== studioChannelId)
-                  .map(ch => (
-                    <div
-                      key={ch.id}
-                      className="p-3 rounded-2xl border border-border/70 bg-card hover:border-primary/50 transition-all flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0 space-y-0.5">
-                        <span className="font-semibold text-xs text-foreground truncate block">{ch.name}</span>
-                        <p className="text-[10px] text-muted-foreground line-clamp-1">
-                          {ch.scenePrompt ? ch.scenePrompt.split("\n")[0] : (ch.description || "无场景描写")}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleCloneFromChannel(ch)}
-                        className="h-7 text-xs px-3 rounded-xl border-border hover:bg-muted shrink-0 cursor-pointer"
-                      >
-                        克隆配置
-                      </Button>
-                    </div>
-                  ))
-              )}
+        {/* Modal: Studio Destructive Action Confirmation */}
+        <MotionModal
+          open={Boolean(studioConfirmDialog)}
+          onClose={() => setStudioConfirmDialog(null)}
+          ariaLabel={studioConfirmDialog?.title || "确认操作"}
+          className="max-w-sm p-5 space-y-4"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-2xl bg-rose-500/12 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-4.5 h-4.5" />
             </div>
-          </DialogContent>
-        </Dialog>
+            <div className="space-y-1 min-w-0">
+              <h3 className="text-sm font-semibold text-foreground">{studioConfirmDialog?.title}</h3>
+              <p className="text-xs text-muted-foreground leading-relaxed">{studioConfirmDialog?.description}</p>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStudioConfirmDialog(null)}
+              className="rounded-xl text-xs h-8 px-3 cursor-pointer"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => studioConfirmDialog?.onConfirm()}
+              disabled={deleteMessagesMutation.isPending || clearAllMessagesMutation.isPending}
+              className="rounded-xl text-xs h-8 px-3.5 cursor-pointer"
+            >
+              {studioConfirmDialog?.confirmLabel || "确认"}
+            </Button>
+          </div>
+        </MotionModal>
       </div>
     );
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // VIEW 2: CHANNEL CHAT STAGE (主对话聊天界面 - 1:1 左侧工作台 + 1:1 右侧定位器)
+  // VIEW 2: CHANNEL CHAT STAGE (主对话聊天界面 - 桌面双栏工作台 + 移动首屏沉浸舞台)
   // ══════════════════════════════════════════════════════════════════════
+  const openWorkbenchAction = (openFn: () => void, fromMobile = false) => {
+    if (fromMobile) setShowMobileWorkspaceDrawer(false);
+    openFn();
+  };
+
+  const renderCompanionWorkbenchGrid = (fromMobile = false) => (
+    <div className="grid grid-cols-2 gap-2">
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowTheaterDrawer(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-3/10 hover:border-chart-3/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <Film className="w-3.5 h-3.5 text-chart-3 group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-chart-3">频道剧场</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">场景前情与设定</p>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowMoodModal(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-primary/10 hover:border-primary/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <Brain className="w-3.5 h-3.5 text-primary group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-primary">情感状态</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">全员情感与心智</p>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowDiagnosticsModal(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-sky-500/10 hover:border-sky-500/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <Activity className="w-3.5 h-3.5 text-sky-500 group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-sky-500">运行诊断</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">心智透视与规划</p>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowMemoryModal(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-4/10 hover:border-chart-4/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <Clock className="w-3.5 h-3.5 text-chart-4 group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-chart-4">记忆时间线</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">共同回忆档案</p>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowSourceLibraryModal(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-2/10 hover:border-chart-2/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <Database className="w-3.5 h-3.5 text-chart-2 group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-chart-2">资料库</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">原著知识检索</p>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => openWorkbenchAction(() => setShowEmotionModal(true), fromMobile)}
+        className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-5/10 hover:border-chart-5/30 border border-border/60 text-left transition-all group cursor-pointer"
+      >
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <TrendingUp className="w-3.5 h-3.5 text-chart-5 group-hover:scale-105 transition-transform" />
+          <span className="text-xs font-semibold text-foreground group-hover:text-chart-5">情绪报告</span>
+        </div>
+        <p className="text-[10px] text-muted-foreground">情绪日志与走势</p>
+      </button>
+    </div>
+  );
+
+  const renderChannelListItems = () => {
+    if (channels.length === 0) {
+      return (
+        <div className="text-center py-8 space-y-2">
+          <div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary mx-auto flex items-center justify-center">
+            <Users className="w-5 h-5" />
+          </div>
+          <p className="text-xs text-muted-foreground">暂无角色生活频道</p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleOpenCreateStudio}
+            className="rounded-xl text-xs h-7 border-primary/30 text-primary cursor-pointer"
+          >
+            <Plus className="w-3 h-3 mr-1" /> 立即创建
+          </Button>
+        </div>
+      );
+    }
+
+    return channels.map(item => {
+      const isSelected = selectedChannelId === item.id;
+      return (
+        <div
+          key={item.id}
+          onClick={() => handleSelectChannel(item.id)}
+          className={`w-full rounded-xl p-3 text-left transition-all border group relative cursor-pointer ${
+            isSelected
+              ? "bg-primary/[0.08] border-primary/35 shadow-2xs"
+              : "bg-background/55 hover:bg-card border-border/65 hover:border-border"
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1 gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}`} />
+              <span className="text-xs font-semibold text-foreground truncate">{item.name}</span>
+              {item.channelKind === "duet" && (
+                <span
+                  className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium shrink-0"
+                  title="QQ「对戏」专用频道：不在「进入频道N」编号内，与角色生活频道相互隔离"
+                >
+                  对戏
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenEditStudio(item);
+                }}
+                className="w-5 h-5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 flex items-center justify-center transition-colors cursor-pointer"
+                title="频道编辑"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-muted text-muted-foreground font-mono tabular-nums font-medium shrink-0">
+                {item.members?.length || 0}人
+              </span>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground truncate mb-2">
+            {item.scenePrompt ? item.scenePrompt.split("\n")[0] : (item.description || "无场景设定")}
+          </p>
+          <div className="flex items-center gap-1 flex-wrap">
+            {item.members?.map((m: any, idx: number) => (
+              <span
+                key={m.personaId}
+                className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium truncate max-w-[88px] ${
+                  idx === 0 ? "bg-primary/10 text-primary" : "bg-chart-3/15 text-chart-3"
+                }`}
+              >
+                {m.personaName}
+              </span>
+            ))}
+          </div>
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col relative selection:bg-primary/20">
       <div className="gradient-mesh-bg" />
 
-      {/* Top Header (Clean & Uncluttered - All companion tools in left sidebar) */}
-      <header className="sticky top-0 z-30 app-header border-b border-border/50 bg-background/85 backdrop-blur-xl">
-        <div className="container max-w-6xl h-14 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+      {/* Top Header (Clean & Uncluttered -Editorial Quiet Luxury) */}
+      <header className="sticky top-0 z-30 app-header border-b border-border/60 bg-background/86 backdrop-blur-xl">
+        <div className="container max-w-6xl h-14 flex items-center justify-between gap-2.5 sm:gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button
               onClick={() => {
                 if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
@@ -2042,16 +2360,16 @@ export default function Roleplay() {
             >
               <ArrowLeft className="w-4 h-4" />
             </button>
-            <div className="w-8.5 h-8.5 rounded-xl bg-primary/10 text-primary flex items-center justify-center shadow-2xs shrink-0">
+            <div className="w-8.5 h-8.5 rounded-xl bg-primary/10 text-primary border border-primary/15 flex items-center justify-center shadow-2xs shrink-0 hidden xs:flex">
               <Users className="w-4 h-4" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold text-foreground truncate">
+                <h1 className="text-sm font-semibold tracking-tight text-foreground truncate">
                   {channel ? channel.name : "角色生活频道"}
                 </h1>
                 {channel && (
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium shrink-0">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-mono tabular-nums font-medium shrink-0 hidden sm:inline-flex">
                     {channel.members?.length || 0} 位角色
                   </span>
                 )}
@@ -2071,7 +2389,7 @@ export default function Roleplay() {
                 className={`h-8 px-2.5 rounded-xl border flex items-center gap-1.5 transition-all text-xs cursor-pointer ${
                   expandThoughts
                     ? "bg-primary/10 border-primary/30 text-primary font-medium"
-                    : "bg-muted/50 border-border/60 text-muted-foreground hover:text-foreground"
+                    : "bg-muted/50 border-border/65 text-muted-foreground hover:text-foreground"
                 }`}
                 title={expandThoughts ? "内心思考：当前默认展开" : "内心思考：当前默认折叠"}
               >
@@ -2085,7 +2403,7 @@ export default function Roleplay() {
                 className={`h-8 px-2.5 rounded-xl border flex items-center gap-1.5 transition-all text-xs cursor-pointer ${
                   allowSilence
                     ? "bg-chart-3/15 border-chart-3/30 text-foreground font-medium"
-                    : "bg-muted/50 border-border/60 text-muted-foreground hover:text-foreground"
+                    : "bg-muted/50 border-border/65 text-muted-foreground hover:text-foreground"
                 }`}
                 title={allowSilence ? "允许沉默：角色可静默思考" : "必定发言：每轮强制说话"}
               >
@@ -2096,17 +2414,17 @@ export default function Roleplay() {
               {/* Main Channel Edit Button */}
               <button
                 onClick={() => handleOpenEditStudio(channel)}
-                className="h-8 px-3 rounded-xl bg-primary/10 border border-primary/25 text-primary hover:bg-primary/20 flex items-center gap-1.5 transition-all cursor-pointer text-xs font-semibold shadow-2xs"
+                className="h-8 px-2.5 sm:px-3 rounded-xl bg-primary/10 border border-primary/25 text-primary hover:bg-primary/20 flex items-center gap-1.5 transition-all cursor-pointer text-xs font-semibold shadow-2xs"
                 title="进入频道设计与编辑工坊"
               >
                 <Pencil className="w-3.5 h-3.5" />
-                <span>频道编辑</span>
+                <span className="hidden xs:inline">频道编辑</span>
               </button>
 
               {/* Delete Channel Button */}
               <button
                 onClick={() => setDeleteTargetId(channel.id)}
-                className="w-8 h-8 rounded-xl bg-muted/50 border border-border/60 text-muted-foreground hover:text-rose-600 hover:bg-rose-500/10 hover:border-rose-500/20 flex items-center justify-center transition-all cursor-pointer"
+                className="w-8 h-8 rounded-xl bg-muted/50 border border-border/65 text-muted-foreground hover:text-rose-600 hover:bg-rose-500/10 hover:border-rose-500/20 flex items-center justify-center transition-all cursor-pointer"
                 title="删除当前频道"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -2116,108 +2434,87 @@ export default function Roleplay() {
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="container max-w-6xl py-4 flex-1 grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
-        {/* Left Sidebar (包含 1:1 左侧陪伴工作台与频道列表) */}
-        <aside className="space-y-3 flex flex-col">
+      {/* Main Container: Desktop Dual-Column Workbench / Mobile First-Screen Immersive Stage */}
+      <main className="container max-w-6xl py-2.5 sm:py-4 flex-1 flex flex-col lg:grid lg:grid-cols-[300px_1fr] gap-2.5 lg:gap-4">
+        {/* Mobile (<lg) Compact Channel Switcher & Workbench Bar — 首屏直达沉浸对话舞台 */}
+        <div className="flex lg:hidden items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-card/85 backdrop-blur-md border border-border/70 shadow-2xs shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowMobileWorkspaceDrawer(true)}
+            className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer group"
+            aria-label="打开陪伴工作台与频道列表"
+          >
+            <span className="w-7.5 h-7.5 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0 group-active:scale-95 transition-transform">
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-foreground truncate">
+                  {channel ? channel.name : "选择生活频道"}
+                </span>
+                {channel?.channelKind === "duet" && (
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium shrink-0">
+                    对戏
+                  </span>
+                )}
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              </div>
+              <p className="text-[10px] text-muted-foreground truncate">
+                工作台 6 项档案 · 共 <span className="font-mono tabular-nums">{channels.length}</span> 个频道
+              </p>
+            </div>
+          </button>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {channel && (
+              <button
+                type="button"
+                onClick={() => setShowDiagnosticsModal(true)}
+                className="h-7.5 px-2.5 rounded-xl bg-muted/50 hover:bg-sky-500/10 hover:text-sky-600 border border-border/65 text-muted-foreground text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                title="频道运行透视与诊断"
+              >
+                <Activity className="w-3.5 h-3.5 text-sky-500" />
+                <span className="hidden xs:inline">诊断</span>
+              </button>
+            )}
+            <Button
+              size="sm"
+              onClick={handleOpenCreateStudio}
+              className="rounded-xl text-[11px] h-7.5 px-2.5 bg-primary hover:bg-primary/90 text-primary-foreground gap-1 cursor-pointer font-semibold shadow-2xs"
+            >
+              <Plus className="w-3 h-3" />
+              <span>新建</span>
+            </Button>
+          </div>
+        </div>
+
+        {/* Desktop Left Sidebar (lg:flex) */}
+        <aside className="hidden lg:flex lg:flex-col space-y-3">
           {/* 1. Left Companion Workbench (左侧陪伴工作台) */}
           {channel && (
-            <div className="p-3.5 rounded-2xl bg-card border border-border/70 shadow-xs space-y-3">
-              <div className="flex items-center justify-between border-b border-border/40 pb-2">
-                <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+            <div className="warm-card warm-card-static p-3.5 border-border/70 space-y-3">
+              <div className="flex items-center justify-between border-b border-border/45 pb-2">
+                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                   <LayoutGrid className="w-3.5 h-3.5 text-primary" />
                   陪伴工作台
                 </span>
                 <span className="text-[10px] text-muted-foreground font-medium">频道多维档案</span>
               </div>
-
-              {/* Workbench 6 Grid Buttons */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowTheaterDrawer(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-3/10 hover:border-chart-3/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Film className="w-3.5 h-3.5 text-chart-3 group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-chart-3">频道剧场</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">场景前情与设定</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowMoodModal(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-primary/10 hover:border-primary/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Brain className="w-3.5 h-3.5 text-primary group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-primary">情感状态</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">全员情感与心智</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowDiagnosticsModal(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-sky-500/10 hover:border-sky-500/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Activity className="w-3.5 h-3.5 text-sky-500 group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-sky-500">运行诊断</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">心智透视与规划</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowMemoryModal(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-4/10 hover:border-chart-4/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Clock className="w-3.5 h-3.5 text-chart-4 group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-chart-4">记忆时间线</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">共同回忆档案</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSourceLibraryModal(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-2/10 hover:border-chart-2/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Database className="w-3.5 h-3.5 text-chart-2 group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-chart-2">资料库</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">原著知识检索</p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowEmotionModal(true)}
-                  className="p-2.5 rounded-xl bg-muted/30 hover:bg-chart-5/10 hover:border-chart-5/30 border border-border/50 text-left transition-all group cursor-pointer"
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <TrendingUp className="w-3.5 h-3.5 text-chart-5 group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-bold text-foreground group-hover:text-chart-5">情绪报告</span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">情绪日志与走势</p>
-                </button>
-              </div>
+              {renderCompanionWorkbenchGrid(false)}
             </div>
           )}
 
           {/* 2. Channels List Header */}
-          <div className="flex items-center justify-between p-1.5 rounded-2xl bg-muted/50 border border-border/60 shadow-2xs">
-            <div className="flex items-center gap-1.5 px-2 text-xs font-bold text-foreground">
+          <div className="flex items-center justify-between p-1.5 rounded-2xl bg-muted/45 border border-border/65 shadow-2xs">
+            <div className="flex items-center gap-1.5 px-2 text-xs font-semibold text-foreground">
               <MessageCircle className="w-3.5 h-3.5 text-primary" />
-              <span>频道列表 ({channels.length})</span>
+              <span>频道列表</span>
+              <span className="text-[11px] text-muted-foreground font-mono tabular-nums">({channels.length})</span>
             </div>
             <Button
               size="sm"
               onClick={handleOpenCreateStudio}
-              className="rounded-xl text-xs h-7 px-2.5 bg-primary hover:bg-primary/90 text-primary-foreground gap-1 cursor-pointer font-semibold shadow-xs"
+              className="rounded-xl text-xs h-7 px-2.5 bg-primary hover:bg-primary/90 text-primary-foreground gap-1 cursor-pointer font-semibold shadow-2xs"
             >
               <Plus className="w-3 h-3" />
               新建频道
@@ -2225,112 +2522,101 @@ export default function Roleplay() {
           </div>
 
           {/* 3. Channels List */}
-          <section className="warm-card p-3 space-y-2 flex-1 overflow-y-auto max-h-[calc(100vh-360px)]">
-            {channels.length === 0 ? (
-              <div className="text-center py-8 space-y-2">
-                <div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary mx-auto flex items-center justify-center">
-                  <Users className="w-5 h-5" />
-                </div>
-                <p className="text-xs text-muted-foreground">暂无角色生活频道</p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleOpenCreateStudio}
-                  className="rounded-xl text-xs h-7 border-primary/30 text-primary cursor-pointer"
-                >
-                  <Plus className="w-3 h-3 mr-1" /> 立即创建
-                </Button>
-              </div>
-            ) : (
-              channels.map(item => {
-                const isSelected = selectedChannelId === item.id;
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleSelectChannel(item.id)}
-                    className={`w-full rounded-xl p-3 text-left transition-all border group relative cursor-pointer ${
-                      isSelected
-                        ? "bg-primary/8 border-primary/30 shadow-xs"
-                        : "bg-card/60 hover:bg-card border-border/60 hover:border-border"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className={`w-2 h-2 rounded-full ${isSelected ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}`} />
-                        <span className="text-xs font-semibold text-foreground truncate">{item.name}</span>
-                        {item.channelKind === "duet" && (
-                          <span
-                            className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium shrink-0"
-                            title="QQ「对戏」专用频道：不在「进入频道N」编号内，与角色生活频道相互隔离"
-                          >
-                            对戏
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenEditStudio(item);
-                          }}
-                          className="w-5 h-5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 flex items-center justify-center transition-colors cursor-pointer"
-                          title="频道编辑"
-                        >
-                          <Pencil className="w-3 h-3" />
-                        </button>
-                        <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-muted text-muted-foreground font-medium shrink-0">
-                          {item.members?.length || 0}人
-                        </span>
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground truncate mb-2">
-                      {item.scenePrompt ? item.scenePrompt.split("\n")[0] : (item.description || "无场景设定")}
-                    </p>
-                    <div className="flex items-center gap-1">
-                      {item.members?.map((m: any, idx: number) => (
-                        <span
-                          key={m.personaId}
-                          className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium truncate max-w-[80px] ${
-                            idx === 0 ? "bg-primary/10 text-primary" : "bg-chart-3/15 text-chart-3"
-                          }`}
-                        >
-                          {m.personaName}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })
-            )}
+          <section className="warm-card warm-card-static p-3 space-y-2 flex-1 overflow-y-auto max-h-[calc(100vh-360px)] border-border/70">
+            {renderChannelListItems()}
           </section>
         </aside>
 
+        {/* Mobile (<lg) Left MotionDrawer for Companion Workbench + Channel List */}
+        <MotionDrawer
+          open={showMobileWorkspaceDrawer}
+          onClose={() => setShowMobileWorkspaceDrawer(false)}
+          side="left"
+          ariaLabel="陪伴工作台与生活频道列表"
+          className="max-w-[340px] sm:max-w-[380px]"
+        >
+          <div className="px-4 py-3.5 border-b border-border/60 bg-muted/20 flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shrink-0">
+                <LayoutGrid className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-xs font-semibold text-foreground truncate">陪伴工作台 & 频道切换</h3>
+                <p className="text-[10px] text-muted-foreground truncate">多维角色档案与全部生活频道</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowMobileWorkspaceDrawer(false)}
+              className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors cursor-pointer"
+              aria-label="关闭抽屉"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3.5 space-y-4">
+            {channel && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-[11px] font-semibold text-muted-foreground">当前频道 · 陪伴工作台</span>
+                  <span className="text-[10px] text-primary font-medium truncate max-w-[140px]">{channel.name}</span>
+                </div>
+                {renderCompanionWorkbenchGrid(true)}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[11px] font-semibold text-muted-foreground">
+                  全部生活频道 (<span className="font-mono tabular-nums">{channels.length}</span>)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleOpenCreateStudio}
+                  className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-0.5 cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>新建频道</span>
+                </button>
+              </div>
+              <div className="space-y-2">
+                {renderChannelListItems()}
+              </div>
+            </div>
+          </div>
+        </MotionDrawer>
+
         {/* Right Main Stage: Dialogue Chat Room */}
-        <section className="warm-card flex flex-col h-[calc(100vh-140px)] min-h-[560px] overflow-hidden relative shadow-sm">
+        <section className="warm-card warm-card-static flex flex-col h-[calc(100dvh-134px)] lg:h-[calc(100vh-140px)] min-h-[480px] lg:min-h-[560px] overflow-hidden relative border-border/70">
           {channel ? (
             <>
               {/* Channel Header Info */}
-              <div className="px-4 py-2 border-b border-border/50 bg-muted/20 flex items-center justify-between gap-2 shrink-0">
+              <div className="px-4 py-2.5 border-b border-border/55 bg-muted/20 flex items-center justify-between gap-2 shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="flex items-center -space-x-1.5 shrink-0">
-                    <div className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold border border-background shadow-xs">
+                    <div className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold border border-background shadow-2xs">
                       {initials(firstMember?.personaName || "左")}
                     </div>
-                    <div className="w-6 h-6 rounded-full bg-chart-3 text-white flex items-center justify-center text-[10px] font-bold border border-background shadow-xs">
+                    <div className="w-6 h-6 rounded-full bg-chart-3 text-white flex items-center justify-center text-[10px] font-bold border border-background shadow-2xs">
                       {initials(secondMember?.personaName || "右")}
                     </div>
                   </div>
                   <span className="text-xs font-semibold text-foreground truncate">{channel.name}</span>
-                  <span className="text-[10px] text-muted-foreground hidden sm:inline truncate max-w-xs">
+                  {channel.channelKind === "duet" && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium shrink-0 hidden sm:inline-flex">
+                      对戏
+                    </span>
+                  )}
+                  <span className="text-[10.5px] text-muted-foreground hidden sm:inline truncate max-w-xs">
                     · {channel.scenePrompt ? channel.scenePrompt.split("\n")[0] : "自由生活场景"}
                   </span>
                 </div>
 
                 {/* Real-time Ticking Indicator：网页自己的推进 + QQ 端的 /R 推进都显示在这里 */}
                 {(isSingleTicking || isMultiTicking || isAutoTicking || qqAdvancing) && (
-                  <div className="flex items-center gap-2 animate-pulse">
-                    <span className="text-[11px] text-primary font-medium">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-primary font-medium font-mono tabular-nums animate-pulse">
                       {isSingleTicking
                         ? "单轮推进中"
                         : isAutoTicking
@@ -2342,12 +2628,12 @@ export default function Roleplay() {
                             : `QQ 推进中 (${qqAdvance?.current ?? 0}/${qqAdvance?.total ?? 0})`}
                     </span>
                     {qqAdvancing && !activeWebTask && qqAdvance?.lastSpeaker && (
-                      <span className="text-[10px] text-muted-foreground">最近：{qqAdvance.lastSpeaker}</span>
+                      <span className="text-[10px] text-muted-foreground hidden md:inline">最近：{qqAdvance.lastSpeaker}</span>
                     )}
                     <Button
                       size="sm"
                       onClick={handleStopAllTicks}
-                      className="h-6.5 text-[11px] px-2.5 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-semibold flex items-center gap-1 cursor-pointer"
+                      className="h-6.5 text-[11px] px-2.5 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-semibold flex items-center gap-1 cursor-pointer shadow-2xs"
                     >
                       <Square className="w-3 h-3 fill-current" />
                       <span>停止</span>
@@ -2363,13 +2649,13 @@ export default function Roleplay() {
               <div className="flex-1 relative overflow-hidden flex flex-col">
                 <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
                   {messages.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-center space-y-3 py-16">
-                      <div className="w-14 h-14 rounded-3xl bg-primary/10 text-primary flex items-center justify-center shadow-xs animate-bounce">
-                        <Sparkles className="w-7 h-7" />
+                    <div className="h-full flex flex-col items-center justify-center text-center space-y-3.5 py-16">
+                      <div className="w-14 h-14 rounded-3xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center shadow-2xs">
+                        <Sparkles className="w-6.5 h-6.5" />
                       </div>
                       <div className="space-y-1">
                         <h3 className="text-sm font-semibold text-foreground">静谧的生活场景已就绪</h3>
-                        <p className="text-xs text-muted-foreground max-w-xs mx-auto">
+                        <p className="text-xs text-muted-foreground max-w-xs mx-auto leading-relaxed">
                           点击下方的【推进 {multiTurnCount} 轮对话】，或输入旁白/生活动作，开启双角色对话。
                         </p>
                       </div>
@@ -2400,21 +2686,21 @@ export default function Roleplay() {
                       return (
                         <Fragment key={message.id}>
                           {showDateDivider && message.createdAt && (
-                            <div id={dayKey ? `date-divider-${dayKey}` : undefined} className="flex justify-center my-3">
-                              <span className="px-3 py-1 rounded-full bg-muted/60 text-[10.5px] font-mono text-muted-foreground border border-border/50 shadow-2xs">
-                                📅 {formatBeijingDate(message.createdAt)}
+                            <div id={dayKey ? `date-divider-${dayKey}` : undefined} className="flex justify-center my-3.5">
+                              <span className="px-3 py-1 rounded-full bg-muted/55 text-[10.5px] font-mono tabular-nums text-muted-foreground border border-border/60 shadow-2xs">
+                                {formatBeijingDate(message.createdAt)}
                               </span>
                             </div>
                           )}
 
                           {/* User Message / Scene Moderator Ribbon (CENTER) */}
                           {isUser ? (
-                            <div id={`roleplay-msg-${message.id}`} className="flex justify-center my-4 animate-fade-in scroll-mt-20 px-2 sm:px-6">
-                              <div className="inline-flex items-center gap-2.5 px-6 py-2.5 rounded-full bg-primary/10 dark:bg-primary/15 border border-primary/25 text-xs sm:text-[13.5px] text-foreground/90 shadow-2xs max-w-[85%] text-center leading-relaxed">
-                                <span className="w-2 h-2 rounded-full bg-primary shrink-0" />
-                                <span className="font-bold text-primary shrink-0">{message.speakerName || "场景引导"}：</span>
+                            <div id={`roleplay-msg-${message.id}`} className="flex justify-center my-4 scroll-mt-20 px-2 sm:px-6">
+                              <div className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-4 sm:px-5 py-2 rounded-2xl bg-card/85 backdrop-blur-sm border border-primary/25 text-xs sm:text-[13px] text-foreground/90 shadow-2xs max-w-[88%] text-center leading-relaxed">
+                                <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                                <span className="font-semibold text-primary shrink-0">{message.speakerName || "场景引导"}：</span>
                                 <span className="font-medium text-foreground/90">{message.content}</span>
-                                <span className="text-[10.5px] text-muted-foreground/70 ml-2 font-mono shrink-0">{formatBeijingTime(message.createdAt)}</span>
+                                <span className="text-[10px] text-muted-foreground/70 font-mono tabular-nums shrink-0">{formatBeijingTime(message.createdAt)}</span>
                               </div>
                             </div>
                           ) : (() => {
@@ -2424,24 +2710,19 @@ export default function Roleplay() {
                             const avatarUrl = personaObj?.avatarUrl;
 
                             return (
-                              <div id={`roleplay-msg-${message.id}`} className="space-y-4 w-full scroll-mt-20 animate-fade-in-up">
+                              <div id={`roleplay-msg-${message.id}`} className="space-y-3.5 w-full scroll-mt-20">
                                 {sections.map((sec, sIdx) => {
                                   if (sec.type === "narration") {
                                     return (
-                                      <div key={sIdx} className="my-6 w-full flex justify-center animate-fade-in px-2 sm:px-6">
-                                        <div className="w-full max-w-2xl rounded-2xl bg-amber-500/5 dark:bg-amber-950/20 border border-amber-500/30 dark:border-amber-500/25 p-4.5 sm:p-5 shadow-xs space-y-2 transition-all">
-                                          <div className="flex items-center justify-center gap-2 mb-1">
-                                            <span className="h-px w-10 bg-gradient-to-r from-transparent to-amber-500/60" />
-                                            <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-500/20 dark:bg-amber-500/25 text-amber-900 dark:text-amber-200 text-[11px] font-bold tracking-wider">
-                                              <Sparkles className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                                              <span>场景旁白 · 环境描写</span>
-                                            </div>
-                                            <span className="h-px w-10 bg-gradient-to-l from-transparent to-amber-500/60" />
+                                      <div key={sIdx} className="my-5 w-full flex justify-center px-2 sm:px-6">
+                                        <div className="w-full max-w-2xl rounded-2xl bg-muted/35 dark:bg-muted/20 border border-border/65 border-l-[3px] border-l-primary/55 px-4 sm:px-5 py-3.5 shadow-2xs space-y-1.5">
+                                          <div className="flex items-center gap-1.5 text-[10.5px] font-medium tracking-[0.14em] text-muted-foreground/80">
+                                            <Sparkles className="w-3 h-3 text-primary/75 shrink-0" />
+                                            <span>场景旁白 · 环境叙事</span>
                                           </div>
-                                          <p className="text-[13.5px] sm:text-[14px] leading-relaxed text-foreground dark:text-zinc-100 font-normal tracking-wide text-justify px-1">
+                                          <p className="font-serif italic text-[13.5px] sm:text-[14px] leading-[1.85] text-foreground/90 tracking-wide text-justify">
                                             {sec.text}
                                           </p>
-
                                         </div>
                                       </div>
                                     );
@@ -2450,21 +2731,21 @@ export default function Roleplay() {
                                   return (
                                     <div
                                       key={sIdx}
-                                      className={`flex items-start gap-3.5 w-full ${
+                                      className={`flex items-start gap-3 sm:gap-3.5 w-full ${
                                         isSpeaker1 ? "justify-start" : "flex-row-reverse justify-start"
                                       }`}
                                     >
                                       {/* Avatar */}
                                       {avatarUrl ? (
-                                        <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl overflow-hidden ring-1 ring-border/50 shadow-xs shrink-0">
+                                        <div className="w-9.5 h-9.5 sm:w-10.5 sm:h-10.5 rounded-2xl overflow-hidden ring-1 ring-border/65 shadow-2xs shrink-0">
                                           <img src={avatarUrl} alt={message.speakerName} className="w-full h-full object-cover" />
                                         </div>
                                       ) : (
                                         <div
-                                          className={`w-10 h-10 sm:w-11 sm:h-11 rounded-2xl flex items-center justify-center font-bold text-xs shadow-xs shrink-0 border ${
+                                          className={`w-9.5 h-9.5 sm:w-10.5 sm:h-10.5 rounded-2xl flex items-center justify-center font-semibold text-xs shadow-2xs shrink-0 border ${
                                             isSpeaker1
-                                              ? "bg-gradient-to-br from-primary/20 via-primary/10 to-transparent border-primary/30 text-primary"
-                                              : "bg-gradient-to-br from-chart-3/25 via-chart-3/15 to-transparent border-chart-3/35 text-foreground"
+                                              ? "bg-primary/10 border-primary/25 text-primary"
+                                              : "bg-chart-3/12 border-chart-3/30 text-foreground"
                                           }`}
                                         >
                                           {initials(message.speakerName)}
@@ -2472,53 +2753,60 @@ export default function Roleplay() {
                                       )}
 
                                       {/* Message Content Container */}
-                                      <div className={`max-w-[82%] sm:max-w-[75%] space-y-1.5 ${isSpeaker1 ? "text-left" : "text-right"}`}>
+                                      <div className={`max-w-[83%] sm:max-w-[75%] space-y-1.5 ${isSpeaker1 ? "text-left" : "text-right"}`}>
                                         {/* Name & Mood Header */}
                                         <div className={`flex items-center gap-2 px-1 ${isSpeaker1 ? "justify-start" : "flex-row-reverse justify-start"}`}>
-                                          <span className="text-xs sm:text-[13px] font-bold text-foreground">{message.speakerName}</span>
+                                          <span className="text-xs sm:text-[13px] font-semibold text-foreground">{message.speakerName}</span>
                                           {getMoodBadge(message.moodState).label && (
                                             <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium shadow-2xs ${getMoodBadge(message.moodState).color}`}>
                                               {getMoodBadge(message.moodState).emoji} {getMoodBadge(message.moodState).label}
                                             </span>
                                           )}
-                                          <span className="text-[10.5px] text-muted-foreground/60 font-mono">
+                                          <span className="text-[10px] text-muted-foreground/65 font-mono tabular-nums">
                                             {formatBeijingTime(message.createdAt)}
                                           </span>
                                         </div>
 
-                                        {/* Dialogue Bubble (With seamlessly integrated inner thought) */}
+                                        {/* Dialogue Bubble (With smooth CollapseSection inner thought) */}
                                         <div
-                                          className={`p-3.5 sm:p-4 rounded-3xl text-[13.5px] sm:text-[14px] leading-relaxed whitespace-pre-line shadow-xs transition-all ${
+                                          className={`p-3.5 sm:p-4 rounded-2xl text-[13.5px] sm:text-[14px] leading-relaxed whitespace-pre-line shadow-2xs transition-colors ${
                                             isSpeaker1
-                                              ? "bg-card border border-border/80 text-foreground rounded-tl-sm"
-                                              : "bg-primary/10 dark:bg-primary/15 border border-primary/25 text-foreground rounded-tr-sm text-left"
+                                              ? "bg-card border border-border/75 text-foreground rounded-tl-xs"
+                                              : "bg-primary/[0.08] dark:bg-primary/[0.14] border border-primary/25 text-foreground rounded-tr-xs text-left"
                                           }`}
                                         >
                                           <div>{sec.text}</div>
 
-                                          {/* Nested Inner Thought (Attached to the last dialogue bubble, click 💭 to toggle collapse) */}
+                                          {/* Nested Inner Thought (Smooth 0fr -> 1fr CollapseSection) */}
                                           {message.innerThought && sIdx === lastDialogueIdx && (() => {
-                                            const isCollapsed = collapsedThoughtIds.has(message.id);
+                                            const isThoughtOpen = expandThoughts
+                                              ? !collapsedThoughtIds.has(message.id)
+                                              : collapsedThoughtIds.has(message.id);
                                             return (
-                                              <div className="mt-2 pt-1.5 border-t border-border/20 text-left">
-                                                <div className="flex items-start gap-1.5">
-                                                  <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      toggleThoughtCollapse(message.id);
-                                                    }}
-                                                    className="cursor-pointer select-none shrink-0 mt-[2px] p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/10 active:scale-90 transition-all not-italic text-[11px] leading-none opacity-70 hover:opacity-100"
-                                                    title={isCollapsed ? "点击展开心声" : "点击折叠心声"}
-                                                  >
-                                                    💭
-                                                  </button>
-                                                  {!isCollapsed && (
-                                                    <p className="flex-1 min-w-0 text-[11.5px] sm:text-xs leading-relaxed text-muted-foreground/80 dark:text-muted-foreground/70 font-serif italic tracking-normal whitespace-normal text-justify">
-                                                      {message.innerThought}
-                                                    </p>
-                                                  )}
-                                                </div>
+                                              <div className="mt-2.5 pt-2 border-t border-border/35 text-left">
+                                                <button
+                                                  type="button"
+                                                  aria-expanded={isThoughtOpen}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    toggleThoughtCollapse(message.id);
+                                                  }}
+                                                  className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground/85 hover:text-foreground cursor-pointer select-none py-0.5 rounded-md transition-colors"
+                                                  title={isThoughtOpen ? "点击收起内心独白" : "点击展开内心独白"}
+                                                >
+                                                  <span className="text-xs leading-none">💭</span>
+                                                  <span>心声</span>
+                                                  <ChevronDown
+                                                    className={`w-3 h-3 transition-transform duration-200 ${
+                                                      isThoughtOpen ? "rotate-180" : ""
+                                                    }`}
+                                                  />
+                                                </button>
+                                                <CollapseSection open={isThoughtOpen} id={`thought-${message.id}`}>
+                                                  <p className="pt-1.5 text-[11.5px] sm:text-xs leading-relaxed text-muted-foreground/85 dark:text-muted-foreground/75 font-serif italic tracking-normal whitespace-normal text-justify">
+                                                    {message.innerThought}
+                                                  </p>
+                                                </CollapseSection>
                                               </div>
                                             );
                                           })()}
@@ -2540,142 +2828,169 @@ export default function Roleplay() {
               </div>
 
               {/* ════ CLEAN & POWERFUL BOTTOM COMPOSER ════ */}
-              <div ref={composerRef} className="p-3 border-t border-border/50 bg-background/85 backdrop-blur-xl space-y-2 shrink-0 relative">
+              {(showQuickActionMatrix || showTurnCountMenu || showSpeakerMenu) && (
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => {
+                    setShowQuickActionMatrix(false);
+                    setShowTurnCountMenu(false);
+                    setShowSpeakerMenu(false);
+                  }}
+                />
+              )}
+              <div ref={composerRef} className="p-3 border-t border-border/60 bg-background/88 backdrop-blur-xl space-y-2 shrink-0 relative z-20">
                 {/* Floating Quick Action Matrix */}
-                {showQuickActionMatrix && (
-                  <div className="absolute bottom-full left-3 right-3 mb-2 p-3.5 rounded-2xl border border-border/70 bg-card/95 backdrop-blur-xl space-y-3 animate-scale-in shadow-xl z-20">
-                    <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
-                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Zap className="w-3.5 h-3.5 text-amber-500" />
-                        情景生活动作库 (点击即填入)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowQuickActionMatrix(false)}
-                        className="text-muted-foreground hover:text-foreground p-1 rounded-lg cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                <MotionPopover
+                  open={showQuickActionMatrix}
+                  direction="up"
+                  className="absolute bottom-full left-3 right-3 mb-2.5 p-3.5 rounded-2xl border border-border/75 bg-card/96 backdrop-blur-2xl space-y-3 shadow-2xl z-30"
+                >
+                  <div className="flex items-center justify-between border-b border-border/45 pb-1.5">
+                    <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-500" />
+                      情景生活动作库（点击即填入）
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickActionMatrix(false)}
+                      className="text-muted-foreground hover:text-foreground p-1 rounded-lg cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {QUICK_ACTION_CATEGORIES.map(cat => (
-                        <div key={cat.category} className="space-y-1.5">
-                          <div className="text-[11px] font-semibold text-foreground/80 flex items-center gap-1">
-                            <span>{cat.icon}</span>
-                            <span>{cat.category}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1">
-                            {cat.actions.map(act => (
-                              <button
-                                key={act}
-                                type="button"
-                                onClick={() => handleInsertQuickAction(act)}
-                                className="text-[11px] px-2 py-0.5 rounded-lg bg-muted/40 hover:bg-primary/10 hover:text-primary border border-border/40 text-muted-foreground transition-all cursor-pointer text-left"
-                              >
-                                {act}
-                              </button>
-                            ))}
-                          </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[45vh] overflow-y-auto pr-1">
+                    {QUICK_ACTION_CATEGORIES.map(cat => (
+                      <div key={cat.category} className="space-y-1.5">
+                        <div className="text-[11px] font-semibold text-foreground/85 flex items-center gap-1">
+                          <span>{cat.icon}</span>
+                          <span>{cat.category}</span>
                         </div>
+                        <div className="flex flex-wrap gap-1">
+                          {cat.actions.map(act => (
+                            <button
+                              key={act}
+                              type="button"
+                              onClick={() => handleInsertQuickAction(act)}
+                              className="text-[11px] px-2.5 py-1 rounded-lg bg-muted/45 hover:bg-primary/10 hover:text-primary border border-border/50 text-muted-foreground transition-all cursor-pointer text-left"
+                            >
+                              {act}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </MotionPopover>
+
+                {/* Floating Turn Count & Continuous Settings Menu */}
+                <MotionPopover
+                  open={showTurnCountMenu}
+                  direction="up"
+                  className="absolute bottom-full right-3 mb-2.5 p-3.5 rounded-2xl border border-border/75 bg-card/96 backdrop-blur-2xl space-y-3 shadow-2xl z-30 min-w-[248px]"
+                >
+                  <div className="flex items-center justify-between border-b border-border/45 pb-1.5">
+                    <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-primary" />
+                      推进轮数与模式设定
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowTurnCountMenu(false)}
+                      className="text-muted-foreground hover:text-foreground p-0.5 rounded-lg cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="text-[10.5px] text-muted-foreground block font-medium">快速设定单次推进轮数：</span>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {[2, 3, 5, 10].map(cnt => (
+                        <button
+                          key={cnt}
+                          type="button"
+                          onClick={() => handleSetTurns(cnt)}
+                          className={`py-1.5 rounded-xl text-xs font-semibold font-mono tabular-nums border transition-all cursor-pointer ${
+                            multiTurnCount === cnt
+                              ? "bg-primary text-primary-foreground border-primary shadow-2xs"
+                              : "bg-muted/40 hover:bg-primary/10 text-foreground border-border/60"
+                          }`}
+                        >
+                          {cnt} 轮
+                        </button>
                       ))}
                     </div>
                   </div>
-                )}
 
-                {/* Floating Turn Count & Continuous Settings Menu */}
-                {showTurnCountMenu && (
-                  <div className="absolute bottom-full right-3 mb-2 p-3 rounded-2xl border border-border/70 bg-card/95 backdrop-blur-xl space-y-3 animate-scale-in shadow-xl z-20 min-w-[240px]">
-                    <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
-                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Sliders className="w-3.5 h-3.5 text-primary" />
-                        推进轮数与模式设定
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowTurnCountMenu(false)}
-                        className="text-muted-foreground hover:text-foreground p-0.5 rounded-lg"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <span className="text-[10px] text-muted-foreground block font-medium">快速设定单次推进轮数：</span>
-                      <div className="grid grid-cols-4 gap-1">
-                        {[2, 3, 5, 10].map(cnt => (
-                          <button
-                            key={cnt}
-                            type="button"
-                            onClick={() => handleSetTurns(cnt)}
-                            className={`py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                              multiTurnCount === cnt
-                                ? "bg-primary text-primary-foreground border-primary shadow-xs"
-                                : "bg-muted/40 hover:bg-primary/10 text-foreground border-border/50"
-                            }`}
-                          >
-                            {cnt} 轮
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 pt-1">
-                      <span className="text-xs text-foreground shrink-0 font-medium">自定义轮数:</span>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={30}
-                        value={customTurnsInput}
-                        onChange={e => setCustomTurnsInput(e.target.value)}
-                        className="h-7 text-xs rounded-lg w-16 text-center"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => handleSetTurns(Number(customTurnsInput))}
-                        className="h-7 text-xs px-2.5 rounded-lg bg-primary text-primary-foreground font-semibold"
-                      >
-                        确定
-                      </Button>
-                    </div>
-
-                    <div className="pt-2 border-t border-border/40">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowTurnCountMenu(false);
-                          handleToggleAutoTick();
-                        }}
-                        disabled={Boolean(activeWebTask && !isAutoTicking)}
-                        className={`w-full py-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs ${
-                          isAutoTicking
-                            ? "bg-rose-500 hover:bg-rose-600 text-white border-rose-600"
-                            : "bg-chart-3/15 hover:bg-chart-3/25 text-foreground border-chart-3/30"
-                        }`}
-                      >
-                        {isAutoTicking ? (
-                          <>
-                            <Pause className="w-3.5 h-3.5" />
-                            <span>停止持续推演</span>
-                          </>
-                        ) : (
-                          <>
-                            <Play className="w-3.5 h-3.5 fill-current text-chart-3" />
-                            <span>开启持续推演（自动连播）</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
+                  <div className="flex items-center gap-1.5 pt-0.5">
+                    <span className="text-xs text-foreground shrink-0 font-medium">自定义轮数:</span>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={customTurnsInput}
+                      onChange={e => setCustomTurnsInput(e.target.value)}
+                      className="h-7.5 text-xs font-mono tabular-nums rounded-lg w-16 text-center"
+                    />
+                    <Button
+                      size="sm"
+                      onClick={() => handleSetTurns(Number(customTurnsInput))}
+                      className="h-7.5 text-xs px-2.5 rounded-lg bg-primary text-primary-foreground font-semibold cursor-pointer"
+                    >
+                      确定
+                    </Button>
                   </div>
-                )}
+
+                  <div className="pt-2 border-t border-border/45">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTurnCountMenu(false);
+                        handleToggleAutoTick();
+                      }}
+                      disabled={Boolean(activeWebTask && !isAutoTicking)}
+                      className={`w-full py-2 rounded-xl text-xs font-semibold border transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs ${
+                        isAutoTicking
+                          ? "bg-rose-500 hover:bg-rose-600 text-white border-rose-600"
+                          : "bg-chart-3/12 hover:bg-chart-3/20 text-foreground border-chart-3/30"
+                      }`}
+                    >
+                      {isAutoTicking ? (
+                        <>
+                          <Pause className="w-3.5 h-3.5" />
+                          <span>停止持续推演</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-current text-chart-3" />
+                          <span>开启持续推演（自动连播）</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </MotionPopover>
 
                 {/* Floating Speaker Menu */}
-                {showSpeakerMenu && (
-                  <div className="absolute bottom-full right-32 mb-2 p-1.5 rounded-2xl border border-border/70 bg-card/95 backdrop-blur-xl space-y-1 animate-scale-in shadow-xl z-20 min-w-[160px]">
-                    <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground border-b border-border/40">
-                      指定单一角色发言：
-                    </div>
-                    {channel.members?.map((member: any) => (
+                <MotionPopover
+                  open={showSpeakerMenu}
+                  direction="up"
+                  className="absolute bottom-full right-24 sm:right-32 mb-2.5 p-2 rounded-2xl border border-border/75 bg-card/96 backdrop-blur-2xl space-y-1 shadow-2xl z-30 min-w-[180px]"
+                >
+                  <div className="px-2.5 py-1 text-[10.5px] font-semibold text-muted-foreground border-b border-border/45 flex items-center justify-between">
+                    <span>指定单一角色发言</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSpeakerMenu(false)}
+                      className="text-muted-foreground hover:text-foreground p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  {channel.members?.map((member: any) => {
+                    const pInfo = personas.find((p: any) => p.id === member.personaId);
+                    const memberReady = (member.analysisStatus ?? pInfo?.analysisStatus ?? "ready") === "ready";
+                    return (
                       <button
                         key={member.personaId}
                         type="button"
@@ -2683,25 +2998,29 @@ export default function Roleplay() {
                           setShowSpeakerMenu(false);
                           executeSingleTick(member.personaId);
                         }}
-                        disabled={Boolean(activeWebTask) || member.analysisStatus !== "ready"}
-                        className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-primary/10 hover:text-primary text-xs text-foreground flex items-center gap-2 transition-all cursor-pointer font-medium"
+                        disabled={Boolean(activeWebTask) || !memberReady}
+                        className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-primary/10 hover:text-primary text-xs text-foreground flex items-center gap-2 transition-all cursor-pointer font-medium disabled:opacity-45 disabled:pointer-events-none"
                       >
-                        <Brain className="w-3.5 h-3.5 text-primary" />
-                        <span>让 {member.personaName} 发言</span>
+                        <Brain className="w-3.5 h-3.5 text-primary shrink-0" />
+                        <span className="truncate">让 {member.personaName} 发言</span>
                       </button>
-                    ))}
-                  </div>
-                )}
+                    );
+                  })}
+                </MotionPopover>
 
                 {/* Unified Sleek Composer Input Row */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowQuickActionMatrix(!showQuickActionMatrix)}
+                    onClick={() => {
+                      setShowTurnCountMenu(false);
+                      setShowSpeakerMenu(false);
+                      setShowQuickActionMatrix(v => !v);
+                    }}
                     className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all shrink-0 cursor-pointer shadow-2xs ${
                       showQuickActionMatrix
-                        ? "bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-400"
-                        : "bg-muted/50 border-border/60 text-muted-foreground hover:text-foreground"
+                        ? "bg-amber-500/15 border-amber-500/35 text-amber-600 dark:text-amber-400"
+                        : "bg-muted/50 border-border/65 text-muted-foreground hover:text-foreground"
                     }`}
                     title="快捷动作库"
                   >
@@ -2712,7 +3031,7 @@ export default function Roleplay() {
                     value={note}
                     onChange={e => setNote(e.target.value)}
                     placeholder="输入场景动作或用户插话（例如：给对方递了杯热茶），按 Ctrl+Enter 发送..."
-                    className="min-h-[40px] max-h-24 text-xs rounded-xl bg-card leading-relaxed resize-none py-2.5"
+                    className="min-h-[40px] max-h-24 text-xs rounded-xl bg-card leading-relaxed resize-none py-2.5 border-border/70"
                     onKeyDown={e => {
                       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                         e.preventDefault();
@@ -2736,33 +3055,58 @@ export default function Roleplay() {
                     </Button>
                   )}
 
+                  {/* 指定单一角色发言按钮 */}
+                  <button
+                    type="button"
+                    disabled={Boolean(activeWebTask)}
+                    onClick={() => {
+                      setShowQuickActionMatrix(false);
+                      setShowTurnCountMenu(false);
+                      setShowSpeakerMenu(v => !v);
+                    }}
+                    className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-45 disabled:pointer-events-none ${
+                      showSpeakerMenu
+                        ? "bg-primary/12 border-primary/35 text-primary"
+                        : "bg-muted/50 border-border/65 text-muted-foreground hover:text-foreground"
+                    }`}
+                    title="指定单一角色发言"
+                  >
+                    <User className="w-4 h-4" />
+                  </button>
+
                   <div className="flex items-center shrink-0 -space-x-px">
-                    {activeWebTask ? (
+                    {activeWebTask || qqAdvancing ? (
                       <Button
                         onClick={handleStopAllTicks}
-                        className="bg-rose-500 hover:bg-rose-600 text-white rounded-l-xl rounded-r-none shadow-xs text-xs h-9 px-3.5 active:scale-95 transition-all flex items-center gap-1.5 font-bold cursor-pointer animate-pulse border-r border-white/20"
+                        className="bg-rose-500 hover:bg-rose-600 text-white rounded-l-xl rounded-r-none shadow-xs text-xs h-9 px-3 sm:px-3.5 active:scale-95 transition-all flex items-center gap-1.5 font-semibold cursor-pointer border-r border-white/20"
                       >
                         <Square className="w-3.5 h-3.5 fill-current" />
-                        <span>停止推进 ({currentTurnProgress})</span>
+                        <span className="font-mono tabular-nums">
+                          {activeWebTask ? `停止推进 (${currentTurnProgress})` : "停止推进"}
+                        </span>
                       </Button>
                     ) : (
                       <Button
                         onClick={() => handleRunMultiTurns(multiTurnCount)}
                         disabled={Boolean(activeWebTask)}
-                        className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-l-xl rounded-r-none shadow-xs text-xs h-9 px-3.5 active:scale-95 transition-all flex items-center gap-1.5 font-bold cursor-pointer border-r border-primary-foreground/20"
+                        className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-l-xl rounded-r-none shadow-xs text-xs h-9 px-3 sm:px-3.5 active:scale-95 transition-all flex items-center gap-1.5 font-semibold cursor-pointer border-r border-primary-foreground/20"
                       >
                         <Sparkles className="w-3.5 h-3.5 text-amber-200" />
-                        <span>推进 {multiTurnCount} 轮</span>
+                        <span className="font-mono tabular-nums">推进 {multiTurnCount} 轮</span>
                       </Button>
                     )}
 
                     <Button
-                      onClick={() => setShowTurnCountMenu(!showTurnCountMenu)}
+                      onClick={() => {
+                        setShowQuickActionMatrix(false);
+                        setShowSpeakerMenu(false);
+                        setShowTurnCountMenu(v => !v);
+                      }}
                       disabled={Boolean(activeWebTask)}
                       className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-r-xl rounded-l-none shadow-xs text-xs h-9 px-2 active:scale-95 transition-all cursor-pointer"
                       title="调整推进轮数 / 持续推演模式"
                     >
-                      <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+                      <ChevronDown className="w-3.5 h-3.5 opacity-85" />
                     </Button>
                   </div>
                 </div>
@@ -2770,13 +3114,13 @@ export default function Roleplay() {
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-muted-foreground space-y-3">
-              <div className="w-14 h-14 rounded-3xl bg-primary/10 text-primary flex items-center justify-center">
+              <div className="w-14 h-14 rounded-3xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center">
                 <Users className="w-7 h-7" />
               </div>
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-foreground">选择或创建一个角色生活频道</h3>
-                <p className="text-xs text-muted-foreground max-w-sm mx-auto">
-                  在左侧列表中点击已有频道进入，或点击【新建频道】定制全新的生活场景与互动角色。
+                <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
+                  在频道列表中点击已有频道进入，或点击【新建生活频道】定制全新的生活场景与互动角色。
                 </p>
               </div>
               <Button
@@ -2798,6 +3142,8 @@ export default function Roleplay() {
           dates={timelineDates}
           messages={timelineMessages}
           speakers={speakerList}
+          members={channel.members}
+          readyPersonas={readyPersonas}
           onJumpToDate={jumpToDate}
           onJumpToMessage={jumpToMessage}
           onJumpToTop={scrollToTop}
@@ -2806,36 +3152,41 @@ export default function Roleplay() {
         />
       )}
 
-      {/* ════════════════ WORKBENCH MODALS ════════════════ */}
+      {/* ════════════════ WORKBENCH MODALS (全部接入弹簧进退场动效) ════════════════ */}
 
-      {/* 1. 频道剧场 (Channel Theater Drawer) */}
-      {showTheaterDrawer && channel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={() => setShowTheaterDrawer(false)} />
-          <div
-            className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-            onClick={e => e.stopPropagation()}
-          >
+      {/* 1. 频道剧场 (Channel Theater Modal) */}
+      <MotionModal
+        open={Boolean(showTheaterDrawer && channel)}
+        onClose={() => setShowTheaterDrawer(false)}
+        ariaLabel="频道剧场场景设定与前情"
+        className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col p-0"
+      >
+        {channel && (
+          <>
             <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-2xl bg-chart-3/15 text-chart-3 flex items-center justify-center">
                   <Film className="w-4.5 h-4.5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-foreground">频道剧场 · 场景设定与前情</h3>
+                  <h3 className="font-semibold text-sm text-foreground">频道剧场 · 场景设定与前情</h3>
                   <p className="text-[11px] text-muted-foreground">当前生活频道剧本与角色关系背景</p>
                 </div>
               </div>
-              <button onClick={() => setShowTheaterDrawer(false)} className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground">
+              <button
+                type="button"
+                onClick={() => setShowTheaterDrawer(false)}
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors cursor-pointer"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-chart-3/10 via-chart-3/5 to-background border border-chart-3/20 space-y-2">
+              <div className="warm-card warm-card-static p-4 border-border/70 space-y-2">
                 <div className="flex items-center gap-2">
                   <span className="text-2xl">{channel.icon || "🛋️"}</span>
-                  <span className="font-bold text-sm text-foreground">{channel.name}</span>
+                  <span className="font-semibold text-sm text-foreground">{channel.name}</span>
                 </div>
                 {channel.description && (
                   <p className="text-xs text-foreground/85 leading-relaxed">{channel.description}</p>
@@ -2843,12 +3194,12 @@ export default function Roleplay() {
               </div>
 
               {channel.scenePrompt && (
-                <div className="p-4 rounded-2xl bg-card border border-border/70 space-y-2">
-                  <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                <div className="warm-card warm-card-static p-4 border-border/70 space-y-2">
+                  <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-primary" />
                     场景细节描写与前情
                   </span>
-                  <p className="text-xs text-foreground/85 leading-relaxed bg-muted/20 p-3 rounded-xl border border-border/40 whitespace-pre-wrap">
+                  <p className="text-xs text-foreground/85 leading-relaxed bg-muted/25 p-3 rounded-xl border border-border/50 whitespace-pre-wrap">
                     {channel.scenePrompt}
                   </p>
                 </div>
@@ -2856,12 +3207,12 @@ export default function Roleplay() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {channel.members?.map((m: any, idx: number) => (
-                  <div key={m.personaId} className="p-3.5 rounded-2xl border border-border/60 bg-muted/15 space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-foreground">
+                  <div key={m.personaId} className="p-3.5 rounded-2xl border border-border/65 bg-muted/20 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-foreground truncate">
                         {idx === 0 ? "左位主控角色" : "右位互动角色"}：{m.personaName}
                       </span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-md font-medium ${idx === 0 ? "bg-primary/10 text-primary" : "bg-chart-3/15 text-chart-3"}`}>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-md font-medium shrink-0 ${idx === 0 ? "bg-primary/10 text-primary" : "bg-chart-3/15 text-chart-3"}`}>
                         {m.emotionalState ? getMoodBadge(m.emotionalState).label : "就绪"}
                       </span>
                     </div>
@@ -2869,157 +3220,164 @@ export default function Roleplay() {
                 ))}
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </MotionModal>
 
       {/* 2. 频道情感状态 (ChannelMoodPanel · 全员心智总览) */}
-      {showMoodModal && channel && (
-        <ChannelMoodPanel
-          channel={channel}
-          messages={messages}
-          personas={personas}
-          onClose={() => setShowMoodModal(false)}
-          onOpenPersonaDiagnostics={(personaId: number) => {
-            setWorkbenchPersonaId(personaId);
-            setShowMoodModal(false);
-            setShowStateModal(true);
-          }}
-        />
-      )}
+      <ChannelMoodPanel
+        open={Boolean(showMoodModal && channel)}
+        channel={channel}
+        messages={messages}
+        personas={personas}
+        onClose={() => setShowMoodModal(false)}
+        onOpenPersonaDiagnostics={(personaId: number) => {
+          setWorkbenchPersonaId(personaId);
+          setShowMoodModal(false);
+          setShowStateModal(true);
+        }}
+      />
 
       {/* 3. 角色深度运行诊断 (PersonaStatePanel · 从面板内打开) */}
-      {showStateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-          <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={() => setShowStateModal(false)} />
-          <div
-            className="relative w-full max-w-4xl max-h-[88vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-            onClick={e => e.stopPropagation()}
-          >
-            {channel?.members?.length > 1 && (
-              <div className="px-6 py-2.5 border-b border-border/40 bg-muted/30 flex items-center justify-between gap-3 shrink-0">
-                <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-primary" />
-                  切换查看频道角色：
-                </span>
-                <div className="flex items-center gap-2">
-                  {channel.members.map((m: any) => (
-                    <button
-                      key={m.personaId}
-                      type="button"
-                      onClick={() => setWorkbenchPersonaId(m.personaId)}
-                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                        workbenchPersonaId === m.personaId
-                          ? "bg-primary text-primary-foreground shadow-xs"
-                          : "bg-muted/60 text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {m.personaName}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="flex-1 overflow-y-auto">
-              <PersonaStatePanel
-                personaId={workbenchPersonaId || firstMemberId || 0}
-                onClose={() => setShowStateModal(false)}
-              />
+      <MotionModal
+        open={showStateModal}
+        onClose={() => setShowStateModal(false)}
+        ariaLabel="角色深度心智与运行状态"
+        className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
+      >
+        {channel?.members?.length > 1 && (
+          <div className="px-6 py-2.5 border-b border-border/50 bg-muted/25 flex items-center justify-between gap-3 shrink-0">
+            <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5 text-primary" />
+              切换查看频道分身：
+            </span>
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-muted/55 border border-border/60">
+              {channel.members.map((m: any) => {
+                const active = (workbenchPersonaId || firstMemberId) === m.personaId;
+                return (
+                  <button
+                    key={m.personaId}
+                    type="button"
+                    onClick={() => setWorkbenchPersonaId(m.personaId)}
+                    className={`relative px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="roleplay-state-persona-pill"
+                        transition={SPRING_SNAPPY}
+                        className="pointer-events-none absolute inset-0 rounded-lg bg-card border border-border/70 shadow-2xs"
+                      />
+                    )}
+                    <span className="relative z-10">{m.personaName}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto">
+          <PersonaStatePanel
+            personaId={workbenchPersonaId || firstMemberId || 0}
+            onClose={() => setShowStateModal(false)}
+          />
         </div>
-      )}
+      </MotionModal>
 
       {/* 4. 频道运行诊断 (ChannelDiagnosticsPanel) */}
-      {showDiagnosticsModal && channel && (
-        <ChannelDiagnosticsPanel
-          channel={channel}
-          messages={messages}
-          personas={personas}
-          personaId={workbenchPersonaId || firstMemberId || 0}
-          onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
-          onClose={() => setShowDiagnosticsModal(false)}
-          onRefresh={() => channelQuery.refetch()}
-          isRefreshing={channelQuery.isFetching}
-          onOpenPersonaState={(personaId: number) => {
-            setWorkbenchPersonaId(personaId);
-            setShowDiagnosticsModal(false);
-            setShowStateModal(true);
-          }}
-        />
-      )}
+      <ChannelDiagnosticsPanel
+        open={Boolean(showDiagnosticsModal && channel)}
+        channel={channel}
+        messages={messages}
+        personas={personas}
+        personaId={workbenchPersonaId || firstMemberId || 0}
+        onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
+        onClose={() => setShowDiagnosticsModal(false)}
+        onRefresh={() => channelQuery.refetch()}
+        isRefreshing={channelQuery.isFetching}
+        onOpenPersonaState={(personaId: number) => {
+          setWorkbenchPersonaId(personaId);
+          setShowDiagnosticsModal(false);
+          setShowStateModal(true);
+        }}
+      />
 
       {/* 5. 记忆时间线 (MemoryModal) */}
-      {showMemoryModal && (
-        <RoleplayMemoryModal
-          personaId={workbenchPersonaId || firstMemberId || 0}
-          channelMembers={channel?.members || []}
-          onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
-          onClose={() => setShowMemoryModal(false)}
-        />
-      )}
+      <RoleplayMemoryModal
+        open={showMemoryModal}
+        personaId={workbenchPersonaId || firstMemberId || 0}
+        channelMembers={channel?.members || []}
+        onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
+        onClose={() => setShowMemoryModal(false)}
+      />
 
       {/* 6. 资料库 (SourceLibraryModal) */}
-      {showSourceLibraryModal && (
-        <RoleplaySourceLibraryModal
-          personaId={workbenchPersonaId || firstMemberId || 0}
-          channelMembers={channel?.members || []}
-          onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
-          onClose={() => setShowSourceLibraryModal(false)}
-        />
-      )}
+      <RoleplaySourceLibraryModal
+        open={showSourceLibraryModal}
+        personaId={workbenchPersonaId || firstMemberId || 0}
+        channelMembers={channel?.members || []}
+        onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
+        onClose={() => setShowSourceLibraryModal(false)}
+      />
 
       {/* 7. 情绪报告 (EmotionReportModal · 频道情感回退) */}
-      {showEmotionModal && (
-        <RoleplayEmotionModal
-          personaId={workbenchPersonaId || firstMemberId || 0}
-          channelMembers={channel?.members || []}
-          channelMessages={messages}
-          onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
-          onClose={() => setShowEmotionModal(false)}
-        />
-      )}
+      <RoleplayEmotionModal
+        open={showEmotionModal}
+        personaId={workbenchPersonaId || firstMemberId || 0}
+        channelMembers={channel?.members || []}
+        channelMessages={messages}
+        onSwitchPersona={(id) => setWorkbenchPersonaId(id)}
+        onClose={() => setShowEmotionModal(false)}
+      />
 
-      {/* 6. 消息搜索抽屉 (SearchPanel) */}
-      {showSearchPanel && (
-        <RoleplaySearchPanel
-          messages={messages}
-          onJumpToMessage={jumpToMessage}
-          onClose={() => setShowSearchPanel(false)}
-        />
-      )}
+      {/* 8. 消息搜索抽屉 (SearchPanel) */}
+      <RoleplaySearchPanel
+        open={showSearchPanel}
+        messages={messages}
+        onJumpToMessage={jumpToMessage}
+        onClose={() => setShowSearchPanel(false)}
+      />
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteTargetId} onOpenChange={() => setDeleteTargetId(null)}>
-        <DialogContent className="bg-card border-border rounded-2xl max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">确认删除频道</DialogTitle>
-          </DialogHeader>
-          <p className="text-muted-foreground text-xs py-2 leading-relaxed">
-            确定要删除该角色生活频道吗？该频道内的所有对话记录将被清除，且无法恢复。
-          </p>
-          <DialogFooter className="gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setDeleteTargetId(null)}
-              className="rounded-xl text-xs cursor-pointer"
-            >
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              className="rounded-xl text-xs cursor-pointer"
-              onClick={() => deleteTargetId && deleteMutation.mutate({ channelId: deleteTargetId })}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "删除中..." : "确认删除"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Delete Confirmation Modal */}
+      <MotionModal
+        open={Boolean(deleteTargetId)}
+        onClose={() => setDeleteTargetId(null)}
+        ariaLabel="确认删除频道"
+        className="max-w-sm p-5 space-y-4"
+      >
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-2xl bg-rose-500/12 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-4.5 h-4.5" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-foreground">确认删除频道</h3>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              确定要删除该角色生活频道吗？该频道内的所有对话记录将被清除，且无法恢复。
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setDeleteTargetId(null)}
+            className="rounded-xl text-xs h-8 px-3 cursor-pointer"
+          >
+            取消
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="rounded-xl text-xs h-8 px-3.5 cursor-pointer"
+            onClick={() => deleteTargetId && deleteMutation.mutate({ channelId: deleteTargetId })}
+            disabled={deleteMutation.isPending}
+          >
+            {deleteMutation.isPending ? "删除中..." : "确认删除"}
+          </Button>
+        </div>
+      </MotionModal>
     </div>
   );
 }
@@ -3081,123 +3439,136 @@ function TimelineQuickJump({
   return (
     <>
       {/* Click-away backdrop overlay when popover is open */}
-      {activeTarget && (
-        <div
-          className="fixed inset-0 z-30 bg-black/15 backdrop-blur-2xs transition-opacity pointer-events-auto"
-          onClick={() => setActiveTarget(null)}
-        />
-      )}
+      <AnimatePresence>
+        {activeTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="fixed inset-0 z-30 bg-black/15 backdrop-blur-2xs pointer-events-auto"
+            onClick={() => setActiveTarget(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <aside className="fixed right-2 sm:right-3 xl:right-5 top-1/2 -translate-y-1/2 z-40 flex items-center gap-2 pointer-events-auto">
         {/* Expanded Floating Popover Panel */}
-        {activeTarget && (
-          <div
-            className="backdrop-blur-2xl bg-card/95 dark:bg-card/90 border border-border/80 rounded-3xl shadow-2xl p-3.5 w-72 sm:w-80 max-h-[75vh] flex flex-col gap-2.5 animate-scale-in mr-1 ring-1 ring-black/5"
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between pb-2 border-b border-border/60 shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <div
-                  className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 font-bold text-xs overflow-hidden ${
-                    activeTarget === "user"
-                      ? "bg-primary/15 text-primary"
-                      : activeTarget === "date"
-                      ? "bg-chart-3/15 text-chart-3"
-                      : "bg-gradient-to-br from-chart-3/20 to-primary/20 text-foreground"
-                  }`}
+        <AnimatePresence mode="wait">
+          {activeTarget && (
+            <motion.div
+              key={activeTarget}
+              initial={{ opacity: 0, scale: 0.95, x: 10 }}
+              animate={{ opacity: 1, scale: 1, x: 0 }}
+              exit={{ opacity: 0, scale: 0.96, x: 8 }}
+              transition={SPRING_SNAPPY}
+              className="backdrop-blur-2xl bg-card/96 border border-border/70 rounded-3xl shadow-2xl p-3.5 w-72 sm:w-80 max-h-[75vh] flex flex-col gap-2.5 mr-1"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between pb-2 border-b border-border/60 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div
+                    className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 font-bold text-xs overflow-hidden border border-border/50 ${
+                      activeTarget === "user"
+                        ? "bg-primary/12 text-primary"
+                        : activeTarget === "date"
+                        ? "bg-chart-3/12 text-chart-3"
+                        : "bg-muted/70 text-foreground"
+                    }`}
+                  >
+                    {activeTarget === "user" ? (
+                      <User className="w-3.5 h-3.5" />
+                    ) : activeTarget === "date" ? (
+                      <Calendar className="w-3.5 h-3.5" />
+                    ) : (
+                      initials(activeTarget)
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-semibold text-foreground truncate tabular-nums">{activeTitle}</h4>
+                    <p className="text-[10px] text-muted-foreground">点击条目立即定位到对应对话</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTarget(null)}
+                  className="w-6 h-6 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
                 >
-                  {activeTarget === "user" ? (
-                    <User className="w-3.5 h-3.5" />
-                  ) : activeTarget === "date" ? (
-                    <Calendar className="w-3.5 h-3.5" />
-                  ) : (
-                    initials(activeTarget)
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <h4 className="text-xs font-bold text-foreground truncate">{activeTitle}</h4>
-                  <p className="text-[10px] text-muted-foreground">点击条目立即定位到对应对话</p>
-                </div>
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <button
-                onClick={() => setActiveTarget(null)}
-                className="w-6 h-6 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
 
-            {/* List */}
-            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 max-h-[50vh]">
-              {activeTarget === "date" ? (
-                dates.length === 0 ? (
-                  <p className="text-center text-xs text-muted-foreground py-8">暂无日期记录</p>
-                ) : (
-                  dates.map(d => (
-                    <button
-                      key={d.key}
-                      onClick={() => {
-                        onJumpToDate(d.key);
-                        setActiveTarget(null);
-                      }}
-                      className="w-full text-left p-2.5 rounded-xl bg-muted/35 hover:bg-chart-3/10 hover:border-chart-3/30 border border-border/40 transition-all flex items-center justify-between group/d cursor-pointer"
-                    >
-                      <span className="text-xs font-semibold text-foreground group-hover/d:text-chart-3 transition-colors">
-                        {d.label}
-                      </span>
-                      <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground group-hover/d:bg-chart-3/15 group-hover/d:text-chart-3 font-medium transition-colors font-mono">
-                        {d.count} 条记录
-                      </span>
-                    </button>
-                  ))
-                )
-              ) : activeList.length === 0 ? (
-                <p className="text-center text-xs text-muted-foreground py-8">暂无发言记录</p>
-              ) : (
-                activeList.map(item => {
-                  const isUser = item.role === "user" || item.speakerName === "用户旁白";
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        onJumpToMessage(item.id);
-                        setActiveTarget(null);
-                      }}
-                      className="w-full text-left p-2 rounded-xl bg-muted/35 hover:bg-primary/10 hover:border-primary/30 border border-border/40 transition-all flex items-start gap-2 group/u cursor-pointer"
-                    >
-                      <span
-                        className={`text-[10px] font-bold px-1.5 py-0.2 rounded-md shrink-0 mt-0.5 ${
-                          isUser
-                            ? "bg-primary/15 text-primary group-hover/u:bg-primary group-hover/u:text-primary-foreground"
-                            : "bg-chart-3/15 text-chart-3 group-hover/u:bg-chart-3 group-hover/u:text-white"
-                        }`}
+              {/* List */}
+              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 max-h-[50vh]">
+                {activeTarget === "date" ? (
+                  dates.length === 0 ? (
+                    <p className="text-center text-xs text-muted-foreground py-8">暂无日期记录</p>
+                  ) : (
+                    dates.map(d => (
+                      <button
+                        key={d.key}
+                        onClick={() => {
+                          onJumpToDate(d.key);
+                          setActiveTarget(null);
+                        }}
+                        className="w-full text-left p-2.5 rounded-xl bg-muted/35 hover:bg-chart-3/10 hover:border-chart-3/30 border border-border/50 transition-all flex items-center justify-between group/d cursor-pointer"
                       >
-                        #{item.index}
-                      </span>
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[10.5px] font-bold text-foreground truncate group-hover/u:text-primary transition-colors">
-                            {item.speakerName}
-                          </span>
-                          {item.timeStr && (
-                            <span className="text-[9.5px] text-muted-foreground font-mono shrink-0">{item.timeStr}</span>
-                          )}
+                        <span className="text-xs font-semibold text-foreground group-hover/d:text-chart-3 transition-colors">
+                          {d.label}
+                        </span>
+                        <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground group-hover/d:bg-chart-3/15 group-hover/d:text-chart-3 font-medium transition-colors font-mono tabular-nums">
+                          {d.count} 条记录
+                        </span>
+                      </button>
+                    ))
+                  )
+                ) : activeList.length === 0 ? (
+                  <p className="text-center text-xs text-muted-foreground py-8">暂无发言记录</p>
+                ) : (
+                  activeList.map(item => {
+                    const isUser = item.role === "user" || item.speakerName === "用户旁白";
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => {
+                          onJumpToMessage(item.id);
+                          setActiveTarget(null);
+                        }}
+                        className="w-full text-left p-2 rounded-xl bg-muted/35 hover:bg-primary/8 hover:border-primary/30 border border-border/50 transition-all flex items-start gap-2 group/u cursor-pointer"
+                      >
+                        <span
+                          className={`text-[10px] font-bold font-mono tabular-nums px-1.5 py-0.2 rounded-md shrink-0 mt-0.5 ${
+                            isUser
+                              ? "bg-primary/12 text-primary group-hover/u:bg-primary group-hover/u:text-primary-foreground"
+                              : "bg-chart-3/12 text-chart-3 group-hover/u:bg-chart-3 group-hover/u:text-white"
+                          }`}
+                        >
+                          #{item.index}
+                        </span>
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10.5px] font-semibold text-foreground truncate group-hover/u:text-primary transition-colors">
+                              {item.speakerName}
+                            </span>
+                            {item.timeStr && (
+                              <span className="text-[9.5px] text-muted-foreground font-mono tabular-nums shrink-0">{item.timeStr}</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed group-hover/u:text-foreground">
+                            {item.snippet}
+                          </p>
                         </div>
-                        <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed group-hover/u:text-foreground">
-                          {item.snippet}
-                        </p>
-                      </div>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Main Trigger Rail with Separate Buttons */}
-        <div className="backdrop-blur-2xl bg-card/90 dark:bg-card/85 border border-border/80 rounded-2xl sm:rounded-3xl shadow-xl p-2 flex flex-col items-center gap-2 transition-all overflow-visible">
+        <div className="backdrop-blur-2xl bg-card/90 border border-border/70 rounded-2xl sm:rounded-3xl shadow-lg p-2 flex flex-col items-center gap-2 transition-all overflow-visible">
           {/* 1. Scroll to Top */}
           <button
             onClick={onJumpToTop}
@@ -3225,20 +3596,20 @@ function TimelineQuickJump({
               title={`用户旁白与引导 (${userMessages.length}条) - 点击展开定位`}
               className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 cursor-pointer ${
                 activeTarget === "user"
-                  ? "bg-primary text-primary-foreground shadow-md ring-2 ring-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/80 border border-border/40"
+                  ? "bg-primary text-primary-foreground shadow-sm ring-2 ring-primary/25"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/80 border border-border/50"
               }`}
             >
               <User className="w-4 h-4" />
             </button>
             {userMessages.length > 0 && (
-              <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-emerald-600 dark:bg-emerald-500 text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-card shadow-md z-30 font-mono select-none pointer-events-none leading-none">
+              <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-foreground text-background text-[9.5px] font-semibold flex items-center justify-center ring-2 ring-card shadow-xs z-30 font-mono tabular-nums select-none pointer-events-none leading-none">
                 {userMessages.length > 99 ? "99+" : userMessages.length}
               </span>
             )}
           </div>
 
-          {/* 各角色的独立头像入口 */}
+          {/* 4. Separate Buttons for Each Persona (各分身角色真实头像按钮) */}
           {personaSpeakers.map((sp, idx) => {
             const spMessages = messages.filter(m => m.speakerName === sp);
             const isActive = activeTarget === sp;
@@ -3252,7 +3623,7 @@ function TimelineQuickJump({
                   title={`【${sp}】的发言 (${spMessages.length}条) - 点击展开定位`}
                   className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all active:scale-95 cursor-pointer group ${
                     isActive
-                      ? "ring-2 ring-primary shadow-md scale-105"
+                      ? "ring-2 ring-primary shadow-sm scale-105"
                       : "hover:scale-105 hover:bg-muted/80"
                   }`}
                 >
@@ -3260,14 +3631,14 @@ function TimelineQuickJump({
                     <img
                       src={avatarUrl}
                       alt={sp}
-                      className="w-full h-full rounded-xl sm:rounded-2xl object-cover ring-1 ring-border/50 shadow-2xs group-hover:brightness-105 transition-all"
+                      className="w-full h-full rounded-xl sm:rounded-2xl object-cover ring-1 ring-border/60 shadow-2xs group-hover:brightness-105 transition-all"
                     />
                   ) : (
                     <div
-                      className={`w-full h-full rounded-xl sm:rounded-2xl flex items-center justify-center font-bold text-xs shadow-xs border ${
+                      className={`w-full h-full rounded-xl sm:rounded-2xl flex items-center justify-center font-bold text-xs shadow-2xs border ${
                         idx === 0
-                          ? "bg-gradient-to-br from-primary/20 via-primary/10 to-transparent border-primary/30 text-primary"
-                          : "bg-gradient-to-br from-chart-3/25 via-chart-3/15 to-transparent border-chart-3/35 text-foreground"
+                          ? "bg-primary/12 border-primary/25 text-primary"
+                          : "bg-chart-3/15 border-chart-3/30 text-foreground"
                       }`}
                     >
                       {initials(sp)}
@@ -3275,7 +3646,7 @@ function TimelineQuickJump({
                   )}
                 </button>
                 {spMessages.length > 0 && (
-                  <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-emerald-600 dark:bg-emerald-500 text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-card shadow-md z-30 font-mono select-none pointer-events-none leading-none">
+                  <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-primary text-primary-foreground text-[9.5px] font-semibold flex items-center justify-center ring-2 ring-card shadow-xs z-30 font-mono tabular-nums select-none pointer-events-none leading-none">
                     {spMessages.length > 99 ? "99+" : spMessages.length}
                   </span>
                 )}
@@ -3290,31 +3661,31 @@ function TimelineQuickJump({
               title={`按日期目录 (${dates.length}天) - 点击展开快速跳转`}
               className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 cursor-pointer ${
                 activeTarget === "date"
-                  ? "bg-chart-3 text-white shadow-md ring-2 ring-chart-3/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/80 border border-border/40"
+                  ? "bg-chart-3 text-white shadow-sm ring-2 ring-chart-3/30"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/80 border border-border/50"
               }`}
             >
               <Calendar className="w-4 h-4" />
             </button>
             {dates.length > 0 && (
-              <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-chart-3 text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-card shadow-sm z-30 font-mono select-none pointer-events-none leading-none">
+              <span className="absolute -top-1 -right-1 px-1 min-w-[18px] h-4.5 rounded-full bg-chart-3 text-white text-[9.5px] font-semibold flex items-center justify-center ring-2 ring-card shadow-xs z-30 font-mono tabular-nums select-none pointer-events-none leading-none">
                 {dates.length}
               </span>
             )}
           </div>
 
-        <div className="w-5 border-t border-border/60 my-0.5" />
+          <div className="w-5 border-t border-border/60 my-0.5" />
 
-        {/* 6. Scroll to Bottom */}
-        <button
-          onClick={onJumpToBottom}
-          title="回到底部最新消息"
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all active:scale-95 group/bot cursor-pointer"
-        >
-          <ChevronDown className="w-5 h-5 group-hover/bot:translate-y-0.5 transition-transform" />
-        </button>
-      </div>
-    </aside>
+          {/* 6. Scroll to Bottom */}
+          <button
+            onClick={onJumpToBottom}
+            title="回到底部最新消息"
+            className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all active:scale-95 group/bot cursor-pointer"
+          >
+            <ChevronDown className="w-5 h-5 group-hover/bot:translate-y-0.5 transition-transform" />
+          </button>
+        </div>
+      </aside>
     </>
   );
 }
@@ -3324,10 +3695,12 @@ function TimelineQuickJump({
 // ══════════════════════════════════════════════════════════════════════
 
 function RoleplaySearchPanel({
+  open,
   messages,
   onJumpToMessage,
   onClose,
 }: {
+  open: boolean;
   messages: any[];
   onJumpToMessage: (id: number) => void;
   onClose: () => void;
@@ -3349,7 +3722,7 @@ function RoleplaySearchPanel({
     const parts = text.split(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"));
     return parts.map((part, i) =>
       part.toLowerCase() === q.toLowerCase() ? (
-        <mark key={i} className="bg-primary/25 text-primary font-semibold rounded px-0.5">{part}</mark>
+        <mark key={i} className="bg-primary/20 text-primary font-semibold rounded px-0.5">{part}</mark>
       ) : (
         part
       )
@@ -3357,104 +3730,104 @@ function RoleplaySearchPanel({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end animate-fade-in" onClick={onClose}>
-      <div className="fixed inset-0 bg-black/45 backdrop-blur-xs transition-opacity" />
-      <aside
-        className="relative z-10 w-full sm:w-[420px] h-full bg-card/95 dark:bg-card/90 backdrop-blur-2xl border-l border-border/80 shadow-2xl flex flex-col animate-slide-in-right"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border/60 bg-muted/10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8.5 h-8.5 rounded-xl bg-primary/10 text-primary flex items-center justify-center border border-primary/15 shadow-2xs">
-              <Search className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="font-bold text-sm text-foreground">搜索历史消息</h3>
-              <p className="text-[11px] text-muted-foreground">
-                {query ? `找到 ${results.length} 条相关消息` : "检索频道内的过往对话"}
-              </p>
-            </div>
+    <MotionDrawer
+      open={open}
+      onClose={onClose}
+      side="right"
+      ariaLabel="搜索历史消息"
+      className="sm:max-w-[420px]"
+    >
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8.5 h-8.5 rounded-xl bg-primary/10 text-primary flex items-center justify-center border border-primary/15 shadow-2xs">
+            <Search className="w-4 h-4" />
           </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-4 border-b border-border/50 bg-muted/20">
-          <div className="relative">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              autoFocus
-              placeholder="输入关键词搜索聊天记录..."
-              className="w-full h-11 pl-10 pr-9 bg-background/90 border border-border/80 focus:border-primary/50 focus:ring-2 focus:ring-primary/15 rounded-2xl text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition-all shadow-2xs"
-            />
-            {query && (
-              <button
-                onClick={() => setQuery("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+          <div>
+            <h3 className="font-semibold text-sm text-foreground">搜索历史消息</h3>
+            <p className="text-[11px] text-muted-foreground tabular-nums">
+              {query ? `找到 ${results.length} 条相关消息` : "检索频道内的过往对话"}
+            </p>
           </div>
         </div>
+        <button
+          onClick={onClose}
+          className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
-          {!query ? (
-            <div className="text-center py-20 text-muted-foreground/70 space-y-3">
-              <div className="w-12 h-12 mx-auto rounded-2xl bg-muted/40 flex items-center justify-center text-muted-foreground/50 border border-border/40">
-                <Search className="w-5 h-5" />
-              </div>
-              <p className="text-xs">在上方输入关键词检索对话</p>
-            </div>
-          ) : results.length === 0 ? (
-            <div className="text-center py-20 text-muted-foreground space-y-3">
-              <div className="w-12 h-12 mx-auto rounded-2xl bg-muted/40 flex items-center justify-center text-muted-foreground border border-border/40">
-                <X className="w-5 h-5 opacity-40" />
-              </div>
-              <p className="text-xs">未找到包含 “{query}” 的消息</p>
-            </div>
-          ) : (
-            results.map((m: any) => (
-              <div
-                key={m.id}
-                onClick={() => {
-                  onJumpToMessage(m.id);
-                  onClose();
-                }}
-                className="group/item p-3.5 rounded-2xl bg-muted/30 hover:bg-primary/8 border border-border/50 hover:border-primary/30 transition-all cursor-pointer space-y-2 shadow-2xs"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      m.role === "user"
-                        ? "bg-primary/15 text-primary border border-primary/20"
-                        : "bg-chart-3/15 text-chart-3 border border-chart-3/20"
-                    }`}
-                  >
-                    {m.speakerName || (m.role === "user" ? "场景旁白" : "角色")}
-                  </span>
-                  <span className="text-[10.5px] text-muted-foreground font-mono">
-                    {formatBeijingTime(m.createdAt)}
-                  </span>
-                </div>
-                <p className="text-xs sm:text-[13px] text-foreground/90 line-clamp-3 leading-relaxed">
-                  {highlight(m.content, query)}
-                </p>
-                <div className="flex items-center justify-end text-[11px] text-primary opacity-0 group-hover/item:opacity-100 transition-opacity font-medium">
-                  <span>跳转至该消息 →</span>
-                </div>
-              </div>
-            ))
+      <div className="p-4 border-b border-border/50 bg-muted/15 shrink-0">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            autoFocus
+            placeholder="输入关键词搜索聊天记录..."
+            className="w-full h-10 pl-10 pr-9 bg-background/90 border border-border/70 focus:border-primary/50 focus:ring-2 focus:ring-primary/15 rounded-xl text-sm text-foreground placeholder:text-muted-foreground/60 outline-none transition-all shadow-2xs"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           )}
         </div>
-      </aside>
-    </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+        {!query ? (
+          <div className="text-center py-20 text-muted-foreground/70 space-y-3">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-muted/40 flex items-center justify-center text-muted-foreground/50 border border-border/50">
+              <Search className="w-5 h-5" />
+            </div>
+            <p className="text-xs">在上方输入关键词检索对话</p>
+          </div>
+        ) : results.length === 0 ? (
+          <div className="text-center py-20 text-muted-foreground space-y-3">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-muted/40 flex items-center justify-center text-muted-foreground border border-border/50">
+              <X className="w-5 h-5 opacity-40" />
+            </div>
+            <p className="text-xs">未找到包含 “{query}” 的消息</p>
+          </div>
+        ) : (
+          results.map((m: any) => (
+            <div
+              key={m.id}
+              onClick={() => {
+                onJumpToMessage(m.id);
+                onClose();
+              }}
+              className="group/item p-3.5 rounded-2xl bg-muted/25 hover:bg-primary/6 border border-border/60 hover:border-primary/30 transition-all cursor-pointer space-y-2 shadow-2xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    m.role === "user"
+                      ? "bg-primary/12 text-primary border border-primary/20"
+                      : "bg-chart-3/12 text-chart-3 border border-chart-3/20"
+                  }`}
+                >
+                  {m.speakerName || (m.role === "user" ? "场景旁白" : "角色")}
+                </span>
+                <span className="text-[10.5px] text-muted-foreground font-mono tabular-nums">
+                  {formatBeijingTime(m.createdAt)}
+                </span>
+              </div>
+              <p className="text-xs sm:text-[13px] text-foreground/90 line-clamp-3 leading-relaxed">
+                {highlight(m.content, query)}
+              </p>
+              <div className="flex items-center justify-end text-[11px] text-primary opacity-0 group-hover/item:opacity-100 transition-opacity font-medium">
+                <span>跳转至该消息 →</span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </MotionDrawer>
   );
 }
 
@@ -3463,11 +3836,13 @@ function RoleplaySearchPanel({
 // ══════════════════════════════════════════════════════════════════════
 
 function RoleplayMemoryModal({
+  open,
   personaId,
   channelMembers,
   onSwitchPersona,
   onClose,
 }: {
+  open: boolean;
   personaId: number;
   channelMembers: any[];
   onSwitchPersona: (id: number) => void;
@@ -3475,7 +3850,10 @@ function RoleplayMemoryModal({
 }) {
   const [activeTab, setActiveTab] = useState<"all" | "active" | "archived">("active");
   const [search, setSearch] = useState("");
-  const { data: memories, isLoading, isError, refetch } = trpc.memory.list.useQuery({ personaId });
+  const { data: memories, isLoading, isError, refetch } = trpc.memory.list.useQuery(
+    { personaId },
+    { enabled: open && Boolean(personaId) }
+  );
   const extractMutation = trpc.memory.autoExtract.useMutation({
     onSuccess: (res) => {
       toast.success(`AI 已提取 ${res.extracted?.length || 0} 条记忆`);
@@ -3496,280 +3874,326 @@ function RoleplayMemoryModal({
   }, [memories, activeTab, search]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={onClose} />
-      <div
-        className="relative w-full max-w-4xl max-h-[88vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-chart-4/15 text-chart-4 flex items-center justify-center">
-              <Clock className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-base text-foreground">记忆时间轴 & 档案</h3>
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold border border-emerald-500/20">
-                  {memories?.length || 0} 条记忆
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">记录共同回忆、偏好习惯、承诺约定与重大节点</p>
-            </div>
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="记忆时间轴与档案"
+      className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
+    >
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-chart-4/12 text-chart-4 border border-chart-4/20 flex items-center justify-center">
+            <Clock className="w-5 h-5" />
           </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => extractMutation.mutate({ personaId })}
-              disabled={extractMutation.isPending}
-              className="h-8 text-xs px-3 rounded-xl bg-gradient-to-r from-primary/20 to-chart-3/20 text-primary border border-primary/30 hover:bg-primary/20 cursor-pointer"
-            >
-              <Sparkles className={`w-3.5 h-3.5 mr-1 ${extractMutation.isPending ? "animate-spin" : ""}`} />
-              AI 提取记忆
-            </Button>
-            <button onClick={onClose} className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground">
-              <X className="w-4 h-4" />
-            </button>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-base text-foreground">记忆时间轴 & 档案</h3>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20 font-mono tabular-nums">
+                {memories?.length || 0} 条记忆
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">记录共同回忆、偏好习惯、承诺约定与重大节点</p>
           </div>
         </div>
 
-        {channelMembers.length > 1 && (
-          <div className="px-6 py-2.5 border-b border-border/40 bg-muted/30 flex items-center justify-between gap-3 shrink-0">
-            <span className="text-xs font-bold text-foreground">当前角色：</span>
-            <div className="flex items-center gap-2">
-              {channelMembers.map((m: any) => (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={() => personaId && extractMutation.mutate({ personaId })}
+            disabled={extractMutation.isPending || !personaId}
+            className="h-8 text-xs px-3 rounded-xl bg-primary/10 text-primary border border-primary/25 hover:bg-primary/18 shadow-none cursor-pointer"
+          >
+            <Sparkles className={`w-3.5 h-3.5 mr-1 ${extractMutation.isPending ? "animate-spin" : ""}`} />
+            AI 提取记忆
+          </Button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {channelMembers.length > 1 && (
+        <div className="px-6 py-2.5 border-b border-border/50 bg-muted/20 flex items-center justify-between gap-3 shrink-0">
+          <span className="text-xs font-semibold text-foreground">当前分身：</span>
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-muted/55 border border-border/60">
+            {channelMembers.map((m: any) => {
+              const active = personaId === m.personaId;
+              return (
                 <button
                   key={m.personaId}
                   type="button"
                   onClick={() => onSwitchPersona(m.personaId)}
-                  className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    personaId === m.personaId
-                      ? "bg-primary text-primary-foreground shadow-xs"
-                      : "bg-muted/60 text-muted-foreground hover:text-foreground"
+                  className={`relative px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {m.personaName}
+                  {active && (
+                    <motion.span
+                      layoutId="roleplay-memory-persona-pill"
+                      transition={SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-lg bg-card border border-border/70 shadow-2xs"
+                    />
+                  )}
+                  <span className="relative z-10">{m.personaName}</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="px-6 py-3 border-b border-border/40 flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-1 bg-muted/40 p-1 rounded-xl border border-border/50 text-xs">
-            <button
-              onClick={() => setActiveTab("active")}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${activeTab === "active" ? "bg-card text-foreground shadow-xs" : "text-muted-foreground"}`}
-            >
-              有效记忆
-            </button>
-            <button
-              onClick={() => setActiveTab("all")}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${activeTab === "all" ? "bg-card text-foreground shadow-xs" : "text-muted-foreground"}`}
-            >
-              全部
-            </button>
-          </div>
-          <div className="relative w-64">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="搜索记忆标题或细节..."
-              className="h-8 pl-8 text-xs rounded-xl bg-muted/20"
-            />
+              );
+            })}
           </div>
         </div>
+      )}
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-3">
-          {isLoading ? (
-            <div className="text-center py-16 space-y-2">
-              <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
-              <p className="text-xs text-muted-foreground">正在读取记忆档案...</p>
-            </div>
-          ) : isError ? (
-            <div className="text-center py-16 space-y-3">
-              <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
-              <p className="text-sm font-medium text-foreground">记忆档案加载失败</p>
-              <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请点击右上角刷新重试。</p>
-              <Button variant="outline" size="sm" onClick={() => refetch()} className="rounded-xl text-xs cursor-pointer">
-                <RefreshCw className="w-3.5 h-3.5 mr-1" /> 重试
-              </Button>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="text-center py-16 space-y-2">
-              <Clock className="w-8 h-8 text-muted-foreground/40 mx-auto" />
-              <p className="text-xs text-muted-foreground">
-                {memories?.length ? "没有匹配的记忆档案，换个关键词试试" : "TA 还没有沉淀记忆，对话推进后会自动记录共同回忆"}
-              </p>
-            </div>
-          ) : (
-            filtered.map((m: any) => (
-              <div key={m.id} className="p-4 rounded-2xl border border-border/70 bg-card hover:border-primary/40 transition-all space-y-2 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-xs text-foreground">{m.title}</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-muted text-muted-foreground font-medium">
-                      {m.category || "日常记忆"}
-                    </span>
-                  </div>
-                  <span className="text-[10px] text-muted-foreground font-mono">
-                    {formatBeijingDateTime(m.createdAt)}
-                  </span>
-                </div>
-                {m.description && (
-                  <p className="text-xs text-foreground/80 leading-relaxed bg-muted/20 p-2.5 rounded-xl border border-border/40">
-                    {m.description}
-                  </p>
+      <div className="px-6 py-3 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap shrink-0">
+        <div className="flex items-center gap-1 bg-muted/45 p-1 rounded-xl border border-border/60 text-xs">
+          {(
+            [
+              { id: "active", label: "有效记忆" },
+              { id: "all", label: "全部" },
+              { id: "archived", label: "已归档" },
+            ] as const
+          ).map(tab => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                  active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="roleplay-memory-tab-pill"
+                    transition={SPRING_SNAPPY}
+                    className="pointer-events-none absolute inset-0 rounded-lg bg-card border border-border/70 shadow-2xs"
+                  />
                 )}
-              </div>
-            ))
-          )}
+                <span className="relative z-10">{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative w-full sm:w-64">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="搜索记忆标题或细节..."
+            className="h-8 pl-8 text-xs rounded-xl bg-muted/20 border-border/70"
+          />
         </div>
       </div>
-    </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-3">
+        {isLoading ? (
+          <div className="text-center py-16 space-y-2">
+            <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
+            <p className="text-xs text-muted-foreground">正在读取记忆档案...</p>
+          </div>
+        ) : isError ? (
+          <div className="text-center py-16 space-y-3">
+            <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
+            <p className="text-sm font-medium text-foreground">记忆档案加载失败</p>
+            <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请点击右上角刷新重试。</p>
+            <Button variant="outline" size="sm" onClick={() => refetch()} className="rounded-xl text-xs cursor-pointer">
+              <RefreshCw className="w-3.5 h-3.5 mr-1" /> 重试
+            </Button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-16 space-y-2">
+            <Clock className="w-8 h-8 text-muted-foreground/40 mx-auto" />
+            <p className="text-xs text-muted-foreground">
+              {memories?.length ? "没有匹配的记忆档案，换个关键词试试" : "TA 还没有沉淀记忆，对话推进后会自动记录共同回忆"}
+            </p>
+          </div>
+        ) : (
+          filtered.map((m: any) => (
+            <div key={m.id} className="p-4 rounded-2xl border border-border/70 bg-card/80 hover:border-primary/35 transition-colors space-y-2 shadow-2xs">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-semibold text-xs text-foreground truncate">{m.title}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground font-medium shrink-0">
+                    {m.category || "日常记忆"}
+                  </span>
+                </div>
+                <span className="text-[10px] text-muted-foreground font-mono tabular-nums shrink-0">
+                  {formatBeijingDateTime(m.createdAt)}
+                </span>
+              </div>
+              {m.description && (
+                <p className="text-xs text-foreground/85 leading-relaxed bg-muted/20 p-2.5 rounded-xl border border-border/50">
+                  {m.description}
+                </p>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </MotionModal>
   );
 }
 
 function RoleplaySourceLibraryModal({
+  open,
   personaId,
   channelMembers,
   onSwitchPersona,
   onClose,
 }: {
+  open: boolean;
   personaId: number;
   channelMembers: any[];
   onSwitchPersona: (id: number) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const { data, isLoading, isError } = trpc.sourceLibrary.overview.useQuery({ personaId, query });
+  const { data, isLoading, isError } = trpc.sourceLibrary.overview.useQuery(
+    { personaId, query },
+    { enabled: open && Boolean(personaId) }
+  );
   const sources = data?.sources || [];
   const results = data?.search?.results || [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={onClose} />
-      <div
-        className="relative w-full max-w-4xl max-h-[88vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-chart-2/15 text-chart-2 flex items-center justify-center">
-              <Database className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-bold text-base text-foreground">资料库 & 原著知识沉淀</h3>
-              <p className="text-xs text-muted-foreground">原著设定、背景档案与检索召回中枢（RAG 证据源）</p>
-            </div>
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="资料库与原著知识沉淀"
+      className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
+    >
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-chart-2/12 text-chart-2 border border-chart-2/20 flex items-center justify-center">
+            <Database className="w-5 h-5" />
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground">
-            <X className="w-4 h-4" />
-          </button>
+          <div>
+            <h3 className="font-semibold text-base text-foreground">资料库 & 原著知识沉淀</h3>
+            <p className="text-xs text-muted-foreground">原著设定、背景档案与检索召回中枢（RAG 证据源）</p>
+          </div>
         </div>
+        <button
+          onClick={onClose}
+          className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
 
-        {channelMembers.length > 1 && (
-          <div className="px-6 py-2.5 border-b border-border/40 bg-muted/30 flex items-center justify-between gap-3 shrink-0">
-            <span className="text-xs font-bold text-foreground">当前角色：</span>
-            <div className="flex items-center gap-2">
-              {channelMembers.map((m: any) => (
+      {channelMembers.length > 1 && (
+        <div className="px-6 py-2.5 border-b border-border/50 bg-muted/20 flex items-center justify-between gap-3 shrink-0">
+          <span className="text-xs font-semibold text-foreground">当前分身：</span>
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-muted/55 border border-border/60">
+            {channelMembers.map((m: any) => {
+              const active = personaId === m.personaId;
+              return (
                 <button
                   key={m.personaId}
                   type="button"
                   onClick={() => onSwitchPersona(m.personaId)}
-                  className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    personaId === m.personaId
-                      ? "bg-primary text-primary-foreground shadow-xs"
-                      : "bg-muted/60 text-muted-foreground hover:text-foreground"
+                  className={`relative px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {m.personaName}
+                  {active && (
+                    <motion.span
+                      layoutId="roleplay-source-persona-pill"
+                      transition={SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-lg bg-card border border-border/70 shadow-2xs"
+                    />
+                  )}
+                  <span className="relative z-10">{m.personaName}</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="p-6 border-b border-border/40">
-          <div className="relative">
-            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="检索原著设定、人物性格或剧情证据切片..."
-              className="pl-9 h-9 text-xs rounded-xl bg-muted/20"
-            />
+              );
+            })}
           </div>
         </div>
+      )}
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {isLoading ? (
-            <div className="text-center py-16 space-y-2">
-              <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
-              <p className="text-xs text-muted-foreground">正在检索资料库...</p>
-            </div>
-          ) : isError ? (
-            <div className="text-center py-16 space-y-3">
-              <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
-              <p className="text-sm font-medium text-foreground">资料库加载失败</p>
-              <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请稍后重试。</p>
-            </div>
-          ) : results.length > 0 ? (
-            <div className="space-y-3">
-              <span className="text-xs font-bold text-foreground">检索命中切片：</span>
-              {results.map((r: any) => (
-                <div key={r.id} className="p-4 rounded-2xl border border-border/70 bg-card space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-xs text-foreground">{r.sourceTitle} · {r.chapterTitle}</span>
-                    <span className="text-[10px] text-muted-foreground font-mono">分数: {r.score}</span>
-                  </div>
-                  <p className="text-xs text-foreground/80 leading-relaxed bg-muted/20 p-3 rounded-xl border border-border/40">
-                    {r.content}
-                  </p>
-                </div>
-              ))}
-            </div>
-          ) : sources.length > 0 ? (
-            <div className="space-y-3">
-              <span className="text-xs font-bold text-foreground">全部资料来源 ({sources.length})：</span>
-              {sources.map((s: any) => (
-                <div key={s.id} className="p-4 rounded-2xl border border-border/70 bg-card space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-xs text-foreground">{s.title}</span>
-                    <span className="text-[10px] text-muted-foreground">{s.chunkCount} 个切片片段</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{s.sourceType} · {s.tokenEstimate} Tokens</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-16 space-y-2">
-              <BookOpen className="w-8 h-8 text-muted-foreground/40 mx-auto" />
-              <p className="text-xs text-muted-foreground">当前角色还没有可检索的资料库，上传原著或在 1:1 聊天中沉淀后即可使用</p>
-            </div>
-          )}
+      <div className="px-6 py-4 border-b border-border/50 shrink-0">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="检索原著设定、人物性格或剧情证据切片..."
+            className="pl-9 h-9 text-xs rounded-xl bg-muted/20 border-border/70"
+          />
         </div>
       </div>
-    </div>
+
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {isLoading ? (
+          <div className="text-center py-16 space-y-2">
+            <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
+            <p className="text-xs text-muted-foreground">正在检索资料库...</p>
+          </div>
+        ) : isError ? (
+          <div className="text-center py-16 space-y-3">
+            <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
+            <p className="text-sm font-medium text-foreground">资料库加载失败</p>
+            <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请稍后重试。</p>
+          </div>
+        ) : results.length > 0 ? (
+          <div className="space-y-3">
+            <span className="text-xs font-semibold text-foreground">检索命中切片：</span>
+            {results.map((r: any) => (
+              <div key={r.id} className="p-4 rounded-2xl border border-border/70 bg-card/80 space-y-2 shadow-2xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-xs text-foreground truncate">{r.sourceTitle} · {r.chapterTitle}</span>
+                  <span className="text-[10px] text-muted-foreground font-mono tabular-nums shrink-0">分数: {r.score}</span>
+                </div>
+                <p className="text-xs text-foreground/85 leading-relaxed bg-muted/20 p-3 rounded-xl border border-border/50">
+                  {r.content}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : sources.length > 0 ? (
+          <div className="space-y-3">
+            <span className="text-xs font-semibold text-foreground tabular-nums">全部资料来源 ({sources.length})：</span>
+            {sources.map((s: any) => (
+              <div key={s.id} className="p-4 rounded-2xl border border-border/70 bg-card/80 space-y-1.5 shadow-2xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-xs text-foreground truncate">{s.title}</span>
+                  <span className="text-[10px] text-muted-foreground font-mono tabular-nums shrink-0">{s.chunkCount} 个切片片段</span>
+                </div>
+                <p className="text-xs text-muted-foreground font-mono tabular-nums">{s.sourceType} · {s.tokenEstimate} Tokens</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-16 space-y-2">
+            <BookOpen className="w-8 h-8 text-muted-foreground/40 mx-auto" />
+            <p className="text-xs text-muted-foreground">当前分身还没有可检索的资料库，上传原著或在 1:1 聊天中沉淀后即可使用</p>
+          </div>
+        )}
+      </div>
+    </MotionModal>
   );
 }
 
 function RoleplayEmotionModal({
+  open,
   personaId,
   channelMembers,
   channelMessages,
   onSwitchPersona,
   onClose,
 }: {
+  open: boolean;
   personaId: number;
   channelMembers: any[];
   channelMessages?: any[];
   onSwitchPersona: (id: number) => void;
   onClose: () => void;
 }) {
-  const { data: report, isLoading, isError, refetch } = trpc.emotion.getReport.useQuery({ personaId, days: 30 });
+  const { data: report, isLoading, isError, refetch } = trpc.emotion.getReport.useQuery(
+    { personaId, days: 30 },
+    { enabled: open && Boolean(personaId) }
+  );
   const member = channelMembers.find((m: any) => m.personaId === personaId);
 
   // 频道模式回退：1:1 情绪快照不覆盖频道消息时，直接用频道消息的 moodState 生成报告
@@ -3803,167 +4227,177 @@ function RoleplayEmotionModal({
   const effectiveReport = isChannelMode ? channelReport : report;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={onClose} />
-      <div
-        className="relative w-full max-w-3xl max-h-[85vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-chart-5/15 text-chart-5 flex items-center justify-center">
-              <TrendingUp className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-bold text-base text-foreground">情绪报告 & 趋势分析</h3>
-              <p className="text-xs text-muted-foreground">
-                {isChannelMode ? "频道对话情感统计 · 近 30 条角色发言" : "近 30 天心境演化、互动温度与情绪分布"}
-              </p>
-            </div>
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="情绪报告与趋势分析"
+      className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col p-0"
+    >
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-chart-5/12 text-chart-5 border border-chart-5/20 flex items-center justify-center">
+            <TrendingUp className="w-5 h-5" />
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => refetch()}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 bg-muted/60 hover:bg-muted text-foreground border border-border/70 rounded-xl transition-all shadow-2xs cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              刷新
-            </button>
-            <button onClick={onClose} className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground">
-              <X className="w-4 h-4" />
-            </button>
+          <div>
+            <h3 className="font-semibold text-base text-foreground">情绪报告 & 趋势分析</h3>
+            <p className="text-xs text-muted-foreground">
+              {isChannelMode ? "频道对话情感统计 · 近 30 条角色发言" : "近 30 天心境演化、互动温度与情绪分布"}
+            </p>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refetch()}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-muted/50 hover:bg-muted text-foreground border border-border/70 rounded-xl transition-colors shadow-2xs cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            刷新
+          </button>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
 
-        {channelMembers.length > 1 && (
-          <div className="px-6 py-2.5 border-b border-border/40 bg-muted/30 flex items-center justify-between gap-3 shrink-0">
-            <span className="text-xs font-bold text-foreground">当前角色：</span>
-            <div className="flex items-center gap-2">
-              {channelMembers.map((m: any) => (
+      {channelMembers.length > 1 && (
+        <div className="px-6 py-2.5 border-b border-border/50 bg-muted/20 flex items-center justify-between gap-3 shrink-0">
+          <span className="text-xs font-semibold text-foreground">当前分身：</span>
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-muted/55 border border-border/60">
+            {channelMembers.map((m: any) => {
+              const active = personaId === m.personaId;
+              return (
                 <button
                   key={m.personaId}
                   type="button"
                   onClick={() => onSwitchPersona(m.personaId)}
-                  className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    personaId === m.personaId
-                      ? "bg-primary text-primary-foreground shadow-xs"
-                      : "bg-muted/60 text-muted-foreground hover:text-foreground"
+                  className={`relative px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {m.personaName}
+                  {active && (
+                    <motion.span
+                      layoutId="roleplay-emotion-persona-pill"
+                      transition={SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-0 rounded-lg bg-card border border-border/70 shadow-2xs"
+                    />
+                  )}
+                  <span className="relative z-10">{m.personaName}</span>
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        )}
+        </div>
+      )}
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {isLoading ? (
-            <div className="text-center py-16 space-y-2">
-              <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
-              <p className="text-xs text-muted-foreground">正在生成情绪报告...</p>
-            </div>
-          ) : isError && !channelReport ? (
-            <div className="text-center py-16 space-y-3">
-              <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
-              <p className="text-sm font-medium text-foreground">情绪报告加载失败</p>
-              <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请点击右上角刷新重试。</p>
-            </div>
-          ) : !effectiveReport || (effectiveReport.totalMessages === 0 && effectiveReport.snapshots.length === 0) ? (
-            <div className="text-center py-16 space-y-3">
-              <Heart className="w-9 h-9 text-muted-foreground/40 mx-auto" />
-              <p className="text-sm font-medium text-foreground">还没有可统计的情绪数据</p>
-              <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
-                频道对话开演后，这里会根据每一轮角色的情感标签生成情绪走势；1:1 的日常聊天记录也会汇总到当前角色的报告中。
-                {member ? `「${member.personaName}」当前情感：${getMoodBadge(member.emotionalState).emoji} ${getMoodBadge(member.emotionalState).label}` : ""}
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/50 text-center">
-                  <span className="text-[10px] text-muted-foreground font-bold">总互动天数</span>
-                  <p className="text-lg font-bold text-foreground mt-0.5">{effectiveReport.totalDays || 0} 天</p>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/50 text-center">
-                  <span className="text-[10px] text-muted-foreground font-bold">主流情绪</span>
-                  <p className="text-lg font-bold text-primary mt-0.5">
-                    {effectiveReport.distribution?.[0]?.state
-                      ? `${getMoodBadge(effectiveReport.distribution[0].state).emoji} ${getMoodBadge(effectiveReport.distribution[0].state).label}`
-                      : "温柔"}
-                  </p>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/50 text-center">
-                  <span className="text-[10px] text-muted-foreground font-bold">总发言条数</span>
-                  <p className="text-lg font-bold text-foreground mt-0.5">{effectiveReport.totalMessages || 0} 条</p>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/50 text-center">
-                  <span className="text-[10px] text-muted-foreground font-bold">情绪波动度</span>
-                  <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">平稳温馨</p>
-                </div>
+      <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        {isLoading ? (
+          <div className="text-center py-16 space-y-2">
+            <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
+            <p className="text-xs text-muted-foreground">正在生成情绪报告...</p>
+          </div>
+        ) : isError && !channelReport ? (
+          <div className="text-center py-16 space-y-3">
+            <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
+            <p className="text-sm font-medium text-foreground">情绪报告加载失败</p>
+            <p className="text-xs text-muted-foreground">网络异常或数据暂不可用，请点击右上角刷新重试。</p>
+          </div>
+        ) : !effectiveReport || (effectiveReport.totalMessages === 0 && effectiveReport.snapshots.length === 0) ? (
+          <div className="text-center py-16 space-y-3">
+            <Heart className="w-9 h-9 text-muted-foreground/40 mx-auto" />
+            <p className="text-sm font-medium text-foreground">还没有可统计的情绪数据</p>
+            <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
+              频道对话开演后，这里会根据每一轮角色的情感标签生成情绪走势；1:1 的日常聊天记录也会汇总到当前分身的报告中。
+              {member ? `「${member.personaName}」当前情感：${getMoodBadge(member.emotionalState).emoji} ${getMoodBadge(member.emotionalState).label}` : ""}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
+                <span className="text-[10px] text-muted-foreground font-semibold">总互动天数</span>
+                <p className="text-lg font-semibold text-foreground mt-0.5 font-mono tabular-nums">{effectiveReport.totalDays || 0} 天</p>
               </div>
+              <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
+                <span className="text-[10px] text-muted-foreground font-semibold">主流情绪</span>
+                <p className="text-lg font-semibold text-primary mt-0.5">
+                  {effectiveReport.distribution?.[0]?.state
+                    ? `${getMoodBadge(effectiveReport.distribution[0].state).emoji} ${getMoodBadge(effectiveReport.distribution[0].state).label}`
+                    : "温柔"}
+                </p>
+              </div>
+              <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
+                <span className="text-[10px] text-muted-foreground font-semibold">总发言条数</span>
+                <p className="text-lg font-semibold text-foreground mt-0.5 font-mono tabular-nums">{effectiveReport.totalMessages || 0} 条</p>
+              </div>
+              <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
+                <span className="text-[10px] text-muted-foreground font-semibold">情绪波动度</span>
+                <p className="text-lg font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">平稳温馨</p>
+              </div>
+            </div>
 
-              {/* 情绪分布 */}
-              {(effectiveReport.distribution || []).length > 0 && (
-                <div className="space-y-2">
-                  <span className="text-xs font-bold text-foreground">情绪分布：</span>
-                  <div className="space-y-1.5">
-                    {effectiveReport.distribution.map((d: any) => {
-                      const mood = getMoodBadge(d.state);
-                      const pct = Math.round((d.count / Math.max(effectiveReport.totalMessages, 1)) * 100);
-                      return (
-                        <div key={d.state} className="flex items-center gap-2 text-xs">
-                          <span className={`w-24 shrink-0 px-2 py-0.5 rounded-md border font-medium text-center ${mood.color}`}>
-                            {mood.emoji} {mood.label}
-                          </span>
-                          <div className="flex-1 h-2 rounded-full bg-muted/60 overflow-hidden">
-                            <div className="h-full rounded-full bg-gradient-to-r from-chart-5/70 to-chart-5" style={{ width: `${pct}%` }} />
-                          </div>
-                          <span className="w-16 text-right font-mono text-muted-foreground">{pct}% · {d.count}条</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2.5">
-                <span className="text-xs font-bold text-foreground">
-                  {isChannelMode ? "频道情感流水（最近角色发言）：" : "近 30 天情绪快照流水："}
-                </span>
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                  {(effectiveReport.snapshots || []).map((s: any, idx: number) => {
-                    const mood = getMoodBadge(s.emotionalState);
-                    const src = isChannelMode ? channelMoodMessages[Math.max(0, channelMoodMessages.length - (effectiveReport.snapshots.length - idx))] : null;
+            {/* 情绪分布 */}
+            {(effectiveReport.distribution || []).length > 0 && (
+              <div className="space-y-2">
+                <span className="text-xs font-semibold text-foreground">情绪分布：</span>
+                <div className="space-y-1.5">
+                  {effectiveReport.distribution.map((d: any) => {
+                    const mood = getMoodBadge(d.state);
+                    const pct = Math.round((d.count / Math.max(effectiveReport.totalMessages, 1)) * 100);
                     return (
-                      <div key={idx} className="flex items-center justify-between gap-3 p-3 rounded-2xl border border-border/60 bg-card text-xs">
-                        <div className="flex items-center gap-2 min-w-0">
-                          {src && (
-                            <span className="text-[11px] font-semibold text-foreground shrink-0">{src.speakerName}</span>
-                          )}
-                          {!src && <span className="font-mono text-muted-foreground shrink-0">{s.date}</span>}
-                          <span className={`px-2 py-0.5 rounded-md border font-medium shrink-0 ${mood.color}`}>
-                            {mood.emoji} {mood.label}
-                          </span>
-                          {src && (
-                            <span className="text-[11px] text-muted-foreground truncate max-w-[260px]">
-                              {String(src.content || "").replace(/【[\s\S]*?】/g, "").trim().slice(0, 32) || "（本条仅旁白）"}
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-[11px] text-muted-foreground shrink-0">
-                          {src && src.createdAt ? formatBeijingTime(new Date(src.createdAt)) : `${s.messageCount} 条对话`}
+                      <div key={d.state} className="flex items-center gap-2 text-xs">
+                        <span className={`w-24 shrink-0 px-2 py-0.5 rounded-md border font-medium text-center ${mood.color}`}>
+                          {mood.emoji} {mood.label}
                         </span>
+                        <div className="flex-1 h-2 rounded-full bg-muted/60 overflow-hidden">
+                          <div className="h-full rounded-full bg-chart-5/80 transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="w-20 text-right font-mono tabular-nums text-muted-foreground">{pct}% · {d.count}条</span>
                       </div>
                     );
                   })}
                 </div>
               </div>
-            </>
-          )}
-        </div>
+            )}
+
+            <div className="space-y-2.5">
+              <span className="text-xs font-semibold text-foreground">
+                {isChannelMode ? "频道情感流水（最近角色发言）：" : "近 30 天情绪快照流水："}
+              </span>
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {(effectiveReport.snapshots || []).map((s: any, idx: number) => {
+                  const mood = getMoodBadge(s.emotionalState);
+                  const src = isChannelMode ? channelMoodMessages[Math.max(0, channelMoodMessages.length - (effectiveReport.snapshots.length - idx))] : null;
+                  return (
+                    <div key={idx} className="flex items-center justify-between gap-3 p-3 rounded-2xl border border-border/60 bg-card/80 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {src && (
+                          <span className="text-[11px] font-semibold text-foreground shrink-0">{src.speakerName}</span>
+                        )}
+                        {!src && <span className="font-mono tabular-nums text-muted-foreground shrink-0">{s.date}</span>}
+                        <span className={`px-2 py-0.5 rounded-md border font-medium shrink-0 ${mood.color}`}>
+                          {mood.emoji} {mood.label}
+                        </span>
+                        {src && (
+                          <span className="text-[11px] text-muted-foreground truncate max-w-[260px]">
+                            {String(src.content || "").replace(/【[\s\S]*?】/g, "").trim().slice(0, 32) || "（本条仅旁白）"}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[11px] text-muted-foreground font-mono tabular-nums shrink-0">
+                        {src && src.createdAt ? formatBeijingTime(new Date(src.createdAt)) : `${s.messageCount} 条对话`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
       </div>
-    </div>
+    </MotionModal>
   );
 }
 
@@ -3973,19 +4407,21 @@ function RoleplayEmotionModal({
 // ══════════════════════════════════════════════════════════════════════
 
 function ChannelMoodPanel({
+  open,
   channel,
   messages,
   personas,
   onClose,
   onOpenPersonaDiagnostics,
 }: {
+  open: boolean;
   channel: any;
   messages: any[];
   personas: any[];
   onClose: () => void;
   onOpenPersonaDiagnostics: (personaId: number) => void;
 }) {
-  const members = (channel.members || []) as any[];
+  const members = (channel?.members || []) as any[];
   const memberStats = useMemo(
     () =>
       members.map(member => {
@@ -4007,141 +4443,140 @@ function ChannelMoodPanel({
   const hasActivity = messages.some((m: any) => m.role !== "user");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-md animate-fade-in" onClick={onClose} />
-      <div
-        className="relative w-full max-w-4xl max-h-[88vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-primary/12 text-primary flex items-center justify-center">
-              <Brain className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-base text-foreground tracking-tight">频道情感状态</h3>
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold border border-primary/20">
-                  {members.length} 位成员
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">频道全员实时情感与心智快照</p>
-            </div>
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="频道情感状态"
+      className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
+    >
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary border border-primary/15 flex items-center justify-center">
+            <Brain className="w-5 h-5" />
           </div>
-          <button
-            onClick={onClose}
-            className="w-8.5 h-8.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors ml-1"
-          >
-            <X className="w-4.5 h-4.5" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-6 py-5 panel-scrollbar space-y-5">
-          {members.length === 0 ? (
-            <div className="text-center py-16 space-y-2">
-              <Users className="w-9 h-9 text-muted-foreground/40 mx-auto" />
-              <p className="text-sm font-medium text-foreground">频道还没有成员</p>
-              <p className="text-xs text-muted-foreground">进入【频道编辑】为频道添加角色后，这里会展示每位成员的情感状态。</p>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-base text-foreground tracking-tight">频道情感状态</h3>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/20 font-mono tabular-nums">
+                {members.length} 位成员
+              </span>
             </div>
-          ) : (
-            <>
-              {/* 全员情感总览 */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <Heart className="w-3.5 h-3.5 text-rose-500" />
-                    成员情感与最近互动
-                  </span>
-                  {!hasActivity && (
-                    <span className="text-[10px] text-muted-foreground">频道刚开始 · 展示角色基线情感</span>
-                  )}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {memberStats.map(({ member, persona, count, last, mood }) => {
-                    const moodCfg = getMoodBadge(mood);
-                    return (
-                      <div key={member.personaId} className="p-3.5 rounded-2xl border border-border/60 bg-muted/15 space-y-2 relative">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary/20 to-chart-3/20 text-foreground flex items-center justify-center text-xs font-bold shrink-0">
-                            {initials(member.personaName || "?")}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-bold text-foreground truncate">{member.personaName}</span>
-                              <span className={`text-[10px] px-1.5 py-0.2 rounded-md border font-medium shrink-0 ${moodCfg.color}`}>
-                                {moodCfg.emoji} {moodCfg.label}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-muted-foreground mt-0.5">
-                              {count > 0 ? `${count} 次发言` : "尚未发言"}
-                              {last?.createdAt ? ` · 最近 ${formatBeijingTime(new Date(last.createdAt))}` : ""}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => onOpenPersonaDiagnostics(member.personaId)}
-                            className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-lg bg-muted/50 hover:bg-sky-500/10 hover:text-sky-500 text-muted-foreground border border-border/60 transition-colors cursor-pointer"
-                            title="查看该角色的心智与运行诊断"
-                          >
-                            <Activity className="w-3 h-3" />
-                            心智
-                          </button>
+            <p className="text-xs text-muted-foreground mt-0.5">频道全员实时情感与心智快照</p>
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-8.5 h-8.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors ml-1 cursor-pointer"
+        >
+          <X className="w-4.5 h-4.5" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-6 py-5 panel-scrollbar space-y-5">
+        {members.length === 0 ? (
+          <div className="text-center py-16 space-y-2">
+            <Users className="w-9 h-9 text-muted-foreground/40 mx-auto" />
+            <p className="text-sm font-medium text-foreground">频道还没有成员</p>
+            <p className="text-xs text-muted-foreground">进入【频道编辑】为频道添加角色后，这里会展示每位成员的情感状态。</p>
+          </div>
+        ) : (
+          <>
+            {/* 全员情感总览 */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-rose-500" />
+                  成员情感与最近互动
+                </span>
+                {!hasActivity && (
+                  <span className="text-[10px] text-muted-foreground">频道刚开始 · 展示角色基线情感</span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {memberStats.map(({ member, persona, count, last, mood }) => {
+                  const moodCfg = getMoodBadge(mood);
+                  return (
+                    <div key={member.personaId} className="warm-card warm-card-static p-3.5 rounded-2xl space-y-2.5 relative">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-xl bg-muted/80 border border-border/60 text-foreground flex items-center justify-center text-xs font-semibold shrink-0">
+                          {initials(member.personaName || "?")}
                         </div>
-                        {last?.innerThought ? (
-                          <p className="text-[11px] text-muted-foreground/85 leading-relaxed bg-background/50 border border-border/40 rounded-xl p-2.5 italic">
-                            💭 {last.innerThought}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-semibold text-foreground truncate">{member.personaName}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-md border font-medium shrink-0 ${moodCfg.color}`}>
+                              {moodCfg.emoji} {moodCfg.label}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 font-mono tabular-nums">
+                            {count > 0 ? `${count} 次发言` : "尚未发言"}
+                            {last?.createdAt ? ` · 最近 ${formatBeijingTime(new Date(last.createdAt))}` : ""}
                           </p>
-                        ) : (
-                          <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
-                            暂无最近内心活动——发起对话后这里会记录 TA 的实时心境。
-                            {persona?.analysisStatus === "ready" ? "（形象分析已就绪）" : ""}
-                          </p>
-                        )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenPersonaDiagnostics(member.personaId)}
+                          className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-lg bg-muted/50 hover:bg-primary/10 hover:text-primary text-muted-foreground border border-border/60 transition-colors cursor-pointer"
+                          title="查看该角色的心智与运行诊断"
+                        >
+                          <Activity className="w-3 h-3" />
+                          心智
+                        </button>
+                      </div>
+                      {last?.innerThought ? (
+                        <p className="text-[11px] text-muted-foreground/90 leading-relaxed bg-muted/25 border border-border/50 rounded-xl p-2.5 italic">
+                          💭 {last.innerThought}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground/65 leading-relaxed">
+                          暂无最近内心活动——发起对话后这里会记录 TA 的实时心境。
+                          {persona?.analysisStatus === "ready" ? "（形象分析已就绪）" : ""}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 情感走向 */}
+            <div className="space-y-2">
+              <span className="text-xs font-semibold text-foreground flex items-center gap-1.5 tabular-nums">
+                <TrendingUp className="w-3.5 h-3.5 text-chart-5" />
+                情感走向（最近 {Math.min(moodTimeline.length, 20)} 轮角色发言）
+              </span>
+              {moodTimeline.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border/70 px-4 py-6 text-center">
+                  <p className="text-xs text-muted-foreground">
+                    还没有可统计的情感轨迹。点击【推进 N 轮对话】或输入一条旁白后，这里会实时记录每位角色的情感变化。
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                  {moodTimeline.map((m: any, idx: number) => {
+                    const cfg = getMoodBadge(m.moodState?.emotionalState);
+                    return (
+                      <div key={idx} className="flex items-center gap-2 p-2.5 rounded-xl border border-border/60 bg-card/80 text-[11px]">
+                        <span className="font-semibold text-foreground shrink-0 w-16 truncate">{m.speakerName}</span>
+                        <span className={`px-1.5 py-0.5 rounded-md border font-medium shrink-0 ${cfg.color}`}>
+                          {cfg.emoji} {cfg.label}
+                        </span>
+                        <span className="text-muted-foreground truncate min-w-0 flex-1">
+                          {String(m.content || "").replace(/【[\s\S]*?】/g, "").trim().slice(0, 40) || "（本条仅旁白）"}
+                        </span>
+                        <span className="text-muted-foreground/70 shrink-0 font-mono tabular-nums">
+                          {m.createdAt ? formatBeijingTime(new Date(m.createdAt)) : ""}
+                        </span>
                       </div>
                     );
                   })}
                 </div>
-              </div>
-
-              {/* 情感走向 */}
-              <div className="space-y-2">
-                <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                  <TrendingUp className="w-3.5 h-3.5 text-chart-5" />
-                  情感走向（最近 {Math.min(moodTimeline.length, 20)} 轮角色发言）
-                </span>
-                {moodTimeline.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-border/70 px-4 py-6 text-center">
-                    <p className="text-xs text-muted-foreground">
-                      还没有可统计的情感轨迹。点击【推进 N 轮对话】或输入一条旁白后，这里会实时记录每位角色的情感变化。
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
-                    {moodTimeline.map((m: any, idx: number) => {
-                      const cfg = getMoodBadge(m.moodState?.emotionalState);
-                      return (
-                        <div key={idx} className="flex items-center gap-2 p-2.5 rounded-xl border border-border/50 bg-card text-[11px]">
-                          <span className="font-semibold text-foreground shrink-0 w-16 truncate">{m.speakerName}</span>
-                          <span className={`px-1.5 py-0.2 rounded-md border font-medium shrink-0 ${cfg.color}`}>
-                            {cfg.emoji} {cfg.label}
-                          </span>
-                          <span className="text-muted-foreground truncate min-w-0 flex-1">
-                            {String(m.content || "").replace(/【[\s\S]*?】/g, "").trim().slice(0, 40) || "（本条仅旁白）"}
-                          </span>
-                          <span className="text-muted-foreground/60 shrink-0 font-mono">
-                            {m.createdAt ? formatBeijingTime(new Date(m.createdAt)) : ""}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
-    </div>
+    </MotionModal>
   );
 }
 
@@ -4151,6 +4586,7 @@ function ChannelMoodPanel({
 // ══════════════════════════════════════════════════════════════════════
 
 function ChannelDiagnosticsPanel({
+  open,
   channel,
   messages,
   personas,
@@ -4161,6 +4597,7 @@ function ChannelDiagnosticsPanel({
   isRefreshing,
   onOpenPersonaState,
 }: {
+  open: boolean;
   channel: any;
   messages: any[];
   personas: any[];
@@ -4171,11 +4608,11 @@ function ChannelDiagnosticsPanel({
   isRefreshing: boolean;
   onOpenPersonaState: (personaId: number) => void;
 }) {
-  const members = (channel.members || []) as any[];
+  const members = (channel?.members || []) as any[];
   const personaMessages = useMemo(() => messages.filter((m: any) => m.role !== "user"), [messages]);
 
   // 频道运行诊断快照（每轮发言后由后端写入）：最近一轮时间 / 节奏导演反思 / 策略 / 风险提示
-  const diagnostics = (channel.runtimeDiagnostics as any) || null;
+  const diagnostics = (channel?.runtimeDiagnostics as any) || null;
   const diagReflection = (diagnostics?.reflection as any) || null;
   const diagLastTurnAt = diagnostics?.lastTurnAt || null;
   const diagBeats = Array.isArray(diagnostics?.beats) ? diagnostics.beats : [];
@@ -4217,8 +4654,8 @@ function ChannelDiagnosticsPanel({
 
   // 频道专属统计与 LLM 消耗查询
   const statsQuery = trpc.roleplay.stats.useQuery(
-    { channelId: channel.id },
-    { refetchOnWindowFocus: false },
+    { channelId: channel?.id || 0 },
+    { enabled: open && Boolean(channel?.id), refetchOnWindowFocus: false },
   );
   const statsData = statsQuery.data;
 
@@ -4247,334 +4684,441 @@ function ChannelDiagnosticsPanel({
   };
 
   const handleRefreshAll = () => {
-    statsQuery.refetch();
+    if (channel?.id) statsQuery.refetch();
     onRefresh();
   };
 
+  const diagTabs = [
+    { id: "director" as const, label: "🎬 节奏导演反思", icon: <Brain className="w-3.5 h-3.5 text-amber-500" /> },
+    { id: "cast" as const, label: "👥 双角色态势", icon: <Users className="w-3.5 h-3.5 text-primary" /> },
+    { id: "memory_llm" as const, label: "🧠 记忆与 LLM 消耗", icon: <Database className="w-3.5 h-3.5 text-emerald-500" /> },
+    { id: "history" as const, label: `📜 频道节拍流 (${personaMessages.length})`, icon: <Sparkles className="w-3.5 h-3.5 text-sky-500" /> },
+  ];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-md animate-fade-in" onClick={onClose} />
-      <div
-        className="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl flex flex-col animate-modal-pop z-10"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/20 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-sky-500/12 text-sky-500 flex items-center justify-center shadow-2xs">
-              <Activity className="w-5 h-5" />
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="频道运行透视与节奏诊断"
+      className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col p-0"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 flex items-center justify-center shadow-2xs">
+            <Activity className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-base text-foreground tracking-tight">频道运行透视与节奏诊断</h3>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20">
+                {personaMessages.length > 0 ? "推演进行中" : "待开演"}
+              </span>
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-base text-foreground tracking-tight">频道运行透视与节奏诊断</h3>
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold border border-emerald-500/20">
-                  {personaMessages.length > 0 ? "推演进行中" : "待开演"}
+            <p className="text-xs text-muted-foreground mt-0.5">{channel?.name || "生活频道"} · 双角色推演事实与导演反思</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefreshAll}
+            disabled={isRefreshing || statsQuery.isFetching}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-1.5 bg-muted/50 hover:bg-muted text-foreground border border-border/70 rounded-xl transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing || statsQuery.isFetching ? "animate-spin" : ""}`} />
+            刷新
+          </button>
+          <button
+            onClick={onClose}
+            className="w-8.5 h-8.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors ml-1 cursor-pointer"
+          >
+            <X className="w-4.5 h-4.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Navigation */}
+      <div className="flex items-center justify-between px-6 py-2.5 border-b border-border/50 bg-muted/10 shrink-0 flex-wrap gap-2">
+        <div className="flex items-center gap-1 p-1 bg-muted/50 rounded-2xl border border-border/60 flex-wrap">
+          {diagTabs.map(tab => {
+            const active = diagTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setDiagTab(tab.id)}
+                className={`relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                  active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="roleplay-diag-tab-pill"
+                    transition={SPRING_SNAPPY}
+                    className="pointer-events-none absolute inset-0 rounded-xl bg-card border border-border/70 shadow-2xs"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-1.5 tabular-nums">
+                  {tab.icon}
+                  <span>{tab.label}</span>
                 </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="text-[11px] text-muted-foreground/80 font-mono tabular-nums">
+          最近更新 {diagLastTurnAt ? formatBeijingTime(new Date(diagLastTurnAt)) : lastActivityAt ? formatBeijingTime(new Date(lastActivityAt)) : "暂无"}
+        </div>
+      </div>
+
+      {/* Scrollable Content */}
+      <div className="flex-1 overflow-y-auto px-6 py-5 panel-scrollbar space-y-5">
+        {personaMessages.length === 0 ? (
+          <div className="text-center py-16 space-y-3">
+            <Gauge className="w-10 h-10 text-muted-foreground/40 mx-auto" />
+            <p className="text-sm font-medium text-foreground">频道暂无运行记录</p>
+            <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
+              点击主页面的【推进 N 轮对话】开启双角色对戏后，这里将实时呈现节奏导演反思、角色内心心智、记忆状态与频道 LLM 统计。
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* Top 4 Metric Cards */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/20 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
+                  <span>频道角色</span>
+                  <Users className="w-3.5 h-3.5 text-primary" />
+                </div>
+                <div className="text-base font-semibold text-foreground font-mono tabular-nums">{members.length} 位在场</div>
+                <div className="text-[10px] text-muted-foreground truncate">{members.map(m => m.personaName).join(" & ")}</div>
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">{channel.name} · 双角色推演事实与导演反思</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleRefreshAll}
-              disabled={isRefreshing || statsQuery.isFetching}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 bg-muted/60 hover:bg-muted text-foreground border border-border/70 rounded-xl transition-all shadow-2xs disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing || statsQuery.isFetching ? "animate-spin" : ""}`} />
-              刷新
-            </button>
-            <button
-              onClick={onClose}
-              className="w-8.5 h-8.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors ml-1 cursor-pointer"
-            >
-              <X className="w-4.5 h-4.5" />
-            </button>
-          </div>
-        </div>
 
-        {/* Tab Navigation */}
-        <div className="flex items-center justify-between px-6 py-2.5 border-b border-border/50 bg-muted/10 shrink-0 flex-wrap gap-2">
-          <div className="flex items-center gap-1.5 p-1 bg-muted/50 rounded-2xl border border-border/40 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setDiagTab("director")}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                diagTab === "director"
-                  ? "bg-card text-foreground shadow-xs border border-border/60"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Brain className="w-3.5 h-3.5 text-amber-500" />
-              <span>🎬 节奏导演反思</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDiagTab("cast")}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                diagTab === "cast"
-                  ? "bg-card text-foreground shadow-xs border border-border/60"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Users className="w-3.5 h-3.5 text-primary" />
-              <span>👥 双角色态势</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDiagTab("memory_llm")}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                diagTab === "memory_llm"
-                  ? "bg-card text-foreground shadow-xs border border-border/60"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Database className="w-3.5 h-3.5 text-emerald-500" />
-              <span>🧠 记忆与 LLM 消耗</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDiagTab("history")}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                diagTab === "history"
-                  ? "bg-card text-foreground shadow-xs border border-border/60"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-              <span>📜 频道节拍流 ({personaMessages.length})</span>
-            </button>
-          </div>
-
-          <div className="text-[11px] text-muted-foreground/80 font-mono">
-            最近更新 {diagLastTurnAt ? formatBeijingTime(new Date(diagLastTurnAt)) : lastActivityAt ? formatBeijingTime(new Date(lastActivityAt)) : "暂无"}
-          </div>
-        </div>
-
-        {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 panel-scrollbar space-y-5">
-          {personaMessages.length === 0 ? (
-            <div className="text-center py-16 space-y-3">
-              <Gauge className="w-10 h-10 text-muted-foreground/40 mx-auto" />
-              <p className="text-sm font-medium text-foreground">频道暂无运行记录</p>
-              <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
-                点击主页面的【推进 N 轮对话】开启双角色对戏后，这里将实时呈现节奏导演反思、角色内心心智、记忆状态与频道 LLM 统计。
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* Top 4 Metric Cards */}
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/25 p-3.5 space-y-1">
-                  <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
-                    <span>频道角色</span>
-                    <Users className="w-3.5 h-3.5 text-primary" />
-                  </div>
-                  <div className="text-base font-bold text-foreground">{members.length} 位在场</div>
-                  <div className="text-[10px] text-muted-foreground">{members.map(m => m.personaName).join(" & ")}</div>
+              <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/20 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
+                  <span>角色发言</span>
+                  <MessageSquareText className="w-3.5 h-3.5 text-chart-3" />
                 </div>
+                <div className="text-base font-semibold text-foreground font-mono tabular-nums">{personaMessages.length} 轮对话</div>
+                <div className="text-[10px] text-muted-foreground font-mono tabular-nums">累计 {totalChars.toLocaleString()} 字符数</div>
+              </div>
 
-                <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/25 p-3.5 space-y-1">
-                  <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
-                    <span>角色发言</span>
-                    <MessageSquareText className="w-3.5 h-3.5 text-chart-3" />
-                  </div>
-                  <div className="text-base font-bold text-foreground">{personaMessages.length} 轮对话</div>
-                  <div className="text-[10px] text-muted-foreground">累计 {totalChars} 字符数</div>
+              <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/20 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
+                  <span>轮换健康度</span>
+                  <Activity className="w-3.5 h-3.5 text-emerald-500" />
                 </div>
-
-                <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/25 p-3.5 space-y-1">
-                  <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
-                    <span>轮换健康度</span>
-                    <Activity className="w-3.5 h-3.5 text-emerald-500" />
-                  </div>
-                  <div className="text-base font-bold text-foreground">
-                    {consecutiveStreak >= 3 ? `同人连说 ${consecutiveStreak} 轮` : "轮换自然"}
-                  </div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {consecutiveStreak >= 3 ? "可能需要换人接话" : "节奏平稳无卡顿"}
-                  </div>
+                <div className="text-base font-semibold text-foreground tabular-nums">
+                  {consecutiveStreak >= 3 ? `同人连说 ${consecutiveStreak} 轮` : "轮换自然"}
                 </div>
-
-                <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/25 p-3.5 space-y-1">
-                  <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
-                    <span>最近发言人</span>
-                    <Clock className="w-3.5 h-3.5 text-sky-500" />
-                  </div>
-                  <div className="text-base font-bold text-foreground truncate">{lastGlobalSpeaker || "—"}</div>
-                  <div className="text-[10px] text-muted-foreground font-mono">
-                    {lastActivityAt ? formatBeijingTime(new Date(lastActivityAt)) : "—"}
-                  </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {consecutiveStreak >= 3 ? "可能需要换人接话" : "节奏平稳无卡顿"}
                 </div>
               </div>
 
-              {/* TAB 1: 节奏导演反思 */}
-              {diagTab === "director" && (
-                <div className="space-y-4 animate-fade-in">
-                  {diagBeats.length > 0 && (
-                    <div className="rounded-2xl border border-border/80 bg-card p-4 space-y-3">
-                      <h4 className="text-xs font-bold">本轮实际发言 · {diagBeats.length} 拍</h4>
-                      <p className="text-[11px] text-muted-foreground">按保存顺序记录；最后一拍用于本轮诊断概览。</p>
-                      {diagBeats.map((beat: any, index: number) => (
-                        <div key={beat.messageId ?? index} className="rounded-xl border border-border/50 bg-muted/20 p-3 space-y-1 text-xs">
-                          <div className="flex flex-wrap items-center gap-2 font-medium">
-                            <span>第 {index + 1} 拍 · {beat.speakerName}</span>
-                            <span className="text-muted-foreground">{getMoodBadge(beat.emotionalState).label}</span>
-                            {beat.messageId != null && <span className="text-muted-foreground">消息 {beat.messageId}</span>}
-                            {index === diagBeats.length - 1 && <span className="text-primary">最后保存拍</span>}
-                          </div>
-                          <p className="whitespace-pre-wrap break-words leading-relaxed">{beat.replyText}</p>
-                          {beat.innerThought && <p className="text-muted-foreground whitespace-pre-wrap break-words">心声：{beat.innerThought}</p>}
+              <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/20 p-3.5 space-y-1">
+                <div className="flex items-center justify-between text-muted-foreground text-[11px] font-semibold">
+                  <span>最近发言人</span>
+                  <Clock className="w-3.5 h-3.5 text-sky-500" />
+                </div>
+                <div className="text-base font-semibold text-foreground truncate">{lastGlobalSpeaker || "—"}</div>
+                <div className="text-[10px] text-muted-foreground font-mono tabular-nums">
+                  {lastActivityAt ? formatBeijingTime(new Date(lastActivityAt)) : "—"}
+                </div>
+              </div>
+            </div>
+
+            {/* TAB 1: 节奏导演反思 */}
+            {diagTab === "director" && (
+              <div className="space-y-4">
+                {diagBeats.length > 0 && (
+                  <div className="warm-card warm-card-static rounded-2xl p-4 space-y-3">
+                    <h4 className="text-xs font-semibold tabular-nums">本轮实际发言 · {diagBeats.length} 拍</h4>
+                    <p className="text-[11px] text-muted-foreground">按保存顺序记录；最后一拍用于本轮诊断概览。</p>
+                    {diagBeats.map((beat: any, index: number) => (
+                      <div key={beat.messageId ?? index} className="rounded-xl border border-border/60 bg-muted/20 p-3 space-y-1 text-xs">
+                        <div className="flex flex-wrap items-center gap-2 font-medium tabular-nums">
+                          <span>第 {index + 1} 拍 · {beat.speakerName}</span>
+                          <span className="text-muted-foreground">{getMoodBadge(beat.emotionalState).label}</span>
+                          {beat.messageId != null && <span className="text-muted-foreground font-mono">消息 {beat.messageId}</span>}
+                          {index === diagBeats.length - 1 && <span className="text-primary">最后保存拍</span>}
                         </div>
-                      ))}
-                      {diagnostics?.postPersistWarning && <p className="text-[11px] text-amber-700">{diagnostics.postPersistWarning}</p>}
-                    </div>
-                  )}
-                  {/* 下一拍剧情推进重点卡片 */}
-                  <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 dark:bg-amber-950/20 p-4.5 space-y-2.5 shadow-xs">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400">
-                          <Sparkles className="w-3.5 h-3.5" />
-                        </span>
-                        <h4 className="text-xs font-bold text-amber-900 dark:text-amber-200 tracking-wide uppercase">
-                          下一拍剧情推进目标 (Next Beat)
-                        </h4>
+                        <p className="whitespace-pre-wrap break-words leading-relaxed">{beat.replyText}</p>
+                        {beat.innerThought && <p className="text-muted-foreground whitespace-pre-wrap break-words">心声：{beat.innerThought}</p>}
                       </div>
-                      {diagReflection?.stuckOnStatic && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-600 dark:text-rose-400 font-bold border border-rose-500/30 animate-pulse">
-                          ⚠️ 静止状态已打破
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs sm:text-[13px] text-foreground dark:text-zinc-100 font-medium leading-relaxed">
-                      {diagReflection?.nextBeat || "下一拍自然推演中：保持生活动作连贯，推进新的剧情与对话互动。"}
-                    </p>
+                    ))}
+                    {diagnostics?.postPersistWarning && <p className="text-[11px] text-amber-700 dark:text-amber-400">{diagnostics.postPersistWarning}</p>}
                   </div>
-
-                  {/* 回复策略与叙事侧重 */}
-                  <div className="rounded-2xl border border-border/80 bg-card p-4.5 space-y-3 shadow-xs">
+                )}
+                {/* 下一拍剧情推进重点卡片 */}
+                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 dark:bg-amber-950/20 p-4.5 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
-                      <MessageSquareText className="w-4 h-4 text-primary" />
-                      <h4 className="text-xs font-bold text-foreground">叙事与生成策略 (Strategy)</h4>
+                      <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                        <Sparkles className="w-3.5 h-3.5" />
+                      </span>
+                      <h4 className="text-xs font-semibold text-amber-900 dark:text-amber-200 tracking-wide uppercase">
+                        下一拍剧情推进目标 (Next Beat)
+                      </h4>
                     </div>
-                    <div className="p-3 rounded-xl bg-muted/40 border border-border/50 text-xs text-foreground/90 leading-relaxed font-normal">
-                      {diagReflection?.replyStrategy || "注重肢体动作步骤与环境触感描写，篇幅充分展开，避免干瘪敷衍。"}
-                    </div>
+                    {diagReflection?.stuckOnStatic && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-500/12 text-rose-600 dark:text-rose-400 font-semibold border border-rose-500/25">
+                        ⚠️ 静止状态已打破
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs sm:text-[13px] text-foreground dark:text-zinc-100 font-medium leading-relaxed">
+                    {diagReflection?.nextBeat || "下一拍自然推演中：保持生活动作连贯，推进新的剧情与对话互动。"}
+                  </p>
+                </div>
 
-                    {/* 导演决策指标矩阵 */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-                      <div className="p-2.5 rounded-xl bg-muted/30 border border-border/40 space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground font-medium">轮换决策</span>
-                        <p className="text-xs font-bold text-foreground">{hintLabel(diagReflection?.nextSpeakerHint)}</p>
-                      </div>
-                      <div className="p-2.5 rounded-xl bg-muted/30 border border-border/40 space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground font-medium">篇幅倾向</span>
-                        <p className="text-xs font-bold text-foreground">{lengthLabel(diagReflection?.replyLength)}</p>
-                      </div>
-                      <div className="p-2.5 rounded-xl bg-muted/30 border border-border/40 space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground font-medium">基调预判</span>
-                        <p className="text-xs font-bold text-foreground flex items-center gap-1">
-                          {getMoodBadge(diagReflection?.mood).emoji} {getMoodBadge(diagReflection?.mood).label}
-                        </p>
-                      </div>
-                      <div className="p-2.5 rounded-xl bg-muted/30 border border-border/40 space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground font-medium">首发倾向</span>
-                        <p className="text-xs font-bold text-foreground truncate">{diagReflection?.preferredSpeaker || "自然轮流"}</p>
-                      </div>
-                    </div>
+                {/* 回复策略与叙事侧重 */}
+                <div className="warm-card warm-card-static rounded-2xl p-4.5 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <MessageSquareText className="w-4 h-4 text-primary" />
+                    <h4 className="text-xs font-semibold text-foreground">叙事与生成策略 (Strategy)</h4>
+                  </div>
+                  <div className="p-3 rounded-xl bg-muted/35 border border-border/50 text-xs text-foreground/90 leading-relaxed font-normal">
+                    {diagReflection?.replyStrategy || "注重肢体动作步骤与环境触感描写，篇幅充分展开，避免干瘪敷衍。"}
                   </div>
 
-                  {/* 角色内心预演 */}
-                  {(diagReflection?.innerThought || diagnostics?.innerThought) && (
-                    <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-fuchsia-500/5 to-transparent p-4.5 space-y-2 shadow-xs">
-                      <div className="flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-violet-500" />
-                        <h4 className="text-xs font-bold text-foreground">导演预判角色内心活动 (Inner Thought Preview)</h4>
-                      </div>
-                      <p className="text-xs text-foreground/85 leading-relaxed italic bg-background/60 p-3 rounded-xl border border-violet-500/15">
-                        💭 {diagReflection?.innerThought || diagnostics?.innerThought}
+                  {/* 导演决策指标矩阵 */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div className="p-2.5 rounded-xl bg-muted/25 border border-border/50 space-y-0.5">
+                      <span className="text-[10px] text-muted-foreground font-medium">轮换决策</span>
+                      <p className="text-xs font-semibold text-foreground">{hintLabel(diagReflection?.nextSpeakerHint)}</p>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-muted/25 border border-border/50 space-y-0.5">
+                      <span className="text-[10px] text-muted-foreground font-medium">篇幅倾向</span>
+                      <p className="text-xs font-semibold text-foreground">{lengthLabel(diagReflection?.replyLength)}</p>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-muted/25 border border-border/50 space-y-0.5">
+                      <span className="text-[10px] text-muted-foreground font-medium">基调预判</span>
+                      <p className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        {getMoodBadge(diagReflection?.mood).emoji} {getMoodBadge(diagReflection?.mood).label}
                       </p>
                     </div>
-                  )}
+                    <div className="p-2.5 rounded-xl bg-muted/25 border border-border/50 space-y-0.5">
+                      <span className="text-[10px] text-muted-foreground font-medium">首发倾向</span>
+                      <p className="text-xs font-semibold text-foreground truncate">{diagReflection?.preferredSpeaker || "自然轮流"}</p>
+                    </div>
+                  </div>
                 </div>
-              )}
 
-              {/* TAB 2: 双角色态势与心智 */}
-              {diagTab === "cast" && (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {memberStats.map(stat => {
-                      const cfg = getMoodBadge(stat.mood);
-                      return (
-                        <div key={stat.member.personaId} className="rounded-2xl border border-border/80 bg-card p-4.5 space-y-3 shadow-xs flex flex-col justify-between">
-                          <div className="space-y-2.5">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2.5">
-                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary/20 via-chart-3/15 to-transparent border border-primary/25 flex items-center justify-center text-xs font-bold text-foreground shrink-0 shadow-2xs">
-                                  {initials(stat.member.personaName || "?")}
-                                </div>
-                                <div>
-                                  <h4 className="text-xs font-bold text-foreground">{stat.member.personaName}</h4>
-                                  <span className="text-[10px] text-muted-foreground font-medium">
-                                    {stat.count} 轮发言 · 均 {stat.avgChars} 字
-                                  </span>
-                                </div>
+                {/* 角色内心预演 */}
+                {(diagReflection?.innerThought || diagnostics?.innerThought) && (
+                  <div className="warm-card warm-card-static rounded-2xl p-4.5 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Brain className="w-4 h-4 text-primary" />
+                      <h4 className="text-xs font-semibold text-foreground">导演预判角色内心活动 (Inner Thought Preview)</h4>
+                    </div>
+                    <p className="text-xs text-foreground/85 leading-relaxed italic bg-muted/25 p-3 rounded-xl border border-border/50">
+                      💭 {diagReflection?.innerThought || diagnostics?.innerThought}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 2: 双角色态势与心智 */}
+            {diagTab === "cast" && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {memberStats.map(stat => {
+                    const cfg = getMoodBadge(stat.mood);
+                    return (
+                      <div key={stat.member.personaId} className="warm-card warm-card-static rounded-2xl p-4.5 space-y-3 flex flex-col justify-between">
+                        <div className="space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-xl bg-muted/80 border border-border/60 flex items-center justify-center text-xs font-semibold text-foreground shrink-0">
+                                {initials(stat.member.personaName || "?")}
                               </div>
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium shadow-2xs shrink-0 ${cfg.color}`}>
-                                {cfg.emoji} {cfg.label}
-                              </span>
+                              <div>
+                                <h4 className="text-xs font-semibold text-foreground">{stat.member.personaName}</h4>
+                                <span className="text-[10px] text-muted-foreground font-mono tabular-nums">
+                                  {stat.count} 轮发言 · 均 {stat.avgChars} 字
+                                </span>
+                              </div>
                             </div>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium shadow-2xs shrink-0 ${cfg.color}`}>
+                              {cfg.emoji} {cfg.label}
+                            </span>
+                          </div>
 
-                            {/* 最新内心活动 */}
-                            <div className="space-y-1">
-                              <span className="text-[10.5px] font-bold text-muted-foreground flex items-center gap-1">
-                                <span>💭 最新心声</span>
-                              </span>
-                              <div className="p-2.5 rounded-xl bg-muted/40 border border-border/40 text-[11.5px] text-muted-foreground/90 italic leading-relaxed line-clamp-3">
-                                {stat.last?.innerThought || "（本轮暂无单独心声记录）"}
-                              </div>
-                            </div>
-
-                            {/* 最新台词摘要 */}
-                            <div className="space-y-1">
-                              <span className="text-[10.5px] font-bold text-muted-foreground flex items-center gap-1">
-                                <MessageSquareText className="w-3 h-3 text-primary/70" />
-                                <span>最新台词</span>
-                              </span>
-                              <div className="p-2.5 rounded-xl bg-muted/20 border border-border/30 text-[11.5px] text-foreground/80 leading-relaxed line-clamp-2">
-                                {String(stat.last?.content || "").replace(/【[\s\S]*?】/g, "").trim() || "（本轮为场景动作）"}
-                              </div>
+                          {/* 最新内心活动 */}
+                          <div className="space-y-1">
+                            <span className="text-[10.5px] font-semibold text-muted-foreground flex items-center gap-1">
+                              <span>💭 最新心声</span>
+                            </span>
+                            <div className="p-2.5 rounded-xl bg-muted/30 border border-border/50 text-[11.5px] text-muted-foreground/90 italic leading-relaxed line-clamp-3">
+                              {stat.last?.innerThought || "（本轮暂无单独心声记录）"}
                             </div>
                           </div>
 
-                          <div className="text-[10px] text-muted-foreground/60 font-mono text-right pt-2 border-t border-border/30">
-                            最近发言 {stat.last?.createdAt ? formatBeijingTime(new Date(stat.last.createdAt)) : "未发言"}
+                          {/* 最新台词摘要 */}
+                          <div className="space-y-1">
+                            <span className="text-[10.5px] font-semibold text-muted-foreground flex items-center gap-1">
+                              <MessageSquareText className="w-3 h-3 text-primary/70" />
+                              <span>最新台词</span>
+                            </span>
+                            <div className="p-2.5 rounded-xl bg-muted/20 border border-border/40 text-[11.5px] text-foreground/85 leading-relaxed line-clamp-2">
+                              {String(stat.last?.content || "").replace(/【[\s\S]*?】/g, "").trim() || "（本轮为场景动作）"}
+                            </div>
                           </div>
                         </div>
-                      );
-                    })}
+
+                        <div className="text-[10px] text-muted-foreground/70 font-mono tabular-nums text-right pt-2 border-t border-border/40">
+                          最近发言 {stat.last?.createdAt ? formatBeijingTime(new Date(stat.last.createdAt)) : "未发言"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 情绪基调分布 */}
+                {moodDistribution.length > 0 && (
+                  <div className="warm-card warm-card-static rounded-2xl p-4.5 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Heart className="w-4 h-4 text-rose-500" />
+                      <h4 className="text-xs font-semibold text-foreground">最近 30 轮情感基调分布</h4>
+                    </div>
+                    <div className="space-y-2">
+                      {moodDistribution.map(d => {
+                        const cfg = getMoodBadge(d.state);
+                        const pct = Math.round((d.count / Math.max(personaMessages.length, 1)) * 100);
+                        return (
+                          <div key={d.state} className="flex items-center gap-2.5 text-xs">
+                            <span className={`w-20 shrink-0 px-2 py-0.5 rounded-lg border font-medium text-center text-[10.5px] ${cfg.color}`}>
+                              {cfg.emoji} {cfg.label}
+                            </span>
+                            <div className="flex-1 h-2 rounded-full bg-muted/60 overflow-hidden">
+                              <div className="h-full rounded-full bg-sky-500/80 transition-all" style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="w-20 text-right font-mono tabular-nums text-[11px] text-muted-foreground">{d.count} 次 ({pct}%)</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 3: 记忆状态与 LLM 消耗 (仅频道相关) */}
+            {diagTab === "memory_llm" && (
+              <div className="space-y-4">
+                {/* 1. 频道记忆与上下文状态 */}
+                <div className="warm-card warm-card-static rounded-2xl p-4.5 space-y-3.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                        <Database className="w-4 h-4" />
+                      </div>
+                      <h4 className="text-xs font-semibold text-foreground">频道记忆与上下文状态 (Context & Memory)</h4>
+                    </div>
+                    <span className="text-[10.5px] px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20">
+                      🛡️ 纯情景世界锚 · 原著人物隔离
+                    </span>
                   </div>
 
-                  {/* 情绪基调分布 */}
-                  {moodDistribution.length > 0 && (
-                    <div className="rounded-2xl border border-border/80 bg-card p-4.5 space-y-3 shadow-xs">
-                      <div className="flex items-center gap-2">
-                        <Heart className="w-4 h-4 text-rose-500" />
-                        <h4 className="text-xs font-bold text-foreground">最近 30 轮情感基调分布</h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">前情种子字符</span>
+                      <p className="text-sm font-semibold text-foreground font-mono tabular-nums">{statsData?.memory?.scenePromptChars ?? channel?.scenePrompt?.length ?? 0} 字</p>
+                      <span className="text-[9.5px] text-muted-foreground">场景与触觉基准</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">纳入上下文</span>
+                      <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 font-mono tabular-nums">{statsData?.memory?.includedCount ?? messages.length} 条</p>
+                      <span className="text-[9.5px] text-muted-foreground">参与后续推演生成</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">修剪/排除条数</span>
+                      <p className="text-sm font-semibold text-muted-foreground font-mono tabular-nums">{statsData?.memory?.excludedCount ?? 0} 条</p>
+                      <span className="text-[9.5px] text-muted-foreground">不占上下文窗口</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">当前预估 Token</span>
+                      <p className="text-sm font-semibold text-foreground font-mono tabular-nums">~{(statsData?.memory?.currentEstimatedTokens ?? Math.round(totalChars / 1.5)).toLocaleString()}</p>
+                      <span className="text-[9.5px] text-muted-foreground">窗口上限 6,500 字符</span>
+                    </div>
+                  </div>
+
+                  {/* 前情提要预览 */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[11px] font-semibold text-muted-foreground flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-amber-500" />
+                      <span>前情提要 / 记忆种子预览</span>
+                    </span>
+                    <div className="p-3 rounded-xl bg-muted/20 border border-border/50 text-[11.5px] text-foreground/85 leading-relaxed font-mono whitespace-pre-wrap line-clamp-3">
+                      {channel?.scenePrompt || "自由生活场景，未指定特别的前情提要种子。"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. 频道专属 LLM 消耗与模型调用 */}
+                <div className="warm-card warm-card-static rounded-2xl p-4.5 space-y-3.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-sky-500/12 text-sky-500 flex items-center justify-center">
+                        <Gauge className="w-4 h-4" />
                       </div>
-                      <div className="space-y-2">
-                        {moodDistribution.map(d => {
-                          const cfg = getMoodBadge(d.state);
-                          const pct = Math.round((d.count / Math.max(personaMessages.length, 1)) * 100);
+                      <h4 className="text-xs font-semibold text-foreground">当前账号全部角色频道 · 模型用量</h4>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 font-medium border border-sky-500/20 font-mono tabular-nums">
+                        账号今日平均耗时 {(statsData?.llm?.avgDurationMs ? (statsData.llm.avgDurationMs / 1000).toFixed(1) : "—")}s
+                      </span>
+                      <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-muted text-muted-foreground font-medium border border-border/50 font-mono">
+                        经济档位 {diagnostics?.economyLevel || "normal"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">账号今日调用</span>
+                      <p className="text-base font-semibold text-foreground font-mono tabular-nums">{statsData?.llm?.todayCalls ?? 0} 次</p>
+                      <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">账号今日 Token</span>
+                      <p className="text-base font-semibold text-sky-600 dark:text-sky-400 font-mono tabular-nums">{(statsData?.llm?.todayTokens ?? 0).toLocaleString()}</p>
+                      <span className="text-[9.5px] text-muted-foreground font-mono tabular-nums">入 {(statsData?.llm?.todayInputTokens ?? 0).toLocaleString()} / 出 {(statsData?.llm?.todayOutputTokens ?? 0).toLocaleString()}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">账号累计调用</span>
+                      <p className="text-base font-semibold text-foreground font-mono tabular-nums">{statsData?.llm?.totalCalls ?? 0} 次</p>
+                      <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/25 border border-border/50 space-y-1">
+                      <span className="text-[10px] text-muted-foreground font-medium">账号累计 Token</span>
+                      <p className="text-base font-semibold text-foreground font-mono tabular-nums">{(statsData?.llm?.totalTokens ?? 0).toLocaleString()}</p>
+                      <span className="text-[9.5px] text-muted-foreground">全部角色频道合计</span>
+                    </div>
+                  </div>
+
+                  {/* 细分子链路调用与路由统计 */}
+                  {statsData?.llm?.routes && statsData.llm.routes.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <span className="text-[11px] font-semibold text-muted-foreground">账号今日子链路调用分布</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {statsData.llm.routes.map(r => {
+                          const label = r.route.includes("reflection")
+                            ? "🎬 节奏导演反思"
+                            : r.route.includes("narration")
+                            ? "✨ 旁白动作润色"
+                            : "🎭 角色对话推演";
                           return (
-                            <div key={d.state} className="flex items-center gap-2.5 text-xs">
-                              <span className={`w-20 shrink-0 px-2 py-0.5 rounded-lg border font-medium text-center text-[10.5px] ${cfg.color}`}>
-                                {cfg.emoji} {cfg.label}
-                              </span>
-                              <div className="flex-1 h-2 rounded-full bg-muted/60 overflow-hidden">
-                                <div className="h-full rounded-full bg-gradient-to-r from-sky-500/70 to-sky-500 transition-all" style={{ width: `${pct}%` }} />
+                            <div key={r.route} className="p-2.5 rounded-xl bg-muted/20 border border-border/40 text-xs space-y-1">
+                              <div className="flex items-center justify-between font-medium">
+                                <span className="text-foreground">{label}</span>
+                                <span className="text-primary font-mono tabular-nums">{r.calls} 次</span>
                               </div>
-                              <span className="w-16 text-right font-mono text-[11px] text-muted-foreground">{d.count} 次 ({pct}%)</span>
+                              <div className="text-[10px] text-muted-foreground/70 font-mono tabular-nums">
+                                Token: {r.totalTokens.toLocaleString()}
+                              </div>
                             </div>
                           );
                         })}
@@ -4582,183 +5126,59 @@ function ChannelDiagnosticsPanel({
                     </div>
                   )}
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* TAB 3: 记忆状态与 LLM 消耗 (仅频道相关) */}
-              {diagTab === "memory_llm" && (
-                <div className="space-y-4 animate-fade-in">
-                  {/* 1. 频道记忆与上下文状态 */}
-                  <div className="rounded-2xl border border-border/80 bg-card p-4.5 space-y-3.5 shadow-xs">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-                          <Database className="w-4 h-4" />
-                        </div>
-                        <h4 className="text-xs font-bold text-foreground">频道记忆与上下文状态 (Context & Memory)</h4>
-                      </div>
-                      <span className="text-[10.5px] px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20">
-                        🛡️ 纯情景世界锚 · 原著人物隔离
-                      </span>
-                    </div>
+            {/* TAB 4: 频道节拍流 */}
+            {diagTab === "history" && (
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  {recentEvents.map((m: any, idx: number) => {
+                    const cfg = getMoodBadge(m.moodState?.emotionalState);
+                    const sections = parseRoleplayMessage(m.content);
+                    const narration = sections.find(s => s.type === "narration")?.text;
+                    const dialogue = sections.find(s => s.type === "dialogue")?.text;
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">前情种子字符</span>
-                        <p className="text-sm font-bold text-foreground">{statsData?.memory?.scenePromptChars ?? channel.scenePrompt?.length ?? 0} 字</p>
-                        <span className="text-[9.5px] text-muted-foreground">场景与触觉基准</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">纳入上下文</span>
-                        <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{statsData?.memory?.includedCount ?? messages.length} 条</p>
-                        <span className="text-[9.5px] text-muted-foreground">参与后续推演生成</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">修剪/排除条数</span>
-                        <p className="text-sm font-bold text-muted-foreground">{statsData?.memory?.excludedCount ?? 0} 条</p>
-                        <span className="text-[9.5px] text-muted-foreground">不占上下文窗口</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">当前预估 Token</span>
-                        <p className="text-sm font-bold text-foreground">~{statsData?.memory?.currentEstimatedTokens ?? Math.round(totalChars / 1.5)}</p>
-                        <span className="text-[9.5px] text-muted-foreground">窗口上限 6,500 字符</span>
-                      </div>
-                    </div>
-
-                    {/* 前情提要预览 */}
-                    <div className="space-y-1.5 pt-1">
-                      <span className="text-[11px] font-bold text-muted-foreground flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 text-amber-500" />
-                        <span>前情提要 / 记忆种子预览</span>
-                      </span>
-                      <div className="p-3 rounded-xl bg-muted/20 border border-border/40 text-[11.5px] text-foreground/80 leading-relaxed font-mono whitespace-pre-wrap line-clamp-3">
-                        {channel.scenePrompt || "自由生活场景，未指定特别的前情提要种子。"}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 2. 频道专属 LLM 消耗与模型调用 */}
-                  <div className="rounded-2xl border border-border/80 bg-card p-4.5 space-y-3.5 shadow-xs">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-lg bg-sky-500/12 text-sky-500 flex items-center justify-center">
-                          <Gauge className="w-4 h-4" />
-                        </div>
-                        <h4 className="text-xs font-bold text-foreground">当前账号全部角色频道 · 模型用量</h4>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 font-medium border border-sky-500/20 font-mono">
-                          账号今日平均耗时 {(statsData?.llm?.avgDurationMs ? (statsData.llm.avgDurationMs / 1000).toFixed(1) : "—")}s
-                        </span>
-                        <span className="text-[10.5px] px-2.5 py-0.5 rounded-md bg-muted text-muted-foreground font-medium border border-border/50">
-                          经济档位 {diagnostics?.economyLevel || "normal"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">账号今日调用</span>
-                        <p className="text-base font-bold text-foreground">{statsData?.llm?.todayCalls ?? 0} 次</p>
-                        <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">账号今日 Token</span>
-                        <p className="text-base font-bold text-sky-600 dark:text-sky-400">{(statsData?.llm?.todayTokens ?? 0).toLocaleString()}</p>
-                        <span className="text-[9.5px] text-muted-foreground">入 {(statsData?.llm?.todayInputTokens ?? 0).toLocaleString()} / 出 {(statsData?.llm?.todayOutputTokens ?? 0).toLocaleString()}</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">账号累计调用</span>
-                        <p className="text-base font-bold text-foreground">{statsData?.llm?.totalCalls ?? 0} 次</p>
-                        <span className="text-[9.5px] text-muted-foreground">全部角色频道的模型调用</span>
-                      </div>
-                      <div className="p-3 rounded-xl bg-muted/30 border border-border/40 space-y-1">
-                        <span className="text-[10px] text-muted-foreground font-medium">账号累计 Token</span>
-                        <p className="text-base font-bold text-foreground">{(statsData?.llm?.totalTokens ?? 0).toLocaleString()}</p>
-                        <span className="text-[9.5px] text-muted-foreground">全部角色频道合计</span>
-                      </div>
-                    </div>
-
-                    {/* 细分子链路调用与路由统计 */}
-                    {statsData?.llm?.routes && statsData.llm.routes.length > 0 && (
-                      <div className="space-y-2 pt-1">
-                        <span className="text-[11px] font-bold text-muted-foreground">账号今日子链路调用分布</span>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          {statsData.llm.routes.map(r => {
-                            const label = r.route.includes("reflection")
-                              ? "🎬 节奏导演反思"
-                              : r.route.includes("narration")
-                              ? "✨ 旁白动作润色"
-                              : "🎭 角色对话推演";
-                            return (
-                              <div key={r.route} className="p-2.5 rounded-xl bg-muted/20 border border-border/30 text-xs space-y-1">
-                                <div className="flex items-center justify-between font-medium">
-                                  <span className="text-foreground">{label}</span>
-                                  <span className="text-primary font-mono">{r.calls} 次</span>
-                                </div>
-                                <div className="text-[10px] text-muted-foreground/70 font-mono">
-                                  Token: {r.totalTokens.toLocaleString()}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 4: 频道节拍流 */}
-              {diagTab === "history" && (
-                <div className="space-y-3 animate-fade-in">
-                  <div className="space-y-2">
-                    {recentEvents.map((m: any, idx: number) => {
-                      const cfg = getMoodBadge(m.moodState?.emotionalState);
-                      const sections = parseRoleplayMessage(m.content);
-                      const narration = sections.find(s => s.type === "narration")?.text;
-                      const dialogue = sections.find(s => s.type === "dialogue")?.text;
-
-                      return (
-                        <div key={idx} className="p-3.5 rounded-2xl border border-border/70 bg-card space-y-2 shadow-2xs hover:border-border transition-colors">
-                          <div className="flex items-center justify-between gap-2 text-xs">
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-foreground">{m.speakerName}</span>
-                              <span className={`px-2 py-0.2 rounded-md border text-[10px] font-medium ${cfg.color}`}>
-                                {cfg.emoji} {cfg.label}
-                              </span>
-                            </div>
-                            <span className="text-[10.5px] text-muted-foreground/70 font-mono">
-                              {m.createdAt ? formatBeijingDateTime(new Date(m.createdAt)) : ""}
+                    return (
+                      <div key={idx} className="p-3.5 rounded-2xl border border-border/70 bg-card/85 space-y-2 shadow-2xs hover:border-border transition-colors">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-foreground">{m.speakerName}</span>
+                            <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium ${cfg.color}`}>
+                              {cfg.emoji} {cfg.label}
                             </span>
                           </div>
-
-                          {m.innerThought && (
-                            <p className="text-[11.5px] text-muted-foreground/85 italic leading-relaxed bg-muted/30 p-2 rounded-lg border border-border/30">
-                              💭 {m.innerThought}
-                            </p>
-                          )}
-
-                          {dialogue && (
-                            <p className="text-xs text-foreground font-medium leading-relaxed">
-                              {dialogue}
-                            </p>
-                          )}
-
-                          {narration && (
-                            <p className="text-[11px] text-amber-800 dark:text-amber-200/90 bg-amber-500/5 p-2 rounded-lg border border-amber-500/15 leading-relaxed">
-                              ✨ {narration}
-                            </p>
-                          )}
+                          <span className="text-[10.5px] text-muted-foreground/75 font-mono tabular-nums">
+                            {m.createdAt ? formatBeijingDateTime(new Date(m.createdAt)) : ""}
+                          </span>
                         </div>
-                      );
-                    })}
-                  </div>
+
+                        {m.innerThought && (
+                          <p className="text-[11.5px] text-muted-foreground/90 italic leading-relaxed bg-muted/30 p-2 rounded-lg border border-border/40">
+                            💭 {m.innerThought}
+                          </p>
+                        )}
+
+                        {dialogue && (
+                          <p className="text-xs text-foreground font-medium leading-relaxed">
+                            {dialogue}
+                          </p>
+                        )}
+
+                        {narration && (
+                          <p className="text-[11px] font-serif italic text-muted-foreground bg-muted/20 pl-3 pr-2.5 py-2 rounded-r-lg border-l-2 border-primary/35 leading-relaxed">
+                            {narration}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
-            </>
-          )}
-        </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </MotionModal>
   );
 }

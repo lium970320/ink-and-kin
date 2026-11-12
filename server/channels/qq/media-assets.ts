@@ -47,15 +47,12 @@ function sameFileVersion(before: Stats, after: Stats) {
     before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
 }
 
-async function readImage(uploadDir: string, row: PersonaFileRow, userId: number, personaId: number): Promise<LoadedQqMediaAsset> {
-  const prefix = `personas/${userId}/${personaId}/`;
-  if (!isOwnedImage(row, userId, personaId) || !row.fileKey.startsWith(prefix)) throw unavailable();
-  const leaf = row.fileKey.slice(prefix.length);
-  // 上传端只生成一个文件名段；不允许路径分隔符、绝对路径、ADS 或 Windows 末尾别名。
-  if (!leaf || leaf === "." || leaf === ".." || /[\u0000-\u001f\u007f<>:"/\\|?*]/.test(leaf) || /[. ]$/.test(leaf)) throw unavailable();
+type BoundedImage = Pick<LoadedQqMediaAsset, "mime" | "data" | "size" | "sha256">;
+
+async function readBoundedImage(uploadDir: string, parts: string[]): Promise<BoundedImage> {
   try {
     const root = await realpath(uploadDir);
-    const target = path.resolve(root, "personas", String(userId), String(personaId), leaf);
+    const target = path.resolve(root, ...parts);
     const resolved = await realpath(target);
     // 只接受真实路径仍与归属路径一致的文件，包括拒绝跳到根内其他角色的链接。
     if (path.relative(target, resolved) !== "") throw unavailable();
@@ -79,8 +76,7 @@ async function readImage(uploadDir: string, row: PersonaFileRow, userId: number,
       const mime = mimeFromBytes(data);
       if (!mime) throw new QqError("BAD_REQUEST", "仅支持 PNG、JPEG 或 WebP 图片。");
       return {
-        id: row.id, name: sanitizeFileName(row.originalName), size: data.length,
-        sha256: createHash("sha256").update(data).digest("hex"), mime, data,
+        size: data.length, sha256: createHash("sha256").update(data).digest("hex"), mime, data,
       };
     } finally {
       await handle.close();
@@ -90,6 +86,30 @@ async function readImage(uploadDir: string, row: PersonaFileRow, userId: number,
     // 文件系统异常可能带绝对路径；只返回固定的公开错误。
     throw unavailable();
   }
+}
+
+async function readImage(uploadDir: string, row: PersonaFileRow, userId: number, personaId: number): Promise<LoadedQqMediaAsset> {
+  const prefix = `personas/${userId}/${personaId}/`;
+  if (!isOwnedImage(row, userId, personaId) || !row.fileKey.startsWith(prefix)) throw unavailable();
+  const leaf = row.fileKey.slice(prefix.length);
+  // 上传端只生成一个文件名段；不允许路径分隔符、绝对路径、ADS 或 Windows 末尾别名。
+  if (!leaf || leaf === "." || leaf === ".." || /[\u0000-\u001f\u007f<>:"/\\|?*]/.test(leaf) || /[. ]$/.test(leaf)) throw unavailable();
+  const image = await readBoundedImage(uploadDir, ["personas", String(userId), String(personaId), leaf]);
+  return { id: row.id, name: sanitizeFileName(row.originalName), ...image };
+}
+
+/** Only this account's published image key is accepted; never fetch a URL or open a supplied path. */
+export async function loadQqSceneImageAsset(userId: number, outputKey: string, uploadDir = ENV.uploadDir): Promise<BoundedImage> {
+  if (!isPositiveId(userId)) throw unavailable();
+  const prefix = `scene-images/${userId}/`;
+  if (!outputKey.startsWith(prefix)) throw unavailable();
+  const leaf = outputKey.slice(prefix.length);
+  const match = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.(png|jpg|webp)$/.exec(leaf);
+  if (!match || match[0] !== leaf) throw unavailable();
+  const image = await readBoundedImage(uploadDir, ["scene-images", String(userId), leaf]);
+  const expectedMime = match[1] === "jpg" ? "image/jpeg" : `image/${match[1]}`;
+  if (image.mime !== expectedMime) throw unavailable();
+  return image;
 }
 
 /** 依赖注入用于隔离文件系统校验测试，生产入口只使用已认证的数据库与上传根。 */

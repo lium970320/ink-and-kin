@@ -1,23 +1,40 @@
-import { useState, useEffect } from "react";
-import {
-  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { MotionModal } from "@/components/ui/motion";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { BookOpen } from "lucide-react";
+import { BookOpen, X } from "lucide-react";
 
 const STORAGE_KEY = "foreword_dismissed";
 
 export default function ForewordModal() {
   const [open, setOpen] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(true);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(true);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!localStorage.getItem(STORAGE_KEY)) {
       setOpen(true);
     }
   }, []);
+
+  const syncScrollShadows = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScrollUp(el.scrollTop > 10);
+    setCanScrollDown(el.scrollHeight - el.scrollTop - el.clientHeight > 12);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const raf = requestAnimationFrame(syncScrollShadows);
+    window.addEventListener("resize", syncScrollShadows);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", syncScrollShadows);
+    };
+  }, [open, syncScrollShadows]);
 
   function handleClose() {
     if (dontShowAgain) {
@@ -27,26 +44,60 @@ export default function ForewordModal() {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-      <DialogContent
-        className="w-[min(92vw,720px)] max-w-none rounded-xl border-border bg-card p-0 gap-0 max-h-[86vh] flex flex-col overflow-hidden shadow-2xl"
-      >
-        <DialogHeader className="border-b border-border/60 px-5 py-4 text-left shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <BookOpen className="w-4 h-4" />
-            </span>
-            <div className="min-w-0">
-              <DialogTitle className="text-base font-semibold text-foreground">项目介绍</DialogTitle>
-              <DialogDescription className="mt-0.5 text-xs text-muted-foreground">
-                项目缘起。读完后默认不再自动弹出，可在需要时重新查看文档。
-              </DialogDescription>
+    <MotionModal
+      open={open}
+      onClose={handleClose}
+      ariaLabel="项目介绍"
+      className="w-[min(92vw,720px)] max-w-none max-h-[86vh] flex flex-col overflow-hidden rounded-3xl border-border/80 bg-card/98 p-0 shadow-2xl"
+    >
+      <header className="relative flex items-start justify-between gap-3 border-b border-border/60 bg-gradient-to-b from-primary/[0.04] to-transparent px-6 py-4.5 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="section-chip h-9.5 w-9.5 rounded-2xl">
+            <BookOpen className="w-4.5 h-4.5" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold tracking-tight text-foreground">
+                项目介绍
+              </h2>
+              <span className="rounded-full border border-primary/20 bg-primary/8 px-2 py-0.5 text-[10px] font-medium text-primary">
+                项目缘起
+              </span>
             </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              读完后默认不再自动弹出，可在需要时重新查看文档。
+            </p>
           </div>
-        </DialogHeader>
+        </div>
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="关闭前序"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted/75 hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
 
-        <ScrollArea className="h-0 flex-1 overflow-hidden">
-          <div className="px-6 py-5 text-[0.9375rem] text-foreground/90 leading-7 space-y-5">
+      <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-x-0 top-0 z-10 h-9 bg-gradient-to-b from-card via-card/80 to-transparent transition-opacity duration-300 ${
+            canScrollUp ? "opacity-100" : "opacity-0"
+          }`}
+        />
+        <div
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-x-0 bottom-0 z-10 h-11 bg-gradient-to-t from-card via-card/85 to-transparent transition-opacity duration-300 ${
+            canScrollDown ? "opacity-100" : "opacity-0"
+          }`}
+        />
+
+        <div
+          ref={scrollRef}
+          onScroll={syncScrollShadows}
+          className="panel-scrollbar flex-1 min-h-0 overflow-y-auto px-6 sm:px-8 py-6 text-[0.9375rem] text-foreground/90 leading-[1.9] space-y-5"
+        >
             <blockquote className="rounded-lg border-l-2 border-primary/50 bg-muted/30 px-4 py-3 text-muted-foreground text-sm leading-7">书中人是一个面向虚构角色与交互叙事的创作空间。</blockquote>
 
             <div className="h-px bg-border/60" />
@@ -213,22 +264,23 @@ export default function ForewordModal() {
             <p>然后给这个角色一个具体的地点与目标。</p>
 
             <p className="text-right text-muted-foreground text-xs mt-2">再问一个能够继续讨论的问题。</p>
-          </div>
-        </ScrollArea>
-
-        <div className="border-t border-border/60 bg-card px-5 py-4 space-y-4 shrink-0">
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-            <Checkbox
-              checked={dontShowAgain}
-              onCheckedChange={(v) => setDontShowAgain(v === true)}
-            />
-            <span className="text-sm text-muted-foreground">下次不再弹出</span>
-          </label>
-          <Button className="w-full rounded-xl" onClick={handleClose}>
-            我已阅读
-          </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+
+      <footer className="border-t border-border/60 bg-muted/15 px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3.5 shrink-0">
+        <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
+          <Checkbox
+            checked={dontShowAgain}
+            onCheckedChange={(v) => setDontShowAgain(v === true)}
+          />
+          <span className="text-xs sm:text-sm text-muted-foreground hover:text-foreground transition-colors">
+            下次不再自动弹出
+          </span>
+        </label>
+        <Button className="w-full sm:w-auto sm:min-w-36 rounded-xl shadow-xs" onClick={handleClose}>
+          我已阅读
+        </Button>
+      </footer>
+    </MotionModal>
   );
 }

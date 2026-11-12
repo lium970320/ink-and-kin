@@ -23,17 +23,19 @@ import {
   X,
   Zap,
   ChevronDown,
-  ChevronUp,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatBeijingDateTime } from "@/lib/beijing-time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ProactivePanel from "@/components/ProactivePanel";
+import { CollapseSection, MotionModal } from "@/components/ui/motion";
+import { cn } from "@/lib/utils";
 
 interface PersonaStatePanelProps {
   personaId: number;
   onClose: () => void;
+  open?: boolean;
 }
 
 const LIFE_STATE_LABELS: Record<string, string> = {
@@ -221,21 +223,21 @@ function MetricCard({
 }) {
   const iconTones = {
     primary: "bg-primary/10 text-primary border-primary/20",
-    amber: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-    emerald: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-    indigo: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20",
+    amber: "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25",
+    emerald: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25",
+    indigo: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-500/25",
   };
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border/60 bg-muted/30 p-3.5 shadow-2xs transition-all duration-200 hover:bg-muted/50 hover:border-border">
+    <div className="relative overflow-hidden rounded-2xl border border-border/65 bg-muted/25 p-3.5 shadow-2xs transition-colors duration-200 hover:bg-muted/45 hover:border-border">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] font-semibold text-muted-foreground">{label}</span>
         <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border ${iconTones[color]}`}>
           <Icon className="h-3.5 w-3.5" />
         </span>
       </div>
-      <div className="mt-2 text-base font-bold tracking-tight text-foreground font-sans">{value}</div>
-      {note && <div className="mt-1 text-[10px] leading-tight text-muted-foreground font-medium">{note}</div>}
+      <div className="mt-2 text-base font-bold tracking-tight text-foreground font-sans tabular-nums">{value}</div>
+      {note && <div className="mt-1 text-[10px] leading-tight text-muted-foreground font-medium tabular-nums">{note}</div>}
     </div>
   );
 }
@@ -255,10 +257,17 @@ function CollapsibleCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-xl border border-border bg-card shadow-xs transition-all overflow-hidden">
-      <div
-        className="flex items-center justify-between gap-3 px-4 py-3.5 cursor-pointer select-none hover:bg-muted/20 transition-colors"
-        onClick={() => setOpen(!open)}
+    <div
+      className={cn(
+        "rounded-2xl border bg-card/95 shadow-xs transition-colors overflow-hidden",
+        open ? "border-border/85" : "border-border/70"
+      )}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(prev => !prev)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left cursor-pointer select-none hover:bg-muted/25 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 focus-visible:ring-inset"
       >
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex h-7.5 w-7.5 shrink-0 items-center justify-center rounded-lg bg-primary/8 text-primary border border-primary/15">
@@ -266,20 +275,21 @@ function CollapsibleCard({
           </span>
           <h3 className="truncate text-xs font-bold text-foreground tracking-wide uppercase">{title}</h3>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {aside}
-          {open ? (
-            <ChevronUp className="h-4 w-4 text-muted-foreground/80" />
-          ) : (
-            <ChevronDown className="h-4 w-4 text-muted-foreground/80" />
-          )}
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 text-muted-foreground/80 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]",
+              open && "rotate-180"
+            )}
+          />
         </div>
-      </div>
-      {open && (
-        <div className="p-4 border-t border-border bg-card animate-fade-in space-y-4">
+      </button>
+      <CollapseSection open={open}>
+        <div className="p-4 border-t border-border/65 bg-card space-y-4">
           {children}
         </div>
-      )}
+      </CollapseSection>
     </div>
   );
 }
@@ -388,10 +398,10 @@ function diagnosticsTone(value: unknown): "neutral" | "good" | "warn" | "info" |
   return "neutral";
 }
 
-export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePanelProps) {
+export default function PersonaStatePanel({ personaId, onClose, open = true }: PersonaStatePanelProps) {
   const { data: runtime, isLoading, refetch, isFetching } = trpc.persona.getRuntimeState.useQuery(
     { id: personaId },
-    { refetchOnWindowFocus: false },
+    { enabled: open && personaId > 0, refetchOnWindowFocus: false },
   );
   const utils = trpc.useUtils();
   const setRuntime = trpc.persona.setRuntimeState.useMutation({ retry: false });
@@ -519,20 +529,24 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
     : runtimeState?.status || runtime?.scheduleState?.stateId;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-sm animate-fade-in" onClick={onClose} />
-
-      <aside className="relative flex h-full max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-border bg-card text-foreground shadow-2xl animate-modal-pop z-10" onClick={e => e.stopPropagation()}>
+    <MotionModal
+      open={open}
+      onClose={onClose}
+      ariaLabel="角色运行诊断"
+      containerClassName="p-3 sm:p-5"
+      className="flex h-full max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border-border/80 bg-card/98 p-0 text-foreground shadow-2xl"
+    >
+      <aside className="flex h-full max-h-[88vh] w-full flex-col overflow-hidden">
         {/* Header (Aligned with MemoryTimeline & SourceLibrary standards) */}
-        <div className="flex items-center justify-between px-6 py-4.5 border-b border-border/60 bg-card shrink-0 z-10">
+        <div className="flex items-center justify-between px-6 py-4.5 border-b border-border/60 bg-gradient-to-b from-primary/[0.03] to-transparent shrink-0 z-10">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-500/12 text-blue-600 dark:text-blue-400 flex items-center justify-center shadow-xs">
+            <div className="w-10 h-10 rounded-2xl bg-sky-500/12 text-sky-700 dark:text-sky-300 border border-sky-500/20 flex items-center justify-center shadow-2xs">
               <Activity className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-bold text-base text-foreground tracking-tight">角色运行诊断</h3>
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold border border-emerald-500/20 shadow-2xs">
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-semibold border border-emerald-500/25 shadow-2xs">
                   正常运行中
                 </span>
               </div>
@@ -544,6 +558,7 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={() => refetch()}
               disabled={isFetching}
               className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 bg-muted/60 hover:bg-muted text-foreground border border-border/70 rounded-xl transition-all shadow-2xs disabled:opacity-50"
@@ -552,7 +567,9 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
               刷新
             </button>
             <button
+              type="button"
               onClick={onClose}
+              aria-label="关闭诊断面板"
               className="w-8.5 h-8.5 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors ml-1"
             >
               <X className="w-4.5 h-4.5" />
@@ -700,13 +717,13 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                     </div>
 
                     {reflection.replyStrategy && (
-                      <div className="rounded-xl border border-amber-500/15 bg-gradient-to-r from-amber-500/5 via-orange-500/5 to-transparent p-3.5 space-y-1.5 backdrop-blur-xs">
-                        <div className="flex items-center gap-2 text-[10px] font-bold text-amber-600 dark:text-primary tracking-wide uppercase">
+                      <div className="rounded-xl border border-amber-500/25 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent p-3.5 space-y-1.5 backdrop-blur-xs">
+                        <div className="flex items-center gap-2 text-[10px] font-bold text-amber-700 dark:text-amber-300 tracking-wide uppercase">
                           <span className="relative flex h-2 w-2">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
                           </span>
-                          <Route className="h-3.5 w-3.5 text-amber-500" />
+                          <Route className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                           回复策略 (Strategy)
                         </div>
                         <p className="text-xs text-foreground/85 leading-relaxed font-sans pl-5">{replyStrategyLabel(reflection.replyStrategy)}</p>
@@ -821,11 +838,11 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                         </div>
                       </div>
 
-                      {/* 角色回复 (Bot Response Bubble) */}
+                      {/* 分身回复 (Bot Response Bubble) */}
                       <div className="flex flex-col items-start gap-1.5 max-w-[90%] mr-auto">
                         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground font-bold uppercase tracking-wider">
                           <span className="h-1.5 w-1.5 rounded-full bg-amber-500/80" />
-                          <span>角色 (Bot)</span>
+                          <span>分身 (Bot)</span>
                         </div>
                         <div className="rounded-[18px] rounded-tl-[3px] bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/15 dark:border-amber-500/25 text-foreground px-4 py-2.5 leading-relaxed text-left break-words w-full font-sans">
                           {diag.replyPreview || "暂无回复"}
@@ -932,14 +949,14 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                   </div>
 
                   {runtimeState?.status && (
-                    <div className="relative overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 backdrop-blur-md">
+                    <div className="relative overflow-hidden rounded-xl border border-amber-500/25 bg-amber-500/10 p-3.5 backdrop-blur-md">
                       <div className="absolute top-0 right-0 h-16 w-16 bg-amber-500/10 rounded-full blur-xl -mr-6 -mt-6" />
-                      <div className="flex items-center gap-2 text-xs font-bold text-amber-700 dark:text-primary">
+                      <div className="flex items-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-300">
                         <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
                         </span>
-                        <Timer className="h-3.5 w-3.5 text-amber-500" />
+                        <Timer className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
                         临时状态：{stateLabel(runtimeState.status)}
                       </div>
                       <p className="mt-1.5 text-xs text-muted-foreground font-medium pl-5">
@@ -1012,7 +1029,7 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                         </div>
 
                         {randomizedSlots.length > 0 ? (
-                          <div className="overflow-x-auto rounded-lg border border-border/70 bg-background/40">
+                          <div className="panel-scrollbar overflow-x-auto rounded-lg border border-border/70 bg-background/40">
                             <div className="min-w-[34rem] divide-y divide-border/45">
                               <div className="grid grid-cols-[7rem_7rem_8rem_5rem_minmax(0,1fr)] gap-2 bg-muted/40 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                                 <span>日期</span>
@@ -1241,33 +1258,33 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                       <div className="grid grid-cols-2 gap-2.5 self-start">
                         <div className="flex flex-col justify-between rounded-xl border border-border/70 bg-muted/5 p-3 hover:bg-muted/10 transition-colors">
                           <span className="text-[10px] font-bold text-muted-foreground uppercase">活跃记忆</span>
-                          <span className="mt-1 text-base font-extrabold text-foreground font-mono">{runtime.memoryStats?.active ?? 0}</span>
+                          <span className="mt-1 text-base font-extrabold text-foreground font-mono tabular-nums">{runtime.memoryStats?.active ?? 0}</span>
                         </div>
                         <div className="flex flex-col justify-between rounded-xl border border-border/70 bg-muted/5 p-3 hover:bg-muted/10 transition-colors">
-                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase">高重要度</span>
-                          <span className="mt-1 text-base font-extrabold text-foreground font-mono">{runtime.memoryStats?.highImportance ?? 0}</span>
+                          <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 uppercase">高重要度</span>
+                          <span className="mt-1 text-base font-extrabold text-foreground font-mono tabular-nums">{runtime.memoryStats?.highImportance ?? 0}</span>
                         </div>
                         <div className="flex flex-col justify-between rounded-xl border border-border/70 bg-muted/5 p-3 hover:bg-muted/10 transition-colors">
-                          <span className="text-[10px] font-bold text-amber-600 dark:text-primary uppercase">低可信度</span>
-                          <span className="mt-1 text-base font-extrabold text-foreground font-mono">{runtime.memoryStats?.lowConfidence ?? 0}</span>
+                          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase">低可信度</span>
+                          <span className="mt-1 text-base font-extrabold text-foreground font-mono tabular-nums">{runtime.memoryStats?.lowConfidence ?? 0}</span>
                         </div>
                         <div className="flex flex-col justify-between rounded-xl border border-border/70 bg-muted/5 p-3 hover:bg-muted/10 transition-colors">
-                          <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase">近期读取</span>
-                          <span className="mt-1 text-base font-extrabold text-foreground font-mono">{runtime.memoryStats?.recentlyAccessed ?? 0}</span>
+                          <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300 uppercase">近期读取</span>
+                          <span className="mt-1 text-base font-extrabold text-foreground font-mono tabular-nums">{runtime.memoryStats?.recentlyAccessed ?? 0}</span>
                         </div>
                       </div>
 
                       {/* 召回列表 */}
                       <div className="min-w-0">
                         {runtime.recentlyAccessedMemories?.length ? (
-                          <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                          <div className="panel-scrollbar space-y-1.5 max-h-60 overflow-y-auto pr-1">
                             {runtime.recentlyAccessedMemories.slice(0, 5).map((memory: any) => (
                               <div key={memory.id} className="group relative pl-3.5 border-l border-primary/20 py-2 hover:bg-muted/10 transition-colors border-b border-dashed border-border/40 last:border-0">
                                 <div className="absolute left-0 top-[14px] -translate-x-1/2 h-1.5 w-1.5 rounded-full bg-primary/60 transition-transform group-hover:scale-125" />
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">{memory.title}</span>
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/8 text-amber-600 dark:text-primary font-medium border border-amber-500/15 scale-95 origin-left">重要 {memory.importance || 3}</span>
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/8 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/15 scale-95 origin-left">可信 {memory.confidence || 3}</span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300 font-medium border border-amber-500/25 tabular-nums">重要 {memory.importance || 3}</span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium border border-emerald-500/25 tabular-nums">可信 {memory.confidence || 3}</span>
                                 </div>
                                 {memory.description && (
                                   <p className="text-[11px] mt-1.5 leading-relaxed text-muted-foreground/90 font-sans">{memory.description}</p>
@@ -1389,7 +1406,7 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
                               <span className="text-right">Tokens</span>
                               <span className="text-right">状态</span>
                             </div>
-                            <div className="max-h-48 overflow-y-auto divide-y divide-border/40">
+                            <div className="panel-scrollbar max-h-48 overflow-y-auto divide-y divide-border/40">
                               {llmUsage.recent.slice(0, 10).map((item: any) => (
                                 <div key={item.id} className="grid grid-cols-[7.5rem_minmax(0,1fr)_4.5rem_4.5rem] gap-2 px-3.5 py-2.5 text-xs items-center hover:bg-muted/10 transition-colors">
                                   <span className="text-muted-foreground font-mono text-[10.5px]">{formatTime(item.startedAt)}</span>
@@ -1447,6 +1464,6 @@ export default function PersonaStatePanel({ personaId, onClose }: PersonaStatePa
           )}
         </div>
       </aside>
-    </div>
+    </MotionModal>
   );
 }

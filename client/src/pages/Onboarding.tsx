@@ -92,13 +92,13 @@ export default function Onboarding() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4 py-12">
+    <div className="min-h-dvh bg-background flex items-center justify-center px-4 py-12">
       <div className="w-full max-w-xl">
         <div className="mb-8 text-center">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10 text-primary mb-4">
             <Sparkles className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-semibold text-foreground mb-2">
+          <h1 className="page-title text-2xl font-semibold text-foreground mb-2">
             {step === "provider" ? t("onboarding.title") : step === "persona" ? t("onboarding.titlePersona") : t("onboarding.titleDone")}
           </h1>
           <p className="text-sm text-muted-foreground">

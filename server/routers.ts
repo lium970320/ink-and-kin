@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { sceneImageConfigRouter } from "./scene-image/router";
+import { prepareSceneImageRequest, startSceneImageJob, cancelSceneImageOperation } from "./scene-image/service";
+import { uploadSceneImageReference, readSceneImageAsset, sceneImageReferenceKey, deleteSceneImageReference } from "./scene-image/assets";
 import { voiceConfigRouter } from "./voice/router";
 import { voiceOperations } from "./media/operations";
 import { decodeVoiceBase64, transcribeForUser, voiceFailure } from "./voice/service";
@@ -788,6 +792,8 @@ export const appRouter = router({
       }),
   }),
 
+  sceneImageConfig: sceneImageConfigRouter,
+
   chat: router({
     ...contextProcedures,
     getHistory: protectedProcedure
@@ -799,40 +805,35 @@ export const appRouter = router({
       }),
 
     send: protectedProcedure.use(rateLimit(RATE_LIMITS.llm))
-      .input(z.object({
-        personaId: z.number(),
-        message: z.string().min(1).max(2000),
-        // The interface language. It decides which emotion triggers the
-        // heuristic uses and which language the prompt is written in.
-        locale: z.enum(["zh", "en"]).default("zh"),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        const persona = await getPersonaById(input.personaId, ctx.user.id);
-        if (!persona) throw new TRPCError({ code: "NOT_FOUND" });
-        if (persona.analysisStatus !== "ready") throw new TRPCError({ code: "BAD_REQUEST", message: "分身还未准备好，请先完成 AI 解析" });
-
-        let reply = "";
-        let emotionalState: string = persona.emotionalState;
-        let graduationSuggested = false;
-        let careNote = null;
-
-        for await (const event of runConversation({
-          persona,
-          userId: ctx.user.id,
-          message: input.message,
-          providerName: (persona as any).llmProvider || undefined,
-          mode: "once",
-          locale: input.locale,
-        })) {
-          if (event.type === "delta") reply += event.text;
-          else if (event.type === "emotion") emotionalState = event.state;
-          else if (event.type === "done") {
-            graduationSuggested = event.graduationSuggested;
-            careNote = event.careNote;
+      .input(z.object({ personaId:z.number(),message:z.string().min(1).max(2000),locale:z.enum(["zh","en"]).default("zh"),
+        operationId:z.string().uuid().optional(),expectedSceneId:z.number().int().positive().nullable().optional() }))
+      .mutation(async ({ctx,input})=>{
+        const persona=await getPersonaById(input.personaId,ctx.user.id);
+        if(!persona)throw new TRPCError({code:"NOT_FOUND"});
+        if(persona.analysisStatus!=="ready")throw new TRPCError({code:"BAD_REQUEST",message:"分身还未准备好，请先完成 AI 解析"});
+        const operationId=input.operationId ?? randomUUID();
+        const prepared=await prepareSceneImageRequest({...input,userId:ctx.user.id,operationId,channel:"web"});
+        let reply="",emotionalState:string=persona.emotionalState,graduationSuggested=false,careNote=null;
+        let completed=false,failed=false,crisis=false;
+        try {
+          for await(const event of runConversation({persona,userId:ctx.user.id,message:prepared.message,
+            providerName:(persona as any).llmProvider || undefined,mode:"once",locale:input.locale,
+            expectedContextRevision:prepared.contextRevision})){
+            if(event.type==="delta")reply+=event.text;
+            else if(event.type==="emotion")emotionalState=event.state;
+            else if(event.type==="error")failed=true;
+            else if(event.type==="done"){completed=true;crisis=event.crisis;graduationSuggested=event.graduationSuggested;careNote=event.careNote;}
           }
+        }catch(error){if(prepared.request)await cancelSceneImageOperation(ctx.user.id,operationId).catch(()=>{});throw error;}
+        let sceneImageJobId:string|undefined,sceneImageError:string|undefined=prepared.errorMessage,sceneImagePending=false;
+        if(prepared.request){
+          if(completed && !failed && !crisis && reply.trim()){
+            try {const job=await startSceneImageJob(prepared.request,{reply});sceneImageJobId=job.id;
+              sceneImagePending=job.status==="pending" || job.status==="running";sceneImageError=job.errorMessage;
+            }catch{sceneImageError="文字已完成，配图任务未能启动。";await cancelSceneImageOperation(ctx.user.id,operationId).catch(()=>{});}
+          }else{sceneImageError=crisis?"本次仅提供文字回应。":"文字回复未完成，本次没有启动配图。";await cancelSceneImageOperation(ctx.user.id,operationId).catch(()=>{});}
         }
-
-        return { reply, emotionalState, graduationSuggested, careNote };
+        return {reply,emotionalState,graduationSuggested,careNote,sceneImageJobId,sceneImagePending,sceneImageError};
       }),
 
     sendImage: protectedProcedure.use(rateLimit(RATE_LIMITS.llm))
@@ -1962,22 +1963,16 @@ export const appRouter = router({
         if (!scene || scene.isBuiltin || scene.userId !== ctx.user.id) {
           throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在或不可编辑（内置场景不能改）" });
         }
-        const buffer = Buffer.from(input.fileContent, "base64");
-        if (buffer.byteLength === 0 || buffer.byteLength > SCENE_IMAGE_REFERENCE_MAX_BYTES) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "场景资产图必须是小于 10 MB 的 PNG、JPEG 或 WebP 图片" });
-        }
-        const extension = detectSceneImageReferenceExtension(buffer, input.mimeType);
-        if (!extension) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "场景资产图内容与所选图片格式不一致" });
-        }
-        const key = `scene-image-assets/${ctx.user.id}/${input.sceneId}/${input.assetType}-${Date.now()}-${nanoid(10)}.${extension}`;
-        const { url } = await storagePut(key, buffer, input.mimeType);
+        const {key,url}=await uploadSceneImageReference(ctx.user.id,input.fileContent,input.mimeType);
         const field = input.assetType === "persona"
           ? "scenePersonaRefKey"
           : input.assetType === "user"
             ? "sceneUserRefKey"
             : "sceneEnvRefKey";
-        await updateScene(input.sceneId, ctx.user.id, { [field]: key } as Partial<InsertScene>);
+        try {
+          const updated=await updateScene(input.sceneId, ctx.user.id, { [field]: key } as Partial<InsertScene>);
+          if(!updated)throw new TRPCError({code:"NOT_FOUND",message:"场景已删除或不可编辑。"});
+        }catch(error){await deleteSceneImageReference(ctx.user.id,key).catch(()=>{});throw error;}
         return { key, url };
       }),
 
@@ -1990,18 +1985,21 @@ export const appRouter = router({
         const normalized: Record<string, unknown> = { ...rest };
         if (rest.scenePersonaRefKey !== undefined) {
           normalized.scenePersonaRefKey = rest.scenePersonaRefKey
-            ? normalizeSceneImageReferenceKey(rest.scenePersonaRefKey, ctx.user.id)
+            ? sceneImageReferenceKey(ctx.user.id, rest.scenePersonaRefKey)
             : null;
         }
         if (rest.sceneEnvRefKey !== undefined) {
           normalized.sceneEnvRefKey = rest.sceneEnvRefKey
-            ? normalizeSceneImageReferenceKey(rest.sceneEnvRefKey, ctx.user.id)
+            ? sceneImageReferenceKey(ctx.user.id, rest.sceneEnvRefKey)
             : null;
         }
         if (rest.sceneUserRefKey !== undefined) {
           normalized.sceneUserRefKey = rest.sceneUserRefKey
-            ? normalizeSceneImageReferenceKey(rest.sceneUserRefKey, ctx.user.id)
+            ? sceneImageReferenceKey(ctx.user.id, rest.sceneUserRefKey)
             : null;
+        }
+        for(const key of [normalized.scenePersonaRefKey,normalized.sceneUserRefKey,normalized.sceneEnvRefKey]) {
+          if(typeof key === "string")await readSceneImageAsset(ctx.user.id,key);
         }
         const updated = await updateScene(id, ctx.user.id, normalized as Partial<InsertScene>);
         if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "场景不存在或不可编辑（内置场景不能改）" });

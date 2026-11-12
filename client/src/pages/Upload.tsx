@@ -1,3 +1,5 @@
+import { motion, useReducedMotion } from "framer-motion";
+import { EASE_OUT_EXPO } from "@/components/ui/motion";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useLocation, useParams } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -44,6 +46,7 @@ function getMimeType(file: File, fileType: string): string {
 }
 
 export default function Upload() {
+  const reduceMotion = useReducedMotion();
   const params = useParams<{ id: string }>();
   const personaId = parseInt(params.id || "0");
   const [, navigate] = useLocation();
@@ -154,7 +157,8 @@ export default function Upload() {
   const visibleUploads = Object.entries(uploadingFiles).filter(([key]) => uploadDetails[key]?.personaId === personaId && uploadDetails[key]?.category === materialCategory);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-dvh relative bg-background">
+      <div aria-hidden="true" className="gradient-mesh-bg" />
       <header className="sticky top-0 z-40 app-header">
         <div className="container app-nav">
           <button onClick={() => navigate("/")}
@@ -171,8 +175,8 @@ export default function Upload() {
         </div>
       </header>
 
-      <main className="container py-8 max-w-2xl mx-auto">
-        <div className="warm-card p-1.5 mb-5 flex gap-1.5" role="group" aria-label="资料分类">
+      <main className="container relative z-10 py-6 sm:py-8 max-w-2xl mx-auto space-y-5">
+        <div className="warm-card warm-card-static rounded-2xl border border-border/70 p-1.5 flex gap-1.5" role="group" aria-label="资料分类">
           <Button type="button" variant={materialCategory === "persona" ? "default" : "ghost"}
             aria-pressed={materialCategory === "persona"} onClick={() => { setMaterialCategory("persona"); setDragOver(false); }}
             className="flex-1 rounded-xl text-sm">角色分析材料</Button>
@@ -182,7 +186,7 @@ export default function Upload() {
         </div>
         {/* Analysis Status */}
         {materialCategory === "persona" && (isReady ? (
-          <div className="warm-card p-5 mb-6 flex items-center justify-between animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 flex items-center justify-between animate-fade-in-up">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="w-6 h-6 text-emerald-500" />
               <div>
@@ -196,7 +200,7 @@ export default function Upload() {
             </Button>
           </div>
         ) : isAnalyzing ? (
-          <div className="warm-card p-5 mb-6 animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 animate-fade-in-up">
             <div className="flex items-center gap-3 mb-3">
               <Loader2 className="w-5 h-5 text-primary animate-spin" />
               <p className="text-foreground font-medium">AI 正在解析中...</p>
@@ -208,7 +212,7 @@ export default function Upload() {
             <p className="text-right text-xs text-muted-foreground mt-1">{analysisStatus?.progress || 0}%</p>
           </div>
         ) : analysisStatus?.status === "error" ? (
-          <div className="warm-card p-5 mb-6 border-destructive/20 animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 border-destructive/20 animate-fade-in-up">
             <div className="flex items-center gap-3">
               <AlertCircle className="w-5 h-5 text-destructive" />
               <p className="text-muted-foreground text-sm">{analysisStatus?.message || "解析失败，请重试"}</p>
@@ -217,7 +221,7 @@ export default function Upload() {
         ) : null)}
 
         {materialCategory === "source" && (
-          <div className="warm-card p-5 mb-6 animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 animate-fade-in-up">
             <p className="text-foreground font-medium mb-2">原文资料用于检索</p>
             <p className="text-muted-foreground text-sm leading-relaxed">
               保存规范化后的原文并分块检索，不触发角色蒸馏。EPUB 会提取正文，不提供原始 EPUB 文件下载。
@@ -227,8 +231,15 @@ export default function Upload() {
         )}
 
         {/* Drop Zone */}
-        <div
-          className={`warm-card p-8 mb-5 text-center border-2 border-dashed transition-all cursor-pointer animate-fade-in-up ${
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.38, ease: EASE_OUT_EXPO }}
+          role="button"
+          tabIndex={0}
+          aria-label="选择要上传的资料"
+          onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInputRef.current?.click(); } }}
+          className={`warm-card warm-card-static relative overflow-hidden rounded-3xl p-8 sm:p-10 text-center border-2 border-dashed transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-primary ${
             dragOver ? "border-primary/60 bg-primary/5" : "border-border hover:border-primary/30"
           }`}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
@@ -236,16 +247,18 @@ export default function Upload() {
           onDrop={onDrop}
           onClick={() => fileInputRef.current?.click()}
         >
-          <UploadIcon className={`w-10 h-10 mx-auto mb-3 transition-colors ${dragOver ? "text-primary" : "text-muted-foreground/30"}`} />
+          <span className="section-chip mx-auto mb-4 h-14 w-14 rounded-2xl">
+            <UploadIcon className={`h-6 w-6 transition-colors ${dragOver ? "text-primary" : "text-muted-foreground"}`} />
+          </span>
           <p className="text-foreground/70 font-medium mb-1">拖拽文件到这里，或点击选择</p>
           <p className="text-muted-foreground text-sm">{materialCategory === "source" ? "支持 .txt、.md、.markdown、.epub，单个文件不超过 20 MiB" : "支持 .txt、.csv、图片、视频"}</p>
           <input key={materialCategory} ref={fileInputRef} type="file" accept={materialCategory === "source" ? SOURCE_ACCEPT : ALL_ACCEPT}
             multiple className="hidden" onChange={e => { if (e.target.files) void handleFiles(e.target.files); e.currentTarget.value = ""; }} />
-        </div>
+        </motion.div>
 
         {/* Uploaded Files */}
         {materialCategory === "persona" && hasFiles && (
-          <div className="warm-card p-5 mb-5 animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 sm:p-6 animate-fade-in-up">
             <p className="text-foreground/70 text-sm font-medium mb-3">已上传文件 ({files?.length})</p>
             <div className="space-y-2">
               {files?.map((f: any) => {
@@ -264,7 +277,7 @@ export default function Upload() {
         )}
 
         {materialCategory === "source" && (
-          <div className="warm-card p-5 mb-5 animate-fade-in-up">
+          <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5 sm:p-6 animate-fade-in-up">
             <div className="flex items-center justify-between gap-3 mb-3">
               <p className="text-foreground/70 text-sm font-medium">原文资料 ({sourceDocuments.data?.length ?? 0})</p>
               <Button type="button" size="sm" variant="ghost" className="rounded-xl text-xs" disabled={sourceDocuments.isFetching}
@@ -305,7 +318,7 @@ export default function Upload() {
 
         {/* Uploading */}
         {visibleUploads.length > 0 && (
-          <div className="warm-card p-4 mb-5 animate-fade-in">
+          <div className="warm-card warm-card-static rounded-2xl border border-primary/20 bg-primary/[0.04] p-4 animate-fade-in">
             <div className="space-y-3">
               {visibleUploads.map(([key, status]) => (
                 <div key={key}>

@@ -1,4 +1,5 @@
-import { Suspense, lazy, useEffect } from "react";
+import { MotionConfig } from "framer-motion";
+import { Suspense, lazy } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Switch, useLocation } from "wouter";
@@ -46,34 +47,10 @@ function Router() {
   );
 }
 
-function useClickRipple() {
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement)?.closest?.("button");
-      if (!target || (target as HTMLButtonElement).disabled) return;
-      if (!String(target.className).includes("bg-primary")) return;
-      const rect = target.getBoundingClientRect();
-      const size = Math.max(rect.width, rect.height) * 1.2;
-      const span = document.createElement("span");
-      span.className = "ripple-ink";
-      span.style.width = span.style.height = `${size}px`;
-      span.style.left = `${e.clientX - rect.left - size / 2}px`;
-      span.style.top = `${e.clientY - rect.top - size / 2}px`;
-      const cs = getComputedStyle(target);
-      if (cs.position === "static") target.style.position = "relative";
-      if (cs.overflow !== "hidden") target.style.overflow = "hidden";
-      target.appendChild(span);
-      setTimeout(() => span.remove(), 600);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-}
-
 function App() {
-  useClickRipple();
   return (
     <ErrorBoundary>
+      <MotionConfig reducedMotion="user">
       <ThemeProvider defaultTheme="light" switchable>
         <LocaleProvider>
           <TooltipProvider>
@@ -82,6 +59,7 @@ function App() {
           </TooltipProvider>
         </LocaleProvider>
       </ThemeProvider>
+    </MotionConfig>
     </ErrorBoundary>
   );
 }
