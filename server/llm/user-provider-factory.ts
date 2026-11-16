@@ -14,6 +14,12 @@ const DEFAULTS: Record<string, [string, string]> = {
   atlas: ["https://api.atlascloud.ai/v1", "google/gemini-3-flash-preview"], cheaperinference: ["https://api.cheaperinference.com/v1", "gpt-5.4-mini"],
   gemini: ["https://generativelanguage.googleapis.com/v1beta/openai", ""], grok: ["https://api.x.ai/v1", ""],
 };
+export function defaultUserProviderUrl(name: string): string | undefined {
+  const key = name.toLowerCase();
+  if (key === "ollama") return "http://localhost:11434";
+  return Object.hasOwn(DEFAULTS, key) ? DEFAULTS[key][0] : undefined;
+}
+
 export function isOpenCodeZenEndpoint(baseUrl?: string) { if (!baseUrl) return false; try { const url = new URL(baseUrl); return (url.hostname === "opencode.ai" || url.hostname.endsWith(".opencode.ai")) && /^\/zen(?:\/|$)/.test(url.pathname); } catch { return false; } }
 function optionsPurpose(options?: LLMOptions) { return (options?.purpose ?? options?.usageContext?.purpose) as LLMPurpose | undefined; }
 export function createUserConfiguredLlmProvider(config: UserProviderConfig, reasoning = readReasoningConfig(config.extraConfig), dynamic = false): LLMProvider | undefined {
@@ -24,7 +30,9 @@ export function createUserConfiguredLlmProvider(config: UserProviderConfig, reas
       isConfigured: () => !!config.apiKey, getModel: options => choose(options).getModel!(), getProviderName: options => choose(options).name,
       getConfigSummary: options => choose(options).getConfigSummary!(options), getRelayId: () => config.relayId,
       listModels: options => choose().listModels!(options),
-      invoke: (messages, options) => choose(options).invoke(messages, options), stream: (messages, options) => choose(options).stream!(messages, options) };
+      invoke: (messages, options) => choose(options).invoke(messages, options),
+      invokeDetailed: (messages, options) => choose(options).invokeDetailed!(messages, options),
+      stream: (messages, options) => choose(options).stream!(messages, options) };
   }
   let provider: LLMProvider;
   if (key === "ollama") { if (!config.baseUrl || !config.model) return undefined; provider = new OllamaProvider(config.baseUrl, config.model); }

@@ -488,6 +488,29 @@ export async function getMessagesByPersonaId(personaId: number, userId: number, 
   return rows.reverse();
 }
 
+/** 日常时间回溯沿用聊天上下文的归属、起点和手动排除。 */
+export async function getDailyMessagesInTimeRange(
+  personaId: number, userId: number, startAt: Date, endAt: Date, excludedMessageId?: number,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  const rows = await db.select({ id: messages.id, role: messages.role, content: messages.content, createdAt: messages.createdAt })
+    .from(messages)
+    .innerJoin(personas, and(eq(personas.id, messages.personaId), eq(personas.userId, messages.userId)))
+    .leftJoin(chatContextStates, and(eq(chatContextStates.personaId, messages.personaId), eq(chatContextStates.userId, messages.userId)))
+    .where(and(
+      eq(messages.personaId, personaId), eq(messages.userId, userId), eq(messages.mode, "daily"),
+      isNull(messages.sceneId), eq(messages.messageType, "text"), inArray(messages.role, ["user", "assistant"]),
+      excludedMessageId === undefined ? undefined : sql`${messages.id} <> ${excludedMessageId}`,
+      gte(messages.createdAt, startAt), lte(messages.createdAt, endAt),
+      sql`COALESCE(${messages.contextOverride}, true)`,
+      sql`COALESCE((${chatContextStates.overrides} ->> ${messages.id}::text)::boolean,
+        ${messages.id} > COALESCE(${chatContextStates.startAfterMessageId}, 0))`,
+    ))
+    .orderBy(desc(messages.createdAt), desc(messages.id)).limit(12);
+  return rows.reverse();
+}
+
 export async function clearMessagesByPersonaId(personaId: number, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
@@ -1031,6 +1054,22 @@ export async function getMemoriesByPersonaId(personaId: number, userId: number) 
     .where(and(eq(memories.personaId, personaId), eq(memories.userId, userId)))
     .orderBy(desc(memories.isPinned), desc(memories.importance), desc(memories.createdAt))
     .limit(200);
+}
+
+export async function getDatedMemoriesInRange(personaId: number, userId: number, startDate: string, endDate: string) {
+  const db = await getDb();
+  if (!db) throw new Error("DB not available");
+  const rows = await db.select({ memory: memories }).from(memories)
+    .innerJoin(personas, and(eq(personas.id, memories.personaId), eq(personas.userId, memories.userId)))
+    .where(and(
+      eq(memories.personaId, personaId), eq(memories.userId, userId), eq(memories.status, "active"),
+      gte(memories.date, startDate), lte(memories.date, endDate),
+      sql`${memories.date} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+      sql`${memories.source} <> 'source_material' AND ${memories.memoryType} <> 'source_fact'`,
+    ))
+    .orderBy(desc(memories.isPinned), desc(memories.importance), desc(memories.date), desc(memories.id))
+    .limit(64);
+  return rows.map(row => row.memory);
 }
 
 export async function deleteMemory(id: number, userId: number) {

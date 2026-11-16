@@ -3,6 +3,7 @@ import { TextDecoder } from "node:util";
 
 export const QQ_MAX_TEXT = 4000;
 export const QQ_MAX_BODY = 64 * 1024;
+export const QQ_MAX_INBOUND_IMAGES = 4;
 export const QQ_SECRET_MASK = "••••••••";
 export type DeliveryStatus = "confirmed" | "failed" | "unknown";
 export type QqErrorCode = "BAD_REQUEST" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "PRECONDITION_FAILED" | "TOO_MANY_REQUESTS";
@@ -72,7 +73,7 @@ export function verifyWebhook(raw: Buffer, signature: string | undefined, author
     && (!secrets.receiveToken || constantEqual(authorization ?? "", `Bearer ${secrets.receiveToken}`));
 }
 
-function messageId(value: unknown): string | null {
+export function messageId(value: unknown): string | null {
   const text = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
   if (typeof text !== "string" || !/^-?[0-9]{1,40}$/.test(text)) return null;
   return text.replace(/^(-?)0+(?=\d)/, "$1").replace(/^-0$/, "0");
@@ -83,6 +84,9 @@ export interface QqInboundEvent {
   text: string;
   unsupportedMedia?: boolean;
   voiceRecord?: { id: string | null };
+  quotedId?: string;
+  forwardId?: string;
+  imageUrls?: (string | null)[];
 }
 
 function recordingId(data: unknown): string | null {
@@ -93,7 +97,7 @@ function recordingId(data: unknown): string | null {
     && /^[a-f0-9]{32}(?:\.(?:amr|silk|slk|mp3|wav))?$/i.test(token) ? token : null;
 }
 
-export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = false, acceptVoice = false): QqInboundEvent {
+export function readQqEvent(raw: Buffer): Record<string, unknown> {
   if (raw.length > QQ_MAX_BODY) throw new QqError("BAD_REQUEST", "事件体积超过上限。");
   let event: Record<string, unknown>;
   try {
@@ -101,6 +105,15 @@ export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
     event = parsed as Record<string, unknown>;
   } catch { throw new QqError("BAD_REQUEST", "事件格式无效。"); }
+  return event;
+}
+
+export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = false, acceptVoice = false): QqInboundEvent {
+  return parseInboundEvent(readQqEvent(raw), config, acceptMediaNotice, acceptVoice);
+}
+
+export function parseInboundEvent(event: Record<string, unknown>, config: QqConfig,
+  acceptMediaNotice = false, acceptVoice = false, acceptReferences = false, acceptImages = false): QqInboundEvent {
   if (event.post_type !== "message" || event.message_type !== "private") {
     throw new QqError("BAD_REQUEST", "当前仅接收一对一文字消息。");
   }
@@ -114,13 +127,57 @@ export function parseInbound(raw: Buffer, config: QqConfig, acceptMediaNotice = 
   if (acceptVoice && Array.isArray(event.message) && event.message.length === 1 && event.message[0]?.type === "record") {
     return { messageId: id, text: "", voiceRecord: { id: recordingId(event.message[0].data) } };
   }
+  if (acceptImages && Array.isArray(event.message) && event.message.some(part => part?.type === "image")) {
+    const allowed = acceptReferences ? ["text", "image", "reply", "forward"] : ["text", "image"];
+    if (event.message.every(part => part && allowed.includes(part.type)
+      && (part.type !== "text" || typeof part.data?.text === "string"))) {
+      const caption = event.message.filter(part => part.type === "text").map(part => part.data.text).join("");
+      const imageUrls = event.message.filter(part => part.type === "image").slice(0, QQ_MAX_INBOUND_IMAGES)
+        .map(part => typeof part.data?.url === "string" ? part.data.url : null);
+      const quotedId = messageId(event.message.find(part => part.type === "reply")?.data?.id);
+      const forwardId = qqForwardId(event.message.find(part => part.type === "forward")?.data?.id);
+      return { messageId: id, imageUrls, ...qqReferenceText(caption, quotedId, forwardId, true) };
+    }
+  }
   if (acceptMediaNotice && Array.isArray(event.message) && event.message.length > 0
     && event.message.every(part => part && ["text", "image", "record"].includes(part.type))
     && event.message.some(part => part.type === "image" || part.type === "record")) {
     // 不读取、下载或向模型传递外部媒体地址，只让调用方回复功能提示。
     return { messageId: id, text: "", unsupportedMedia: true };
   }
+  if (acceptReferences) {
+    const rawMessage = event.message;
+    if (Array.isArray(rawMessage) && rawMessage.some(part => part?.type === "reply" || part?.type === "forward")) {
+      if (!rawMessage.every(part => part && ["text", "reply", "forward"].includes(part.type)
+        && (part.type !== "text" || typeof part.data?.text === "string"))) {
+        throw new QqError("BAD_REQUEST", "消息包含不支持的组合。");
+      }
+      const quotedId = messageId(rawMessage.find(part => part.type === "reply")?.data?.id);
+      const forwardId = qqForwardId(rawMessage.find(part => part.type === "forward")?.data?.id);
+      const text = rawMessage.filter(part => part.type === "text").map(part => part.data.text).join("");
+      return { messageId: id, ...qqReferenceText(text, quotedId, forwardId) };
+    }
+    if (typeof rawMessage === "string" && /\[CQ:(?:reply|forward),id=/i.test(rawMessage)) {
+      const quotedId = messageId(/\[CQ:reply,id=([^\],]+)\]/i.exec(rawMessage)?.[1]);
+      const forwardId = qqForwardId(/\[CQ:forward,id=([^\],]+)\]/i.exec(rawMessage)?.[1]);
+      const text = rawMessage.replace(/\[CQ:(?:reply|forward),id=[^\],]+\]/gi, "");
+      return { messageId: id, ...qqReferenceText(text, quotedId, forwardId) };
+    }
+  }
   return { messageId: id, text: plainText(event.message) };
+}
+
+function qqForwardId(value: unknown): string | null {
+  const id = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
+  return typeof id === "string" && /^[\w+/=-]{1,256}$/.test(id) ? id : null;
+}
+
+function qqReferenceText(text: string, quotedId: string | null, forwardId: string | null, allowEmpty = false) {
+  return {
+    text: text.trim() ? plainText(text) : forwardId ? "【合并转发聊天记录】" : allowEmpty ? "" : plainText(text),
+    ...(quotedId === null ? {} : { quotedId }),
+    ...(forwardId === null ? {} : { forwardId }),
+  };
 }
 
 /** Stable across retries of one signed inbound event, even after a config generation changes. */

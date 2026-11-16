@@ -4,7 +4,7 @@ import { mayRetryLLM, safeLLMError, LLMRequestError } from "./errors";
 import { readReasoningConfig } from "./reasoning";
 import { createUserConfiguredLlmProvider } from "./user-provider-factory";
 import { ENV } from "../_core/env";
-import type { LLMMessage, LLMOptions, LLMProvider, LLMStreamChunk, InvokeParams } from "./types";
+import type { LLMInvokeDetailedResult, LLMMessage, LLMOptions, LLMProvider, LLMStreamChunk, InvokeParams } from "./types";
 import { ProviderRegistry } from "./provider-registry";
 import { OpenAIProvider } from "./providers/openai";
 import { ClaudeProvider } from "./providers/claude";
@@ -243,18 +243,26 @@ export class LLMService {
     this.checkAbort(signal);
     return new Promise<void>((resolve, reject) => { const cleanup = () => signal?.removeEventListener("abort", abort); const timer = setTimeout(() => { cleanup(); resolve(); }, delay); const abort = () => { clearTimeout(timer); cleanup(); reject(new LLMRequestError("cancelled")); }; signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort(); });
   }
-  private async invokeUntracked(provider: LLMProvider, params: InvokeParams): Promise<string> {
+  private async invokeUntracked<T>(
+    provider: LLMProvider,
+    params: InvokeParams,
+    invoke: (prepared: InvokeParams) => Promise<T>,
+  ): Promise<T> {
     if (!provider.isConfigured()) throw new LLMRequestError("invalid_request");
     const attempts = Math.min(3, Math.max(1, Math.floor(provider.maxAttempts ?? 3)));
     for (let attempt = 0; attempt < attempts; attempt++) {
-      try { this.checkAbort(params.options?.signal); if (!provider.reportsAttempts) params.options?.onAttempt?.(); const text = await provider.invoke(params.messages, params.options); this.checkAbort(params.options?.signal); return text; }
+      try { this.checkAbort(params.options?.signal); if (!provider.reportsAttempts) params.options?.onAttempt?.(); const result = await invoke(params); this.checkAbort(params.options?.signal); return result; }
       catch (error) { if (attempt + 1 >= attempts || !mayRetryLLM(error, params.options?.signal)) throw error; await this.waitRetry(200 * 2 ** attempt, params.options?.signal); }
     }
     throw new LLMRequestError("unknown");
   }
   private async *streamUntracked(provider: LLMProvider, params: InvokeParams): AsyncGenerator<LLMStreamChunk> {
     if (!provider.isConfigured()) throw new LLMRequestError("invalid_request");
-    if (!provider.stream) { const text = await this.invokeUntracked(provider, params); if (text) yield { text }; return; }
+    if (!provider.stream) {
+      const text = await this.invokeUntracked(provider, params, input => provider.invoke(input.messages, input.options));
+      if (text) yield { text };
+      return;
+    }
     const attempts = Math.min(3, Math.max(1, Math.floor(provider.maxAttempts ?? 3)));
     for (let attempt = 0; attempt < attempts; attempt++) {
       let emitted = false;
@@ -266,7 +274,7 @@ export class LLMService {
     const context = resolveUsageContext(provider, params.options?.usageContext);
     const options = { ...params.options, usageContext: { ...context, purpose: params.options?.purpose ?? context.purpose }, purpose: params.options?.purpose ?? context.purpose as LLMOptions["purpose"] };
     const summary = provider.getConfigSummary?.(options);
-    const meter = new UsageMeter(options.usageContext, params.messages, provider.getProviderName?.(options) ?? provider.name, summary?.model ?? provider.getModel?.(options), streaming, params.options?.provider, summary?.reasoningEffort, provider.getRelayId?.());
+    const meter = new UsageMeter(options.usageContext, params.messages, provider.getProviderName?.(options) ?? provider.name, summary?.model ?? provider.getModel?.(options), streaming, params.options?.provider, summary?.reasoningEffort, provider.getRelayId?.(), options.tools);
     return { meter, params: { ...params, options: { ...options,
       onRoute: route => { meter.observeRoute(route); params.options?.onRoute?.(route); },
       onAttempt: () => { meter.startAttempt(); params.options?.onAttempt?.(); },
@@ -275,8 +283,33 @@ export class LLMService {
     } } as InvokeParams };
   }
   async invokeWithProvider(provider: LLMProvider, params: InvokeParams): Promise<string> {
+    const result = await this.invokeMetered(provider, params, async input => ({ text: await provider.invoke(input.messages, input.options) }));
+    return result.text;
+  }
+  async invokeDetailedWithProvider(provider: LLMProvider, params: InvokeParams): Promise<LLMInvokeDetailedResult> {
+    const requiresTools = Boolean(params.options?.tools?.length || params.messages.some(message => message.role === "tool" || message.toolCalls?.length));
+    if (requiresTools && (!provider.capabilities.tools || !provider.invokeDetailed)) {
+      throw new LLMRequestError("invalid_request", undefined, "unsupported_tools");
+    }
+    return this.invokeMetered(provider, params, async input =>
+      provider.invokeDetailed
+        ? provider.invokeDetailed(input.messages, input.options)
+        : { text: await provider.invoke(input.messages, input.options) });
+  }
+  private async invokeMetered(
+    provider: LLMProvider,
+    params: InvokeParams,
+    invoke: (prepared: InvokeParams) => Promise<LLMInvokeDetailedResult>,
+  ): Promise<LLMInvokeDetailedResult> {
     const observed = this.meteredParams(provider, params, false); let status: LlmUsageRecord["status"] = "failed"; let errorKind: LlmUsageRecord["error"] = "provider_error";
-    try { const text = await this.invokeUntracked(provider, observed.params); observed.meter.observeText(text); status = "success"; errorKind = undefined; return text; }
+    try {
+      const result = await this.invokeUntracked(provider, observed.params, invoke);
+      observed.meter.observeText(result.text);
+      if (result.reasoningContent) observed.meter.observeText(result.reasoningContent);
+      for (const call of result.toolCalls ?? []) observed.meter.observeText(call.name + call.arguments);
+      status = "success"; errorKind = undefined;
+      return result;
+    }
     catch (error) { if (isCancelled(error, params.options?.signal)) { status = "cancelled"; errorKind = "cancelled"; } throw safeLLMError(error, params.options?.signal); }
     finally { await safeRecordUsage(this.usageSink, observed.meter.finish(status, errorKind)); }
   }
@@ -304,4 +337,4 @@ export class LLMService {
 }
 export const llmService = new LLMService();
 export { registry };
-export type { LLMMessage, LLMOptions, InvokeParams, LLMProvider, LLMStreamChunk };
+export type { LLMInvokeDetailedResult, LLMMessage, LLMOptions, InvokeParams, LLMProvider, LLMStreamChunk };

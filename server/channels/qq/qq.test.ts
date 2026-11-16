@@ -5,6 +5,8 @@ import { apiBase, deliveryResult, parseInbound, plainText, QqError, verifyWebhoo
 import type { QqRepository } from "./repository";
 import { createQqRouter } from "./router";
 import { QqService, type QqChatInput } from "./service";
+import type { QqInteractions } from "./interaction";
+import { readQqInboundImage } from "./image-inbound";
 import { QqMediaService } from "./media-service";
 import type { QqRoleplayRepository } from "./roleplay-types";
 
@@ -29,7 +31,7 @@ function event(patch: Record<string, unknown> = {}) {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const login = (id = 10001) => new Response(JSON.stringify({ status: "ok", retcode: 0, data: { user_id: id } }));
 
-function fixture() {
+function fixture(interactions?: Partial<QqInteractions>) {
   const configs = new Map<number, QqConfig>();
   configs.set(1, { id: 1, userId: 1, hookId: "a".repeat(48), apiBaseUrl: "https://bot.example.invalid", botId: "10001",
     targetId: "20001", personaId: 11, secretsEnc: `fake:${JSON.stringify(secrets)}`, enabled: false, generation: 1 });
@@ -108,16 +110,142 @@ function fixture() {
     ? login() : new Response(JSON.stringify({ status: "ok", retcode: 0, data: { message_id: 84 } })));
   const chat = vi.fn(async (_input: QqChatInput): Promise<string | null> => "让我们继续阅读这段故事。");
   const encrypt = vi.fn(async (text: string) => `fake:${text}`);
+  const excludePrivateContext = vi.fn(async (_config: QqConfig, _messageIds: number[]) => {});
+  const describeImages = vi.fn(async (_config: QqConfig, _urls: (string | null)[], _signal: AbortSignal): Promise<string | null> => "第一张是风景。");
   const service = new QqService({ repository, encrypt, decrypt: async text => text.startsWith("fake:") ? text.slice(5) : null,
-    fetch: fetchMock as typeof fetch, chat, timeoutMs: 30 });
+    fetch: fetchMock as typeof fetch, chat, timeoutMs: 50, excludePrivateContext, describeImages,
+    interactions: interactions && { typing: false, references: false, recall: false, poke: false, interrupt: false, ...interactions } });
   const start = (userId = 1) => service.start(userId, configs.get(userId)?.generation ?? null);
   const stop = (userId = 1) => service.stop(userId, configs.get(userId)?.generation ?? null);
   const receive = (raw = event(), hookId = configs.get(1)!.hookId) => service.receive(hookId, raw, sign(raw), authorization);
   const dispatches = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/send_private_msg"));
-  return { service, repository, configs, deliveryRows, inboundStatuses, fetchMock, chat, encrypt, controls, start, stop, receive, dispatches };
+  return { service, repository, configs, deliveryRows, inboundStatuses, fetchMock, chat, encrypt, controls,
+    start, stop, receive, dispatches, excludePrivateContext, describeImages };
 }
 
 beforeEach(() => { getDb.mockClear(); });
+
+describe("QQ 私聊交互", () => {
+  it("只附带本私聊的引用并折叠合并转发，不把其他会话内容传给模型", async () => {
+    const f = fixture({ references: true, typing: true });
+    const response = (data: unknown) => Response.json({ status: "ok", retcode: 0, data });
+    f.fetchMock.mockImplementation(async url => {
+      const action = new URL(String(url)).pathname;
+      if (action === "/get_login_info") return login();
+      if (action === "/get_msg") {
+        const sender = f.chat.mock.calls.length === 0 ? 20001 : 20002;
+        return response({ message_type: "private", message_id: 41, sender: { user_id: sender }, raw_message: "只在同一私聊显示" });
+      }
+      if (action === "/get_forward_msg") return response({ messages: [{ content: "转发内容" }] });
+      return response({ message_id: 84 });
+    });
+    await f.start();
+    const message = [{ type: "reply", data: { id: 41 } }, { type: "forward", data: { id: "ID" } },
+      { type: "text", data: { text: "解释一下" } }];
+    await f.receive(event({ message }));
+    await f.service.waitForIdle(1);
+    expect(f.chat.mock.calls[0][0].messageText).toContain("只在同一私聊显示");
+    expect(f.chat.mock.calls[0][0].messageText).toContain("转发内容");
+    expect(f.chat.mock.calls[0][0].messageText).toContain("解释一下");
+    expect(f.fetchMock.mock.calls.some(([url]) => String(url).endsWith("/set_input_status"))).toBe(true);
+    await f.receive(event({ message_id: 43, message }));
+    await f.service.waitForIdle(1);
+    expect(f.chat.mock.calls[1][0].messageText).not.toContain("只在同一私聊显示");
+  });
+
+  it("撤回先于模型时跳过该轮，生成中撤回按精确消息编号排除", async () => {
+    const f = fixture({ recall: true });
+    await f.start();
+    const recall = (id: number) => event({ post_type: "notice", notice_type: "friend_recall", message_id: id });
+    await f.receive(event({ message_id: 101 }));
+    await f.receive(recall(101));
+    await f.service.waitForIdle(1);
+    expect(f.chat).not.toHaveBeenCalled();
+    const generating = deferred<void>();
+    f.chat.mockImplementationOnce(async ({ onUserMessageSaved, signal }) => {
+      onUserMessageSaved?.(316);
+      generating.resolve();
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return "旧回复";
+    });
+    await f.receive(event({ message_id: 102 }));
+    await generating.promise;
+    await f.receive(recall(102));
+    await f.service.waitForIdle(1);
+    expect(f.excludePrivateContext).toHaveBeenCalledWith(expect.objectContaining({ userId: 1, personaId: 11 }), [316]);
+    expect(f.dispatches()).toHaveLength(0);
+    expect(f.inboundStatuses).toEqual(["cancelled", "cancelled"]);
+  });
+
+  it("分句时插话等待已派发回执，只撤回确认的片段并处理下一条消息", async () => {
+    const f = fixture({ interrupt: true });
+    const started = deferred<void>();
+    const acknowledgement = deferred<Response>();
+    let sends = 0;
+    f.fetchMock.mockImplementation(async url => {
+      const action = new URL(String(url)).pathname;
+      if (action === "/get_login_info") return login();
+      if (action === "/send_private_msg" && ++sends === 1) {
+        started.resolve();
+        return acknowledgement.promise;
+      }
+      return Response.json({ status: "ok", retcode: 0, data: { message_id: 85 } });
+    });
+    f.chat.mockImplementationOnce(async ({ onAssistantMessageSaved }) => {
+      onAssistantMessageSaved?.(650);
+      return "这是第一段完整的正文。\n\n这是第二段正文。";
+    });
+    await f.start();
+    await f.receive();
+    await started.promise;
+    await f.receive(event({ message_id: 43, message: "我先补充一句。" }));
+    acknowledgement.resolve(Response.json({ status: "ok", retcode: 0, data: { message_id: 84 } }));
+    await f.service.waitForIdle(1);
+    expect(f.dispatches()).toHaveLength(2);
+    expect(f.fetchMock.mock.calls.find(([url]) => String(url).endsWith("/delete_msg"))?.[1]?.body)
+      .toBe(JSON.stringify({ message_id: 84 }));
+    expect(f.excludePrivateContext).toHaveBeenCalledWith(expect.objectContaining({ userId: 1 }), [650]);
+    expect(f.chat.mock.calls[1][0].messageText).toBe("我先补充一句。");
+    expect(f.inboundStatuses).toEqual(["cancelled", "done"]);
+  });
+
+  it("回戳只响应绑定目标并冷却，接口明确缺失时使用兼容别名", async () => {
+    const f = fixture({ poke: true });
+    f.fetchMock.mockImplementation(async url => {
+      if (String(url).endsWith("/get_login_info")) return login();
+      if (String(url).endsWith("/send_poke")) return new Response(null, { status: 404 });
+      return Response.json({ status: "ok", retcode: 0, data: {} });
+    });
+    await f.start();
+    const poke = event({ post_type: "notice", notice_type: "notify", sub_type: "poke", target_id: 10001 });
+    await expect(f.receive(poke)).resolves.toEqual({ accepted: true, duplicate: false });
+    await expect(f.receive(poke)).resolves.toEqual({ accepted: false, duplicate: true });
+    await expect(f.receive(event({ post_type: "notice", notice_type: "notify", sub_type: "poke", target_id: 10001, user_id: 20003 })))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/friend_poke"))).toHaveLength(1);
+  });
+
+  it("按序收前四个图片段汇入描述，并拒绝非 QQ CDN 或无图片签名的内容", async () => {
+    const f = fixture({ images: true });
+    await f.start();
+    const urls = [1, 2, 3, 4, 5].map(id => "https://gchat.qpic.cn/" + id);
+    await f.receive(event({ message: [
+      { type: "text", data: { text: "这些图片是什么？" } },
+      ...urls.map(url => ({ type: "image", data: { url } })),
+    ] }));
+    await f.service.waitForIdle(1);
+    expect(f.describeImages).toHaveBeenCalledWith(expect.objectContaining({ userId: 1 }), urls.slice(0, 4), expect.any(AbortSignal));
+    expect(f.chat.mock.calls[0][0].messageText).toContain("这些图片是什么？\n\n【收到的图片】\n第一张是风景。");
+    const transport = vi.fn(async () => new Response(Buffer.from([0xff, 0xd8, 0xff, 0xe0])));
+    const signal = new AbortController().signal;
+    await expect(readQqInboundImage("https://gchat.qpic.cn.example.invalid/a", transport as typeof fetch, signal)).resolves.toBeNull();
+    expect(transport).not.toHaveBeenCalled();
+    await expect(readQqInboundImage(urls[0], transport as typeof fetch, signal)).resolves.toMatch(/^data:image\/jpeg;base64,/);
+    expect(transport).toHaveBeenCalledWith(new URL(urls[0]), expect.objectContaining({ redirect: "error" }));
+    transport.mockResolvedValueOnce(new Response("invalid"));
+    await expect(readQqInboundImage(urls[0], transport as typeof fetch, signal)).resolves.toBeNull();
+  });
+});
 
 describe("QQ 文字协议", () => {
   it("按原始字节验签，并独立验证可选入站令牌", () => {

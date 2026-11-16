@@ -107,7 +107,7 @@ export function socialFixture(path, input) {
   const channel = CHANNELS.find(channel => channel.id === channelId);
   switch (path) {
     case "analytics.overview": return copy(analytics(query.days));
-    case "diary.getDates": return diaryFor(personaId).map(entry => ({ date: entry.date }));
+    case "diary.getDates": return diaryFor(personaId).map(entry => entry.date);
     case "diary.getMissingDates": return NAMES[personaId] ? [dayKey(-3)] : [];
     case "diary.list": return copy(diaryFor(personaId).slice().reverse());
     case "diary.getByDate": return copy(diaryFor(personaId).find(entry => entry.date === query.date) ?? null);

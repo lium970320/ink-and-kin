@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { decryptIfEncrypted } from "../_core/crypto";
+import { ENV } from "../_core/env";
 import * as db from "../db";
 import { registry } from "./index";
 import { scopeProvider } from "./usage-context";
-import { createUserConfiguredLlmProvider } from "./user-provider-factory";
+import { createUserConfiguredLlmProvider, defaultUserProviderUrl } from "./user-provider-factory";
 import { extraObject, resolveReasoningConfig, type ReasoningEffort } from "./reasoning";
 import { readConfiguredDeepSeekDynamicRouting } from "./deepseek-routing";
 import { LLMRequestError } from "./errors";
 import { createRoutedProvider, type RoutedCandidate } from "./routing";
-import { clearRelayHealth } from "./relay-health";
+import { clearRelayHealth, markRelaySuccess } from "./relay-health";
 import { getRelayFailoverPolicy } from "./relay-failover-policy";
 import type { LLMProvider } from "./types";
 
@@ -47,6 +48,34 @@ function validateUser(userId: number) {
   if (!Number.isSafeInteger(userId) || userId < 1) throw new LLMRequestError("invalid_request");
 }
 function sameName(left: string, right: string) { return left.trim().toLowerCase() === right.trim().toLowerCase(); }
+
+export function parseLlmBaseUrl(value: string): URL | undefined {
+  if (value.includes("?") || value.includes("#")) return undefined;
+  const url = URL.parse(value);
+  if (url && ["http:", "https:"].includes(url.protocol) && !url.username &&
+    !url.password) return url;
+}
+
+export const LLM_ENDPOINT_NOT_ALLOWED =
+  "此模型服务地址未获部署者授权，请在 LLM_ALLOWED_ORIGINS 中加入信任的服务来源。";
+
+export function isAllowedLlmOrigin(providerName: string, url: URL): boolean {
+  if (ENV.llmAllowedOrigins.includes(url.origin)) return true;
+  // 本机 Ollama 可供自用实例连接。开放注册的实例须显式授权该来源。
+  if (ENV.registrationEnabled && sameName(providerName, "Ollama")) return false;
+  const builtInUrl = defaultUserProviderUrl(providerName);
+  return Boolean(builtInUrl && parseLlmBaseUrl(builtInUrl)?.origin === url.origin);
+}
+
+export function canUseServerLlmFallback() {
+  return ENV.allowServerLlmFallback && !ENV.registrationEnabled;
+}
+
+function isAllowedLlmBaseUrl(providerName: string, raw: string) {
+  const url = parseLlmBaseUrl(raw);
+  return Boolean(url && isAllowedLlmOrigin(providerName, url));
+}
+
 function canonicalName(name: string) {
   const trimmed = name.trim();
   if (sameName(trimmed, "DeepSeek-auto")) return "DeepSeek";
@@ -92,7 +121,14 @@ async function buildEffective(
   if (credential && !savedKey && !replacementKey) throw new LLMRequestError("auth");
   if (!apiKey && !sameName(providerName, "Ollama")) throw new LLMRequestError("auth");
   const baseUrl = overrides.baseUrl !== undefined ? overrides.baseUrl.trim() || parent?.baseUrl : relay?.baseUrl ?? parent?.baseUrl;
-  const model = overrides.model !== undefined ? overrides.model.trim() || parent?.model : relay?.model ?? parent?.model;
+  if (baseUrl && !isAllowedLlmBaseUrl(providerName, baseUrl)) {
+    const error = new LLMRequestError("permission");
+    error.message = LLM_ENDPOINT_NOT_ALLOWED;
+    throw error;
+  }
+  let model = overrides.model !== undefined ? overrides.model.trim() || parent?.model : relay?.model ?? parent?.model;
+  // Ollama 的模型列表只取 /api/tags，与具体模型无关。
+  if (!model && overrides.allowEmptyModel && sameName(providerName, "Ollama")) model = "llama3";
   const reasoning = resolveReasoningConfig(parent?.extraConfig, relayExtra(relay, overrides));
   const dynamic = sameName(providerName, "DeepSeek") && readConfiguredDeepSeekDynamicRouting(parent?.extraConfig);
   const settings = { providerName, apiKey, baseUrl, model, systemMessage: parent?.systemMessage, relayId: relay?.id };
@@ -163,7 +199,7 @@ export async function resolveProviderForUser(params: { userId: number; providerN
   if (!providerName) return undefined;
   const primaryName = canonicalName(providerName);
   const fallback = fallbackName(configs, primaryName);
-  const allowEnvironment = !fallback && configs.length === 0;
+  const allowEnvironment = canUseServerLlmFallback() && !fallback && configs.length === 0;
   const candidates = await candidatesFor(userId, primaryName, parent, allowEnvironment);
   if (fallback) {
     const backupParent = findConfig(configs, fallback);
@@ -203,7 +239,10 @@ export async function resolveSingleProviderForUser(input: SingleProviderInput): 
   };
   const provider = await buildEffective(input.userId, providerName, parent, savedRelay, overrides);
   let matches = false;
-  if (savedKey || sameName(providerName, "Ollama")) {
+  const storedBaseUrl = savedRelay?.baseUrl ?? parent?.baseUrl;
+  const storedEndpointAllowed = !storedBaseUrl || isAllowedLlmBaseUrl(providerName, storedBaseUrl);
+  const hasSavedOllama = sameName(providerName, "Ollama") && storedBaseUrl && (savedRelay?.model ?? parent?.model);
+  if (storedEndpointAllowed && (savedKey || hasSavedOllama)) {
     const saved = await buildEffective(input.userId, providerName, parent, savedRelay);
     const savedSummary = saved.getConfigSummary?.();
     const actualSummary = provider.getConfigSummary?.();
@@ -218,7 +257,7 @@ export async function resolveSingleProviderForUser(input: SingleProviderInput): 
       && actualModel === savedModel
       && JSON.stringify(actualReasoning) === JSON.stringify(savedReasoning);
   }
-  const hasSaved = Boolean(savedRelay || parent?.apiKey || (parent?.baseUrl && sameName(providerName, "Ollama")));
+  const hasSaved = Boolean(savedRelay || parent?.apiKey || hasSavedOllama);
   const relayEnabled = savedRelay?.enabled ?? (hasSaved ? true : undefined);
   const reflectsCurrentChatRoute = hasSaved && relayEnabled === true && matches;
   let candidateCount = rows.filter(row => row.enabled).length;
@@ -232,9 +271,17 @@ export async function resolveSingleProviderForUser(input: SingleProviderInput): 
   }
   const savedPolicy = getRelayFailoverPolicy({ candidateCount, hasFallback: Boolean(fallback) });
   const maxAttempts = reflectsCurrentChatRoute ? savedPolicy.maxAttemptsPerCandidate as 1 | 2 : 1;
+  const activeRelayId = reflectsCurrentChatRoute ? savedRelay?.id : undefined;
   const independent = new Proxy(provider, {
     get(target, key) {
       if (key === "maxAttempts") return maxAttempts;
+      if (key === "invoke" && activeRelayId !== undefined) {
+        return (async (messages, options) => {
+          const text = await target.invoke(messages, options);
+          if (text.trim() && !options?.signal?.aborted) markRelaySuccess(input.userId, activeRelayId);
+          return text;
+        }) satisfies LLMProvider["invoke"];
+      }
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

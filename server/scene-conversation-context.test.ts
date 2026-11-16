@@ -8,6 +8,8 @@ import * as db from "./db";
 import { getContextHistory } from "./chat/context-state";
 import { refreshSceneMemorySummary, extractSceneConfirmedFacts } from "./social/scene-memory-service";
 import { buildSceneMemoryInstruction } from "./social/scene-memory";
+import { prepareSource } from "./source-library/core";
+import { createSourceLibraryRepository } from "./source-library/repository";
 
 /**
  * 场景会话上下文（第 4 批 4B）。
@@ -67,6 +69,56 @@ databaseSuite("新开本段对话的场景边界", () => {
     await (database as unknown as { $client?: { end?: () => Promise<void> } } | null)?.$client?.end?.();
   }, 30_000);
 
+  it("时间检索限定用户、人物、每日窗口、显式排除和会话起点", async () => {
+    const before = await message("user", "会话起点以前", null);
+    const inScope = await message("assistant", "可以引用的日常记录", null);
+    const rejected = await message("user", "不可引用的日常记录", null);
+    const current = await message("user", "本轮查询", null);
+    await message("assistant", "场景剧情");
+    await query(`INSERT INTO users (id, username, name, "passwordHash") VALUES (2, 'u2', 'u2', 'x');
+      INSERT INTO personas (id, "userId", name) VALUES (2, 2, '另一角色');
+      INSERT INTO messages ("personaId", "userId", role, content, mode) VALUES (2, 2, 'assistant', '另账号日常', 'daily');
+      INSERT INTO chat_context_states ("userId", "personaId", "startAfterMessageId", overrides)
+        VALUES (1, 1, ${before}, '{"${rejected}":false}'::jsonb);
+      UPDATE messages SET "createdAt" = TIMESTAMP '2026-11-15 10:00:00';`);
+    const start = new Date("2026-11-14T16:00:00Z");
+    const end = new Date("2026-11-15T15:59:59.999Z");
+    expect((await db.getDailyMessagesInTimeRange(1, 1, start, end, current)).map(row => row.id)).toEqual([inScope]);
+    expect(await db.getDailyMessagesInTimeRange(1, 2, start, end)).toEqual([]);
+  });
+
+  it("作品向量缓存隔离账号、供方且替换资料后旧块无法回填", async () => {
+    const repository = createSourceLibraryRepository();
+    const document = await repository.saveDocument(1, 1, prepareSource({ fileName: "例.txt", content: "灯塔的图" }));
+    const [chunk] = await repository.searchCandidates(1, 1, ["灯塔"]);
+    const fingerprint = "a".repeat(64);
+    await repository.saveVectors?.(2, 1, fingerprint, [{ id: chunk.id, embedding: [1, 0, 0, 0] }]);
+    expect(await repository.cachedCandidates?.(1, 1, fingerprint)).toEqual([]);
+    await repository.saveVectors?.(1, 1, fingerprint, [{ id: chunk.id, embedding: [1, 0, 0, 0] }]);
+    expect(await repository.cachedCandidates?.(1, 1, fingerprint))
+      .toMatchObject([{ id: chunk.id, embedding: [1, 0, 0, 0] }]);
+    expect(await repository.cachedCandidates?.(2, 1, fingerprint)).toEqual([]);
+    expect(await repository.cachedCandidates?.(1, 1, "b".repeat(64))).toEqual([]);
+    await repository.saveDocument(1, 1, prepareSource({ fileName: "新例.txt", content: "新的山谷路线" }), document.id);
+    await repository.saveVectors?.(1, 1, fingerprint, [{ id: chunk.id, embedding: [0, 1, 0, 0] }]);
+    expect(await repository.cachedCandidates?.(1, 1, fingerprint)).toEqual([]);
+    expect(await repository.searchCandidates(1, 1, ["灯塔"])).toEqual([]);
+  });
+
+  it("QQ 撤回只排除本角色的 QQ 记录，且尊重日常和场景各自的上下文", async () => {
+    const daily = await message("user", "已撤回的私聊", null);
+    const scene = await message("assistant", "已打断的场景回复");
+    const web = await message("user", "应保留的网页消息", null);
+    await query("UPDATE messages SET channel = 'qq' WHERE id IN (" + daily + ", " + scene + ")");
+    const { qqService } = await import("./channels/qq/index");
+    await qqService.dependencies.excludePrivateContext?.({
+      id: 1, userId: 1, personaId: 1, botId: "10", targetId: "20", generation: 1,
+      enabled: true, apiBaseUrl: "http://127.0.0.1:1", hookId: "test", secretsEnc: "",
+    }, [daily, scene, web]);
+    expect((await getContextHistory(1, 1)).history.map(row => row.id)).toEqual([web]);
+    expect(await db.getSceneConversationMessagesBySceneId(1, 1, 7)).toEqual([]);
+  });
+
   it("旧场景消息仍可查看但不进入生成；短期缓存清空、事实与场景保留，新消息可用", async () => {
     const oldUser = await message("user", "旧剧情甲");
     const oldAssistant = await message("assistant", "旧回复乙");
@@ -113,10 +165,10 @@ databaseSuite("新开本段对话的场景边界", () => {
     expect((await db.getSceneMessageContextManagement(1, 1, 7)).messages.map(item => item.effectiveInContext)).toEqual([true, false, true, true]);
   });
 
-  it("摘要和事实只读取新段场景消息，日常历史也继续遵守同一边界", async () => {
+  it("重开场景后摘要和事实只读取新段，日常保有独立的上下文", async () => {
     await message("user", "旧剧情保密");
     await message("assistant", "旧回复保密");
-    await message("user", "旧日常保密", null);
+    const oldDaily = await message("user", "重开场景前的日常消息", null);
     await db.startNewPersonaConversationContext(1, 1);
     expect(await refreshSceneMemorySummary({ personaId: 1, userId: 1, sceneId: 7 })).toBeNull();
     expect(await extractSceneConfirmedFacts({ personaId: 1, userId: 1, sceneId: 7 })).toEqual([]);
@@ -133,10 +185,9 @@ databaseSuite("新开本段对话的场景边界", () => {
     const prompts = mocked.invoke.mock.calls.map(call => JSON.stringify(call[0]?.messages ?? []));
     expect(prompts.every(prompt => !prompt.includes("旧剧情保密") && !prompt.includes("旧回复保密"))).toBe(true);
     expect(prompts.some(prompt => prompt.includes("新剧情起点"))).toBe(true);
-    // 日常生成窗口：只含日常消息、只认同一个起点；场景消息绝不串进日常上下文。
+    // 场景重开只推动当前场景的起点，日常生成窗口继续保留自己的消息。
     const dailyHistory = await getContextHistory(1, 1, 50);
-    expect(dailyHistory.history.map(item => item.id)).toContain(dailyId);
-    expect(dailyHistory.history.every(item => item.content !== "旧日常保密")).toBe(true);
+    expect(dailyHistory.history.map(item => item.id)).toEqual([oldDaily, dailyId]);
     expect(dailyHistory.history.every(item => (item as { sceneId?: number | null }).sceneId == null)).toBe(true);
   });
 

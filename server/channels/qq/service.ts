@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { TextDecoder } from "node:util";
+import { splitAssistantReplyForChat } from "../../_core/reply-utils";
 import {
-  apiBase, deliveryResult, parseInbound, plainText, QqError, qqId, qqSceneImageOperationId, verifyWebhook,
-  QQ_MAX_BODY, QQ_MAX_TEXT, QQ_SECRET_MASK, type DeliveryResult, type QqConfig, type QqSaveInput, type QqSecrets,
+  apiBase, deliveryResult, parseInboundEvent, plainText, QqError, qqId, qqSceneImageOperationId, readQqEvent, verifyWebhook,
+  QQ_MAX_BODY, QQ_MAX_TEXT, QQ_SECRET_MASK, type DeliveryResult, type QqConfig, type QqInboundEvent, type QqSaveInput, type QqSecrets,
 } from "./core";
+import { forwardFromOneBot, oneBotData, oneBotId, quoteFromOneBot, readQqNotice, type QqInteractions } from "./interaction";
 import type { QqRepository } from "./repository";
 import type { QqPreparedTransport } from "./roleplay-types";
 import { readQqRecording, QQ_RECORD_RESPONSE_BYTES, type QqVoiceInbound, type QqVoiceReplyGuard } from "./voice-inbound";
@@ -19,6 +22,9 @@ export interface QqConfigView {
 export interface QqChatInput {
   userId: number; conversationKey: string; personaId: number; messageText: string;
   channel: "qq"; signal: AbortSignal;
+  onUserMessageSaved?(id: number): void;
+  onAssistantMessageSaved?(id: number): void;
+  onCrisisReply?(): void;
 }
 
 export interface QqDependencies {
@@ -27,13 +33,23 @@ export interface QqDependencies {
   decrypt(text: string): Promise<string | null>;
   fetch: typeof fetch;
   chat(input: QqChatInput): Promise<string | null>;
-  handleInbound?(input: { config: QqConfig; messageId: string; text: string; unsupportedMedia?: boolean; signal: AbortSignal; reply(text: string): Promise<void> }): Promise<boolean>;
+  handleInbound?(input: { config: QqConfig; messageId: string; text: string; unsupportedMedia?: boolean; hasImages?: boolean; signal: AbortSignal; reply(text: string): Promise<void> }): Promise<boolean>;
   voiceInbound?: QqVoiceInbound;
   sceneImageInbound?: QqSceneImageInbound;
+  interactions?: QqInteractions;
+  describeImages?(config: QqConfig, urls: (string | null)[], signal: AbortSignal): Promise<string | null>;
+  excludePrivateContext?(config: QqConfig, messageIds: number[]): Promise<void>;
   timeoutMs?: number;
 }
 
 type QqImageMessage = Array<{ type: "image"; data: { file: string } }>;
+type QqReplyMessage = [{ type: "reply"; data: { id: string } }, { type: "text"; data: { text: string } }];
+type DeliveryOptions = {
+  guard?: QqVoiceReplyGuard;
+  signal?: AbortSignal;
+  dispatchSignal?: AbortSignal;
+  onConfirmed?(id: string): void;
+};
 
 export type QqSceneImageInbound = (input: {
   config: QqConfig;
@@ -166,12 +182,33 @@ export function createQqSceneImageInbound<Request extends SceneImageSnapshot>(de
   };
 }
 
-type Session = { generation: number; controller: AbortController; connected: boolean };
+type PrivateTurn = {
+  controller: AbortController;
+  recalled: boolean;
+  interrupted: boolean;
+  finished: boolean;
+  userIdInHistory?: number;
+  assistantIdInHistory?: number;
+};
+type Session = {
+  generation: number;
+  controller: AbortController;
+  connected: boolean;
+  turns: Map<string, PrivateTurn>;
+  sending?: PrivateTurn;
+  lastPokeAt: number | null;
+};
 type InboundStatus = "ignored" | "done" | "failed" | "cancelled";
+type QqAction = "get_login_info" | "send_private_msg" | "get_record" | "get_msg" | "get_forward_msg"
+  | "set_input_status" | "delete_msg" | "send_poke" | "friend_poke";
+class QqActionUnavailable extends Error {}
 const EMPTY_SECRETS: QqSecrets = { apiToken: "", receiveToken: "", webhookSecret: "" };
 const QUEUE_LIMIT = 16;
 const EVENT_LIMIT_PER_MINUTE = 30;
 const RESPONSE_BYTES = 32 * 1024;
+const FORWARD_RESPONSE_BYTES = 256 * 1024;
+const MAX_TRACKED_TURNS = 256;
+const POKE_COOLDOWN_MS = 30_000;
 
 function checkGeneration(config: QqConfig | null, expected: number | null) {
   if ((config?.generation ?? null) !== expected) throw new QqError("CONFLICT", "QQ 配置已变更，请刷新后重新操作。");
@@ -271,7 +308,7 @@ export class QqService {
     return this.read(userId);
   }
 
-  private async request(config: QqConfig, secrets: QqSecrets, action: "get_login_info" | "send_private_msg" | "get_record", data: object, session: Session, signal?: AbortSignal): Promise<unknown> {
+  private async request(config: QqConfig, secrets: QqSecrets, action: QqAction, data: object, session: Session, signal?: AbortSignal): Promise<unknown> {
     this.requireAlive(config.userId, session);
     signal?.throwIfAborted();
     const controller = new AbortController();
@@ -289,9 +326,11 @@ export class QqService {
       controller.signal.throwIfAborted();
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
+        if (response.status === 404) throw new QqActionUnavailable();
         throw new Error("http_unconfirmed");
       }
-      const maxBytes = action === "get_record" ? QQ_RECORD_RESPONSE_BYTES : RESPONSE_BYTES;
+      const maxBytes = action === "get_record" ? QQ_RECORD_RESPONSE_BYTES
+        : action === "get_forward_msg" ? FORWARD_RESPONSE_BYTES : RESPONSE_BYTES;
       if (Number(response.headers.get("Content-Length")) > maxBytes) {
         void response.body?.cancel().catch(() => {});
         throw new Error("oversized_response");
@@ -333,7 +372,10 @@ export class QqService {
     const previous = this.sessions.get(userId);
     if (previous && previous.generation > config.generation) throw new QqError("CONFLICT", "QQ 配置已变更，请刷新后重新连接。");
     this.cancelThrough(userId, config.generation);
-    const session: Session = { generation: config.generation, controller: new AbortController(), connected: false };
+    const session: Session = {
+      generation: config.generation, controller: new AbortController(), connected: false,
+      turns: new Map(), lastPokeAt: null,
+    };
     this.sessions.set(userId, session);
     try {
       const response = await this.request(config, secrets, "get_login_info", {}, session) as { status?: unknown; retcode?: unknown; data?: { user_id?: unknown } } | null;
@@ -388,6 +430,85 @@ export class QqService {
     else this.queueSizes.set(userId, size - 1);
   }
 
+  private trackTurn(session: Session, messageId: string): PrivateTurn {
+    const existing = session.turns.get(messageId);
+    if (existing) return existing;
+    if (session.turns.size >= MAX_TRACKED_TURNS) {
+      // 当期已排队或正在生成的消息必须留到回合完成，优先淘汰较早的记录。
+      const old = Array.from(session.turns).find(([, turn]) => turn.finished || turn.recalled);
+      if (old) session.turns.delete(old[0]);
+    }
+    const turn = { controller: new AbortController(), recalled: false, interrupted: false, finished: false };
+    session.turns.set(messageId, turn);
+    return turn;
+  }
+
+  private async excludeTurn(config: QqConfig, turn: PrivateTurn, includeAssistant: boolean) {
+    const userMessage = turn.recalled ? turn.userIdInHistory : undefined;
+    const assistantMessage = includeAssistant ? turn.assistantIdInHistory : undefined;
+    const ids = [userMessage, assistantMessage].filter((id): id is number => id !== undefined);
+    if (!ids.length) return;
+    await this.dependencies.excludePrivateContext?.(config, ids);
+    if (userMessage !== undefined) turn.userIdInHistory = undefined;
+    if (assistantMessage !== undefined) turn.assistantIdInHistory = undefined;
+  }
+
+  private async receiveNotice(config: QqConfig, secrets: QqSecrets, session: Session, raw: Record<string, unknown>) {
+    const notice = readQqNotice(raw, config, this.dependencies.interactions);
+    if (!notice) return { accepted: false, duplicate: false };
+    if (notice.kind === "recall") {
+      const turn = this.trackTurn(session, notice.messageId);
+      const duplicate = turn.recalled;
+      turn.recalled = true;
+      turn.controller.abort();
+      if (turn.finished) await this.excludeTurn(config, turn, false);
+      return { accepted: !duplicate, duplicate };
+    }
+
+    const now = Date.now();
+    if (session.lastPokeAt !== null && now - session.lastPokeAt < POKE_COOLDOWN_MS) {
+      return { accepted: false, duplicate: true };
+    }
+    session.lastPokeAt = now;
+    const payload = { user_id: Number(config.targetId) };
+    try {
+      await this.request(config, secrets, "send_poke", payload, session);
+    } catch (error) {
+      // 只有接口明确不存在时才试别名，超时或连接中断仍视为结果未知。
+      if (error instanceof QqActionUnavailable) {
+        await this.request(config, secrets, "friend_poke", payload, session).catch(() => {});
+      }
+    }
+    return { accepted: true, duplicate: false };
+  }
+
+  private async withReferences(config: QqConfig, secrets: QqSecrets, session: Session, event: QqInboundEvent, signal: AbortSignal) {
+    let quote = "";
+    if (event.quotedId && event.quotedId !== event.messageId) {
+      const response = await this.request(config, secrets, "get_msg", { message_id: oneBotId(event.quotedId) }, session, signal)
+        .catch(() => null);
+      quote = quoteFromOneBot(response, config, event.quotedId);
+    }
+    if (!event.forwardId && !quote) return event.text;
+    let forward = "";
+    if (event.forwardId) {
+      const response = await this.request(config, secrets, "get_forward_msg", {
+        id: event.forwardId, message_id: event.forwardId,
+      }, session, signal).catch(() => null);
+      forward = forwardFromOneBot(response);
+    }
+    const input = event.forwardId && event.text === "【合并转发聊天记录】" ? "" : event.text;
+    const room = QQ_MAX_TEXT - Array.from(input).length - (input ? 2 : 0);
+    const references = Array.from([quote, forward].filter(Boolean).join("\n\n")).slice(0, Math.max(0, room)).join("");
+    return [references, input].filter(Boolean).join("\n\n");
+  }
+
+  private showTyping(config: QqConfig, secrets: QqSecrets, session: Session, signal: AbortSignal) {
+    if (!this.dependencies.interactions?.typing) return;
+    void this.request(config, secrets, "set_input_status", { user_id: Number(config.targetId), event_type: 1 }, session, signal)
+      .catch(() => {});
+  }
+
   async receive(hookId: string, raw: Buffer, signature?: string, authorization?: string): Promise<{ accepted: boolean; duplicate: boolean }> {
     if (raw.length > QQ_MAX_BODY) throw new QqError("BAD_REQUEST", "事件体积超过上限。");
     if (!/^[a-f0-9]{48}$/.test(hookId)) throw new QqError("FORBIDDEN", "事件认证失败。");
@@ -395,12 +516,16 @@ export class QqService {
     if (!config?.enabled) throw new QqError("FORBIDDEN", "事件认证失败或通道未启用。");
     const secrets = await this.readSecrets(config);
     if (!secrets || !verifyWebhook(raw, signature, authorization, secrets)) throw new QqError("FORBIDDEN", "事件认证失败。");
-    const event = parseInbound(raw, config, !!this.dependencies.handleInbound, !!this.dependencies.voiceInbound);
+    const payload = readQqEvent(raw);
+    const notice = payload.post_type === "notice" && !!this.dependencies.interactions;
+    const event = notice ? null : parseInboundEvent(payload, config, !!this.dependencies.handleInbound,
+      !!this.dependencies.voiceInbound, this.dependencies.interactions?.references, this.dependencies.interactions?.images);
     const { userId } = config;
     const session = this.sessions.get(userId);
     if (!session?.connected || session.generation !== config.generation || !this.alive(userId, session)) {
       throw new QqError("PRECONDITION_FAILED", "QQ 接口尚未验证连接。");
     }
+    if (!event) return this.receiveNotice(config, secrets, session, payload);
 
     this.reserve(userId);
     let id: number | null;
@@ -411,11 +536,19 @@ export class QqService {
       return { accepted: false, duplicate: true };
     }
 
+    const interactions = this.dependencies.interactions;
+    if (interactions?.interrupt && session.sending && (event.text || event.imageUrls) && !event.unsupportedMedia) {
+      session.sending.interrupted = true;
+      session.sending.controller.abort();
+    }
+    const turn = interactions?.recall || interactions?.interrupt ? this.trackTurn(session, event.messageId) : null;
+    const signal = turn ? AbortSignal.any([session.controller.signal, turn.controller.signal]) : session.controller.signal;
     const previous = this.queues.get(userId) ?? Promise.resolve();
     const job = previous.catch(() => {}).then(async () => {
       let status: InboundStatus = "ignored";
       try {
         this.requireAlive(userId, session);
+        signal.throwIfAborted();
         const current = await this.dependencies.repository.get(userId);
         if (!current?.enabled || current.id !== config.id || current.generation !== config.generation || !current.personaId) return;
         this.requireAlive(userId, session);
@@ -431,7 +564,7 @@ export class QqService {
           };
           const recordId = event.voiceRecord.id;
           const handled = await this.dependencies.voiceInbound({
-            config: current, messageId: event.messageId, signal: session.controller.signal, reply, isCurrent,
+            config: current, messageId: event.messageId, signal, reply, isCurrent,
             loadAudio: async () => {
               if (!recordId || !await isCurrent()) throw new Error("record_unavailable");
               return readQqRecording(await this.request(current, secrets, "get_record", {
@@ -443,30 +576,64 @@ export class QqService {
           return;
         }
         if (await this.dependencies.handleInbound?.({
-          config: current, messageId: event.messageId, text: event.text, unsupportedMedia: event.unsupportedMedia, signal: session.controller.signal, reply,
+          config: current, messageId: event.messageId, text: event.text, unsupportedMedia: event.unsupportedMedia, signal, reply,
+          ...(event.imageUrls ? { hasImages: true } : {}),
         })) { status = "done"; return; }
         if (event.unsupportedMedia) return;
-        if (await this.dependencies.sceneImageInbound?.({
-          config: current, messageId: event.messageId, text: event.text, signal: session.controller.signal, confirmText,
+        if (!event.imageUrls && await this.dependencies.sceneImageInbound?.({
+          config: current, messageId: event.messageId, text: event.text, signal, confirmText,
           sendImage: (bytes, guard, signal) => {
             signal.throwIfAborted();
             const payload: QqImageMessage = [{ type: "image", data: { file: `base64://${bytes.toString("base64")}` } }];
-            return this.deliverPayload(config, secrets, session, payload, `${key}:scene-image`, guard, signal);
+            return this.deliverPayload(config, secrets, session, payload, key + ":scene-image", { guard, signal });
           },
           background: work => this.scheduleSceneImage(userId, work),
         })) { status = "done"; return; }
+        if (interactions?.recall) await delay(180, undefined, { signal });
+        let messageText = await this.withReferences(config, secrets, session, event, signal);
+        signal.throwIfAborted();
+        this.showTyping(config, secrets, session, signal);
+        if (event.imageUrls) {
+          const description = await this.dependencies.describeImages?.(current, event.imageUrls, signal).catch(() => null);
+          signal.throwIfAborted();
+          if (!description) {
+            await this.deliverPayload(config, secrets, session, "图片暂时无法读取，请用文字描述图片内容后再发。", key, { signal });
+            status = "done";
+            return;
+          }
+          const remaining = Math.max(0, QQ_MAX_TEXT - Array.from(messageText).length - 2);
+          messageText = [messageText, Array.from("【收到的图片】\n" + description).slice(0, remaining).join("")]
+            .filter(Boolean).join("\n\n");
+        }
+        let crisis = false;
         const text = await this.dependencies.chat({
-          userId, personaId: current.personaId, channel: "qq", messageText: event.text,
+          userId, personaId: current.personaId, channel: "qq", messageText,
           conversationKey: `qq:${config.id}:${config.botId}:private:${config.targetId}`,
-          signal: session.controller.signal,
+          signal,
+          ...(turn ? {
+            onUserMessageSaved: (id: number) => { turn.userIdInHistory = id; },
+            onAssistantMessageSaved: (id: number) => { turn.assistantIdInHistory = id; },
+            onCrisisReply: () => { crisis = true; },
+          } : {}),
         });
         this.requireAlive(userId, session);
+        signal.throwIfAborted();
         if (!text) return;
-        await reply(text);
+        if (turn && interactions?.interrupt && !crisis) {
+          await this.sendPrivateSegments(config, secrets, session, turn, text, key, event.messageId, signal);
+        } else {
+          await this.deliverPayload(config, secrets, session, plainText(text), key, { signal });
+        }
         status = "done";
       } catch {
-        status = this.alive(userId, session) ? "failed" : "cancelled";
+        status = this.alive(userId, session) && !signal.aborted ? "failed" : "cancelled";
       } finally {
+        if (turn) {
+          turn.finished = true;
+          if (turn.recalled || turn.interrupted) {
+            await this.excludeTurn(config, turn, status !== "done").catch(() => { status = "failed"; });
+          }
+        }
         await this.dependencies.repository.finishInbound(config, id, status).catch(() => {});
         this.release(userId);
       }
@@ -487,14 +654,56 @@ export class QqService {
     });
   }
 
-  private deliver(config: QqConfig, secrets: QqSecrets, session: Session, text: string, key: string, guard?: QqVoiceReplyGuard) {
-    return this.deliverPayload(config, secrets, session, plainText(text), key, guard);
+  private async sendPrivateSegments(config: QqConfig, secrets: QqSecrets, session: Session, turn: PrivateTurn,
+    text: string, key: string, inboundId: string, signal: AbortSignal) {
+    const parts = splitAssistantReplyForChat(plainText(text), { maxMessages: 6 });
+    if (parts.length <= 1) {
+      await this.deliverPayload(config, secrets, session, plainText(text), key, { signal });
+      return;
+    }
+    const confirmed: string[] = [];
+    session.sending = turn;
+    try {
+      for (let index = 0; index < parts.length; index++) {
+        const part = parts[index];
+        if (index > 0) {
+          signal.throwIfAborted();
+          this.showTyping(config, secrets, session, signal);
+          await delay(Math.min(5000, 900 + Array.from(part).length * 35), undefined, { signal });
+        }
+        signal.throwIfAborted();
+        const payload: string | QqReplyMessage = index === 0
+          ? [{ type: "reply", data: { id: inboundId } }, { type: "text", data: { text: plainText(part) } }]
+          : plainText(part);
+        // 插话只阻止下一次派发。已发出的请求继续收取回执，避免把可确认的消息变成未知。
+        const delivered = await this.deliverPayload(config, secrets, session, payload, key + ":part:" + index, {
+          dispatchSignal: signal,
+          onConfirmed: id => { confirmed.push(id); },
+        });
+        if (!delivered) return;
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      if ((turn.interrupted || turn.recalled) && this.alive(config.userId, session)) {
+        for (const id of confirmed) {
+          await this.request(config, secrets, "delete_msg", { message_id: oneBotId(id) }, session).catch(() => {});
+        }
+      }
+      throw error;
+    } finally {
+      if (session.sending === turn) delete session.sending;
+    }
   }
 
-  private async deliverPayload(config: QqConfig, secrets: QqSecrets, session: Session, message: string | QqImageMessage,
-    key: string, guard?: QqVoiceReplyGuard, signal?: AbortSignal): Promise<boolean> {
+  private deliver(config: QqConfig, secrets: QqSecrets, session: Session, text: string, key: string, guard?: QqVoiceReplyGuard) {
+    return this.deliverPayload(config, secrets, session, plainText(text), key, { guard });
+  }
+
+  private async deliverPayload(config: QqConfig, secrets: QqSecrets, session: Session,
+    message: string | QqImageMessage | QqReplyMessage, key: string, options: DeliveryOptions = {}): Promise<boolean> {
+    const { guard, signal, dispatchSignal = signal, onConfirmed } = options;
     this.requireAlive(config.userId, session);
-    signal?.throwIfAborted();
+    dispatchSignal?.throwIfAborted();
     const id = await this.dependencies.repository.claimDelivery(config, key);
     if (id == null) return false;
 
@@ -503,7 +712,7 @@ export class QqService {
     try {
       const dispatch = await this.dependencies.repository.dispatchDelivery(config, id, () => {
         this.requireAlive(config.userId, session);
-        signal?.throwIfAborted();
+        dispatchSignal?.throwIfAborted();
         started = true;
         return this.request(config, secrets, "send_private_msg", {
           user_id: Number(config.targetId), message, auto_escape: true,
@@ -514,7 +723,7 @@ export class QqService {
       result = started
         ? { status: "unknown", remoteMessageId: null, reason: "transport_unconfirmed" }
         : { status: "failed", remoteMessageId: null,
-          reason: this.alive(config.userId, session) && !signal?.aborted ? "dispatch_rejected" : "cancelled_before_dispatch" };
+          reason: this.alive(config.userId, session) && !dispatchSignal?.aborted ? "dispatch_rejected" : "cancelled_before_dispatch" };
     }
     try {
       await this.dependencies.repository.finishDelivery(config.userId, id, result.status, result.remoteMessageId, result.reason);
@@ -526,6 +735,7 @@ export class QqService {
         ? "QQ 交付失败，系统不会自动重发。"
         : "QQ 投递结果未知，请在 QQ 核对；系统不会重发。");
     }
+    if (result.remoteMessageId !== null) onConfirmed?.(result.remoteMessageId);
     return true;
   }
 

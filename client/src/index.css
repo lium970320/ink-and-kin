@@ -537,19 +537,20 @@ html.dark .warm-card:not(.warm-card-static):hover {
 
 /* ─── App Header & Navigation (Frosted Glass Bar, No Laser Scanline) ──────── */
 .app-header {
-  position: relative;
-  background: color-mix(in oklab, var(--color-card) 84%, transparent);
+  background: color-mix(in oklab, var(--color-card) 88%, transparent);
   backdrop-filter: blur(22px) saturate(1.35);
   -webkit-backdrop-filter: blur(22px) saturate(1.35);
-  border-bottom: 1px solid color-mix(in oklab, var(--color-border) 62%, transparent);
-  box-shadow: 0 1px 2px color-mix(in oklab, var(--color-foreground) 2.5%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-border) 68%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in oklab, var(--color-foreground) 3%, transparent),
+    0 6px 18px -8px color-mix(in oklab, var(--color-foreground) 5%, transparent);
 }
 html.dark .app-header {
-  background: color-mix(in oklab, var(--color-card) 82%, transparent);
-  border-bottom-color: color-mix(in oklab, var(--color-border) 65%, transparent);
+  background: color-mix(in oklab, var(--color-card) 86%, transparent);
+  border-bottom-color: color-mix(in oklab, var(--color-border) 68%, transparent);
   box-shadow:
     inset 0 -1px 0 rgba(255, 255, 255, 0.03),
-    0 4px 20px rgba(0, 0, 0, 0.22);
+    0 6px 22px -6px rgba(0, 0, 0, 0.28);
 }
 
 .app-nav {
@@ -1009,12 +1010,12 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .depth-ring-track {
   fill: none;
   stroke: color-mix(in oklab, var(--color-border) 75%, transparent);
-  stroke-width: 3;
+  stroke-width: 2.25;
 }
 .depth-ring-fill {
   fill: none;
   stroke: var(--color-primary);
-  stroke-width: 3;
+  stroke-width: 2.25;
   stroke-linecap: round;
   transition: stroke-dashoffset 0.9s cubic-bezier(0.16, 1, 0.3, 1);
 }

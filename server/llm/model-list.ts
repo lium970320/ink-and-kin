@@ -31,7 +31,7 @@ export async function requestModelList(params: {
   const scope = requestScope(params.signal, 15000);
   try {
     scope.check();
-    const response = await fetch(url, { method: "GET", headers, signal: scope.signal });
+    const response = await fetch(url, { method: "GET", headers, redirect: "error", signal: scope.signal });
     if (!response.ok) throw await providerResponseError(response);
     let payload: unknown;
     try { payload = await response.json(); } catch { throw new LLMRequestError("invalid_request"); }

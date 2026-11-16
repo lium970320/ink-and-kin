@@ -10,25 +10,33 @@ vi.mock("../db", () => ({
 import { resolveProviderForUser, invalidateUserProviderCache } from "./user-provider";
 import { registry } from "./index";
 import { OpenAIProvider } from "./providers/openai";
+import { ENV } from "../_core/env";
 
 // Legacy plaintext remains readable; encryption writes are covered by configuration tests.
 const OWN_KEY = "own-user-key";
-afterEach(() => vi.unstubAllGlobals());
+const originalEnv = { allowServerLlmFallback: ENV.allowServerLlmFallback, llmAllowedOrigins: ENV.llmAllowedOrigins };
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Object.assign(ENV, originalEnv);
+});
 
 describe("resolveProviderForUser", () => {
   beforeEach(() => {
+    ENV.llmAllowedOrigins = ["https://user.example"];
     getLlmConfigsByUserId.mockReset();
     getLlmConfigsByUserId.mockResolvedValue([]);
     invalidateUserProviderCache();
   });
 
-  it("falls back to the environment provider when the user has no config", async () => {
+  it("falls back to the environment provider after the operator opts in", async () => {
+    ENV.allowServerLlmFallback = true;
     const provider = await resolveProviderForUser({ userId: 1, providerName: "OpenAI" });
     expect(provider).toBeDefined();
     expect(provider?.name).toBe("OpenAI");
   });
 
   it("falls back to the default provider for a name that does not exist", async () => {
+    ENV.allowServerLlmFallback = true;
     // A typo in the provider name must not brick the user's chat. The
     // configuration is wrong, not the conversation, so the request goes to
     // the default provider instead of failing.

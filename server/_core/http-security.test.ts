@@ -34,6 +34,7 @@ import { registerAuthRoutes, authenticateRequest } from "./auth";
 import { csrfGuard } from "./csrf";
 import { rateLimiter } from "./rate-limit";
 import { COOKIE_NAME } from "@shared/const";
+import { ENV } from "./env";
 
 /** A user with a password hash the verifier accepts. */
 const user = {
@@ -89,6 +90,8 @@ function cookieFrom(res: Response): string {
 }
 
 describe("the HTTP boundary", () => {
+  const registrationEnabled = ENV.registrationEnabled;
+
   beforeEach(async () => {
     for (const fn of [
       getUserByUsername,
@@ -102,13 +105,43 @@ describe("the HTTP boundary", () => {
     }
     // The limiter is process-wide; every test starts from a clean bucket.
     rateLimiter.reset?.();
+    ENV.registrationEnabled = false;
     getUserByUsername.mockResolvedValue(user);
     getUserById.mockResolvedValue(user);
     await startApp();
   });
 
   afterEach(async () => {
+    ENV.registrationEnabled = registrationEnabled;
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("keeps registration closed and reports the actual server configuration", async () => {
+    const config = await fetch(`${baseUrl}/api/auth/config`);
+    expect(await config.json()).toEqual({ registrationEnabled: false });
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "new-user", password: "test-password" }),
+    });
+    expect(response.status).toBe(403);
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("allows the normal registration flow when the operator enables it", async () => {
+    ENV.registrationEnabled = true;
+    const config = await fetch(`${baseUrl}/api/auth/config`);
+    expect(await config.json()).toEqual({ registrationEnabled: true });
+    getUserByUsername.mockResolvedValue(null);
+    createUser.mockResolvedValue(11);
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "new-user", password: "test-password" }),
+    });
+    expect(response.status).toBe(200);
+    expect(cookieFrom(response)).toMatch(new RegExp(`^${COOKIE_NAME}=`));
+    expect(createUser).toHaveBeenCalledOnce();
   });
 
   it("0-F — refuses the eleventh login from the same address", async () => {

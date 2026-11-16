@@ -31,8 +31,11 @@ export const sourceLibraryChunks = pgTable("source_library_chunks", {
   endOffset: integer("endOffset").notNull(),
   keywords: jsonb("keywords").$type<string[]>().default([]).notNull(),
   tokenEstimate: integer("tokenEstimate").notNull(),
+  embedding: jsonb("embedding").$type<number[]>(),
+  embeddingFingerprint: varchar("embeddingFingerprint", { length: 64 }),
 }, table => ({
   documentPosition: uniqueIndex("source_library_chunks_document_index_idx").on(table.documentId, table.chunkIndex),
+  byEmbedding: index("source_library_chunks_embedding_idx").on(table.documentId, table.embeddingFingerprint),
   validOffsets: check("source_library_chunks_offsets_check", sql`${table.chunkIndex} >= 0 AND ${table.startOffset} >= 0 AND ${table.endOffset} >= ${table.startOffset}`),
   validTokens: check("source_library_chunks_tokens_check", sql`${table.tokenEstimate} >= 0`),
   keywordArray: check("source_library_chunks_keywords_check", sql`jsonb_typeof(${table.keywords}) = 'array'`),

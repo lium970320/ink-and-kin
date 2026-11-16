@@ -24,30 +24,19 @@ const apiOptions = {
   routeTag: process.env.WECHAT_ROUTE_TAG || "",
 };
 
-console.log("baseUrl   :", apiOptions.baseUrl);
-console.log("token     :", apiOptions.token ? apiOptions.token.slice(0, 12) + "..." : "MISSING");
-console.log("appId     :", apiOptions.appId);
-console.log("clientVer :", apiOptions.clientVersion);
-console.log("botAgent  :", apiOptions.botAgent);
-console.log("routeTag  :", JSON.stringify(apiOptions.routeTag));
-console.log("");
+console.log("Token configured:", Boolean(apiOptions.token));
 
 const controller = new AbortController();
 const started = Date.now();
 try {
-  const resp = await getUpdates({
+  await getUpdates({
     ...apiOptions,
     get_updates_buf: state.syncBuf || "",
     timeoutMs: 35_000,
     abortSignal: controller.signal,
   });
   console.log("OK in", Date.now() - started, "ms");
-  console.log("resp:", JSON.stringify(resp).slice(0, 300));
-} catch (err) {
-  console.log("FAILED in", Date.now() - started, "ms");
-  console.log("err.name  :", err.name);
-  console.log("err.msg   :", err.message);
-  console.log("cause     :", err.cause?.name, "|", err.cause?.message, "|", err.cause?.code);
-  console.log("cause.stack:");
-  console.log(String(err.cause?.stack || err.stack).split("\n").slice(0, 6).join("\n"));
+} catch {
+  console.error("getUpdates failed after", Date.now() - started, "ms");
+  process.exitCode = 1;
 }

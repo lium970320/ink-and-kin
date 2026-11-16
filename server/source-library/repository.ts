@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { personas } from "../../drizzle/schema";
 import { sourceLibraryChunks as chunks, sourceLibraryDocuments as documents } from "../../drizzle/source-library-schema";
 import { getDb } from "../db";
@@ -7,6 +7,7 @@ import { SOURCE_LIBRARY_LIMITS, SourceLibraryError, type PreparedSource, type So
 export type SourceCandidate = Omit<SourceHit, "score">;
 export type SourceSeed = { documentId: number; chunkIndex: number };
 export type SourceChunkMetadata = { documentId: number; chapterTitle: string; tokenEstimate: number; keywords: string[] };
+type SourceVector = { id: number; embedding: number[] };
 
 export interface SourceLibraryRepository {
   ownsPersona(userId: number, personaId: number): Promise<boolean>;
@@ -17,7 +18,9 @@ export interface SourceLibraryRepository {
   searchCandidates(userId: number, personaId: number, terms: string[]): Promise<SourceCandidate[]>;
   neighborCandidates(userId: number, personaId: number, seeds: SourceSeed[]): Promise<SourceCandidate[]>;
   getChunk(userId: number, personaId: number, chunkId: number): Promise<SourceCandidate | null>;
-  listChunkMetadata(userId: number, personaId: number): Promise<SourceChunkMetadata[]>;
+  listChunkMetadata(userId: number, personaId: number, limit?: number): Promise<SourceChunkMetadata[]>;
+  cachedCandidates?(userId: number, personaId: number, fingerprint: string): Promise<Array<SourceCandidate & SourceVector>>;
+  saveVectors?(userId: number, personaId: number, fingerprint: string, vectors: SourceVector[]): Promise<void>;
 }
 
 async function database() {
@@ -136,7 +139,7 @@ export function createSourceLibraryRepository(): SourceLibraryRepository {
       const db = await database();
       const predicates = queryTerms.map(term => {
         const pattern = `%${escapeTerm(term)}%`;
-        return or(ilike(chunks.content, pattern), ilike(chunks.chapterTitle, pattern),
+        return or(ilike(chunks.content, pattern), ilike(chunks.chapterTitle, pattern), ilike(documents.title, pattern),
           sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${chunks.keywords}) AS keyword(value) WHERE keyword.value ILIKE ${pattern})`)!;
       });
       const matchCount = sql<number>`(${sql.join(predicates.map(predicate => sql`CASE WHEN ${predicate} THEN 1 ELSE 0 END`), sql` + `)})`;
@@ -167,11 +170,35 @@ export function createSourceLibraryRepository(): SourceLibraryRepository {
       return rows[0] ?? null;
     },
 
-    async listChunkMetadata(userId, personaId) {
+    async listChunkMetadata(userId, personaId, limit) {
       const db = await database();
-      return db.select({ documentId: documents.id, chapterTitle: chunks.chapterTitle, tokenEstimate: chunks.tokenEstimate, keywords: chunks.keywords })
+      const query = db.select({ documentId: documents.id, chapterTitle: chunks.chapterTitle, tokenEstimate: chunks.tokenEstimate, keywords: chunks.keywords })
         .from(chunks).innerJoin(documents, eq(documents.id, chunks.documentId)).innerJoin(personas, eq(personas.id, documents.personaId))
         .where(ownerScope(userId, personaId)).orderBy(asc(documents.id), asc(chunks.chunkIndex));
+      return limit === undefined ? query : query.limit(limit);
+    },
+
+    async cachedCandidates(userId, personaId, fingerprint) {
+      const db = await database();
+      const rows = await db.select({ ...candidateFields, embedding: chunks.embedding })
+        .from(chunks).innerJoin(documents, eq(documents.id, chunks.documentId)).innerJoin(personas, eq(personas.id, documents.personaId))
+        .where(and(ownerScope(userId, personaId), eq(chunks.embeddingFingerprint, fingerprint), isNotNull(chunks.embedding)))
+        .orderBy(desc(chunks.id)).limit(200);
+      return rows.flatMap(row => Array.isArray(row.embedding) ? [{ ...row, embedding: row.embedding }] : []);
+    },
+
+    async saveVectors(userId, personaId, fingerprint, vectors) {
+      if (!vectors.length) return;
+      const db = await database();
+      const ownedDocuments = db.select({ id: documents.id }).from(documents)
+        .innerJoin(personas, eq(personas.id, documents.personaId)).where(ownerScope(userId, personaId));
+      const updates = sql.join(vectors.map(({ id, embedding }) =>
+        sql`WHEN ${id}::integer THEN ${JSON.stringify(embedding)}::jsonb`), sql` `);
+      // 更新现存块。原文同时被替换或删除时，旧块 ID 已失效，不会重新插入。
+      await db.update(chunks).set({
+        embedding: sql`CASE ${chunks.id} ${updates} ELSE ${chunks.embedding} END`,
+        embeddingFingerprint: fingerprint,
+      }).where(and(inArray(chunks.id, vectors.map(row => row.id)), inArray(chunks.documentId, ownedDocuments)));
     },
   };
 }

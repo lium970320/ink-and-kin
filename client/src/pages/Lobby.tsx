@@ -282,6 +282,18 @@ function getMissYouLevel(lastChatAt: string | Date | null): string | null {
   return null;
 }
 
+function formatCompactTraitTag(raw: unknown): { short: string; full: string } | null {
+  if (typeof raw !== "string") return null;
+  const full = raw.trim();
+  if (!full) return null;
+  const head = full.split(/[:：—－\n（(；;]/)[0]?.trim() || "";
+  if (head.length >= 2 && head.length <= 16) {
+    return { short: head, full };
+  }
+  const short = full.length > 16 ? `${full.slice(0, 15)}…` : full;
+  return { short, full };
+}
+
 function getCompatibilityScore(persona: any): number {
   const chatWeight = Math.min((persona.chatCount || 0) / 100, 1) * 40;
   const daysWeight = persona.togetherFrom
@@ -1375,8 +1387,8 @@ function PersonaLeaderboard({ personas }: { personas: any[] }) {
 
 // ─── RELATIONSHIP DEPTH RING ─────────────────────────────────────────────────
 
-function DepthRing({ value, size = 24 }: { value: number; size?: number }) {
-  const r = (size - 5) / 2;
+function DepthRing({ value, size = 26 }: { value: number; size?: number }) {
+  const r = (size - 4) / 2;
   const circumference = 2 * Math.PI * r;
   const offset = circumference - (value / 100) * circumference;
   return (
@@ -1452,8 +1464,17 @@ function PersonaCard({
   const displayRelation = useMemo(() => {
     if (!persona.relationshipDesc) return "小说角色";
     const firstPart = persona.relationshipDesc.split(/[；;]/)[0].trim();
-    return firstPart.length > 26 ? firstPart.slice(0, 26) + "..." : firstPart;
+    return firstPart.length > 42 ? firstPart.slice(0, 42) + "..." : firstPart;
   }, [persona.relationshipDesc]);
+
+  const attachmentTag = useMemo(
+    () => formatCompactTraitTag(pd.attachmentStyle),
+    [pd.attachmentStyle]
+  );
+  const loveLanguageTag = useMemo(
+    () => formatCompactTraitTag(pd.loveLanguage),
+    [pd.loveLanguage]
+  );
 
   const [showLetter, setShowLetter] = useState(false);
   const tilt = useTilt(2.5);
@@ -1479,26 +1500,6 @@ function PersonaCard({
         isGraduated ? "opacity-80" : ""
       }`}
     >
-      {/* 顶部右上角克制状态微章 */}
-      <div className="absolute top-4 right-4 flex items-center gap-1.5 z-10">
-        {isGraduated ? (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-muted/80 border border-border/70 text-[10px] text-muted-foreground font-medium">
-            <GraduationCap className="w-3 h-3" />
-            毕业休眠
-          </span>
-        ) : milestone ? (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-primary/[0.08] border border-primary/20 text-[10px] text-primary font-medium">
-            <Award className="w-3 h-3" />
-            {milestone.label}
-          </span>
-        ) : null}
-        {missLevel && !isGraduated && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-600 dark:text-rose-400 font-medium">
-            {missLevel}
-          </span>
-        )}
-      </div>
-
       <div className="space-y-3.5">
         {/* 纪念日温和提醒 */}
         {anniversary !== null && anniversary <= 30 && (
@@ -1517,7 +1518,7 @@ function PersonaCard({
           </div>
         )}
 
-        {/* 头部：头像与核心身份 */}
+        {/* 头部：头像与对称三层人物抬头 */}
         <div className="flex items-start gap-3.5">
           <div className="relative shrink-0">
             <div
@@ -1541,9 +1542,9 @@ function PersonaCard({
                 className="absolute -bottom-1.5 -left-1.5 z-10 bg-card rounded-full p-0.5 shadow-sm border border-border/70"
                 title={`故事活跃度 ${compatibility}%`}
               >
-                <div className="relative w-6 h-6 flex items-center justify-center">
-                  <DepthRing value={compatibility} size={24} />
-                  <span className="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-primary font-mono tabular-nums tracking-tighter">
+                <div className="relative w-6.5 h-6.5 flex items-center justify-center">
+                  <DepthRing value={compatibility} size={26} />
+                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold leading-none text-primary tabular-nums tracking-tighter">
                     {compatibility}
                   </span>
                 </div>
@@ -1551,18 +1552,38 @@ function PersonaCard({
             )}
           </div>
 
-          <div className="flex-1 min-w-0 pr-20">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <h3 className="font-semibold text-base text-foreground tracking-tight truncate group-hover:text-primary transition-colors">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="font-semibold text-base leading-snug text-foreground tracking-tight truncate group-hover:text-primary transition-colors">
                 {persona.name}
               </h3>
-              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-muted/65 border border-border/60 text-muted-foreground">
-                <EmotionIcon className="w-2.5 h-2.5 text-primary/80" />
+              {isGraduated ? (
+                <span className="inline-flex items-center gap-1 h-5 px-2 rounded-full bg-muted/80 border border-border/70 text-[10px] leading-none text-muted-foreground font-medium shrink-0 whitespace-nowrap">
+                  <GraduationCap className="w-3 h-3" />
+                  毕业休眠
+                </span>
+              ) : missLevel ? (
+                <span className="inline-flex items-center h-5 px-2 rounded-full bg-rose-500/10 border border-rose-500/20 text-[10px] leading-none text-rose-600 dark:text-rose-400 font-medium shrink-0 whitespace-nowrap">
+                  {missLevel}
+                </span>
+              ) : null}
+            </div>
+
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 h-5 px-2 rounded-full bg-muted/65 border border-border/60 text-[10px] leading-none font-medium text-muted-foreground whitespace-nowrap">
+                <EmotionIcon className="w-2.5 h-2.5 text-primary/80 shrink-0" />
                 {emotion.label}
               </span>
+              {!isGraduated && milestone && (
+                <span className="inline-flex items-center gap-1 h-5 px-2 rounded-full bg-primary/[0.08] border border-primary/20 text-[10px] leading-none font-medium text-primary whitespace-nowrap">
+                  <Award className="w-3 h-3 shrink-0" />
+                  {milestone.label}
+                </span>
+              )}
             </div>
+
             <p
-              className="text-muted-foreground text-xs mt-1 truncate"
+              className="text-muted-foreground text-xs leading-normal mt-1.5 truncate"
               title={persona.relationshipDesc}
             >
               {displayRelation}
@@ -1581,25 +1602,32 @@ function PersonaCard({
           </div>
         )}
 
-        {/* 精简特征微标签（最多展示 2 个口头禅 + 1 个性格特质，克制不拥挤） */}
-        {isReady && (catchphrases.length > 0 || pd.attachmentStyle || pd.loveLanguage) && (
+        {/* 精简特征微标签（统一单行高度胶囊，长文本提炼摘要并支持悬停看全） */}
+        {isReady && (catchphrases.length > 0 || attachmentTag || loveLanguageTag) && (
           <div className="flex flex-wrap items-center gap-1.5">
             {catchphrases.slice(0, 2).map((phrase: string, i: number) => (
               <span
                 key={i}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-primary/[0.07] text-primary font-medium border border-primary/15 max-w-[140px] truncate"
+                title={phrase}
+                className="inline-flex items-center h-5 px-2.5 rounded-full bg-primary/[0.07] text-primary text-[10px] leading-none font-medium border border-primary/15 max-w-[150px] truncate"
               >
                 “{phrase}”
               </span>
             ))}
-            {pd.attachmentStyle && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/60 border border-border/55 text-muted-foreground">
-                {pd.attachmentStyle}
+            {attachmentTag && (
+              <span
+                title={attachmentTag.full}
+                className="inline-flex items-center h-5 px-2.5 rounded-full bg-muted/60 border border-border/55 text-[10px] leading-none text-muted-foreground max-w-[176px] truncate"
+              >
+                {attachmentTag.short}
               </span>
             )}
-            {pd.loveLanguage && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/60 border border-border/55 text-muted-foreground">
-                {pd.loveLanguage}
+            {loveLanguageTag && (
+              <span
+                title={loveLanguageTag.full}
+                className="inline-flex items-center h-5 px-2.5 rounded-full bg-muted/60 border border-border/55 text-[10px] leading-none text-muted-foreground max-w-[150px] truncate"
+              >
+                {loveLanguageTag.short}
               </span>
             )}
           </div>
@@ -1613,13 +1641,13 @@ function PersonaCard({
               {status.label}
             </span>
             {persona.chatCount > 0 && (
-              <span className="inline-flex items-center gap-1 font-mono tabular-nums">
+              <span className="inline-flex items-center gap-1 tabular-nums">
                 <MessageCircle className="w-3 h-3 text-muted-foreground/70" />
                 {persona.chatCount}
               </span>
             )}
             {persona.fileCount > 0 && (
-              <span className="inline-flex items-center gap-1 font-mono tabular-nums">
+              <span className="inline-flex items-center gap-1 tabular-nums">
                 <FileText className="w-3 h-3 text-muted-foreground/70" />
                 {persona.fileCount}
               </span>
@@ -1630,7 +1658,7 @@ function PersonaCard({
             {togetherDays && (
               <span className="inline-flex items-center gap-1 text-foreground/75">
                 <Heart className="w-3 h-3 text-primary/75" />
-                <span className="font-mono tabular-nums">{togetherDays}</span> 日
+                <span className="tabular-nums">{togetherDays}</span> 日
               </span>
             )}
             {persona.lastChatAt && (
@@ -1664,7 +1692,7 @@ function PersonaCard({
         {persona.lastMessage && !isAnalyzing && (
           <div className="px-3 py-2 bg-muted/25 rounded-xl border border-border/45 text-[11px] text-foreground/80 leading-relaxed flex items-center justify-between gap-2">
             <p className="truncate flex-1">{persona.lastMessage.content}</p>
-            <span className="text-[10px] text-muted-foreground/70 shrink-0 font-mono tabular-nums">
+            <span className="text-[10px] text-muted-foreground/70 shrink-0 tabular-nums">
               {relativeTime(persona.lastMessage.createdAt)}
             </span>
           </div>
@@ -2480,7 +2508,7 @@ export default function Lobby() {
     "app-nav-icon w-9 h-9 rounded-xl border border-border/65 bg-card/75 text-muted-foreground hover:text-foreground hover:bg-muted/75 backdrop-blur-md flex items-center justify-center transition-all active:scale-95";
 
   return (
-    <div className="min-h-screen bg-background flex flex-col relative overflow-x-hidden">
+    <div className="min-h-screen bg-background flex flex-col relative overflow-x-clip">
       {/* 温润静奢环境底色（已移除廉价赛博粒子 tech-particles） */}
       <div className="gradient-mesh-bg opacity-75" aria-hidden="true" />
       <div

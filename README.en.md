@@ -1,7 +1,7 @@
-> **界面阶段快照分支（2026-10-25）**：当前仅完成界面迁移，业务后端未接通。使用合成数据预览请先阅读 [快照说明与启动方法](UI-SNAPSHOT.md)。本分支尚不作为可部署版本。
-
 # 书中人 · Ink & Kin
 
 Where ink becomes kin.
 
-项目来源、当前状态与运行方式见 [项目说明](README.md)。上游英文文档保存在 [来源文档](README.en.upstream.md)。
+Ink & Kin is a self-hosted character chat and collaborative storytelling app based on [Mirrai](https://github.com/Ch1rpy2613/Mirrai). Source snapshots are available under [Tags](https://github.com/lium970320/ink-and-kin/tags).
+
+The [setup guide](README.md#源码运行) uses Node.js 22.12+, pnpm 10.33.3 via Corepack, and PostgreSQL. The application listens on loopback with registration closed by default. When a cloud provider is configured, it receives the context required for that request. See the [security and privacy notes](SECURITY.md) and the [archived upstream documentation](README.en.upstream.md).

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { RuntimeStateView } from "../proactive/runtime";
+import { ENV } from "../_core/env";
 
 const createMessage = vi.fn();
 const getDefaultLlmConfig = vi.fn();
@@ -10,6 +11,8 @@ const updateIntimacy = vi.fn();
 const updatePersona = vi.fn();
 const getPersonaById = vi.fn();
 const getMessagesByPersonaId = vi.fn();
+const getDailyMessagesInTimeRange = vi.fn();
+const getDatedMemoriesInRange = vi.fn();
 const getMemoriesByPersonaId = vi.fn();
 const getFilesByPersonaId = vi.fn();
 const getSceneById = vi.fn();
@@ -43,6 +46,8 @@ vi.mock("../db", () => ({
   updatePersona: (...a: unknown[]) => updatePersona(...a),
   getPersonaById: (...a: unknown[]) => getPersonaById(...a),
   getMessagesByPersonaId: (...a: unknown[]) => getMessagesByPersonaId(...a),
+  getDailyMessagesInTimeRange: (...a: unknown[]) => getDailyMessagesInTimeRange(...a),
+  getDatedMemoriesInRange: (...a: unknown[]) => getDatedMemoriesInRange(...a),
   getMemoriesByPersonaId: (...a: unknown[]) => getMemoriesByPersonaId(...a),
   getFilesByPersonaId: (...a: unknown[]) => getFilesByPersonaId(...a),
   getSceneById: (...a: unknown[]) => getSceneById(...a),
@@ -83,6 +88,7 @@ vi.mock("../proactive/runtime", () => ({
 
 const invoke = vi.fn();
 const invokeWithProvider = vi.fn();
+const invokeDetailedWithProvider = vi.fn();
 const streamWithProvider = vi.fn();
 const resolveProviderForUser = vi.fn();
 
@@ -90,6 +96,7 @@ vi.mock("../llm", () => ({
   llmService: {
     invoke: (...a: unknown[]) => invoke(...a),
     invokeWithProvider: (...a: unknown[]) => invokeWithProvider(...a),
+    invokeDetailedWithProvider: (...a: unknown[]) => invokeDetailedWithProvider(...a),
     streamWithProvider: (...a: unknown[]) => streamWithProvider(...a),
   },
 }));
@@ -147,11 +154,11 @@ describe("runConversation", () => {
     for (const fn of [
       createMessage, getDefaultLlmConfig, getTodaySnapshot, createEmotionSnapshot,
       getIntimacyData, updateIntimacy, updatePersona, getPersonaById,
-      getMessagesByPersonaId, getMemoriesByPersonaId, getFilesByPersonaId, getSceneById,
+      getMessagesByPersonaId, getDailyMessagesInTimeRange, getDatedMemoriesInRange, getMemoriesByPersonaId, getFilesByPersonaId, getSceneById,
       getLatestChatSummary, createChatSummary, getRecentEmotionTrend,
       getMessageCountInRange, setGraduationStatus, getLatestGraduationAssessment,
       createGraduationAssessment, getMessagesSince, touchMemoryRecalled, createSafetyEvent,
-      getLastMessageAt, getMessageCountSince, getDailyChatCounts, invoke, invokeWithProvider,
+      getLastMessageAt, getMessageCountSince, getDailyChatCounts, invoke, invokeWithProvider, invokeDetailedWithProvider,
       streamWithProvider, resolveProviderForUser, inferEmotionalState,
       getSceneMemoryStateSnapshot, getSceneConversationMessagesBySceneId,
       recordSceneMemoryTurn, getSceneGenerationSnapshot, getRuntimeStateForChat,
@@ -166,6 +173,8 @@ describe("runConversation", () => {
       emotionVariety: 3, daysSinceCreation: 100, consecutiveDays: 2,
     });
     getMessagesByPersonaId.mockResolvedValue([]);
+    getDailyMessagesInTimeRange.mockResolvedValue([]);
+    getDatedMemoriesInRange.mockResolvedValue([]);
     getMemoriesByPersonaId.mockResolvedValue([]);
     getFilesByPersonaId.mockResolvedValue([]);
     getSceneById.mockResolvedValue(null);
@@ -197,6 +206,56 @@ describe("runConversation", () => {
       },
     });
     invokeWithProvider.mockResolvedValue("在的。");
+  });
+
+  it("流式日常发送最终回复，工具草稿和协议消息不落库", async () => {
+    const enabled = ENV.companionToolsEnabled;
+    ENV.companionToolsEnabled = true;
+    try {
+      resolveProviderForUser.mockResolvedValue({
+        name: "Test",
+        capabilities: { streaming: true, vision: true, tools: true, jsonMode: true },
+        invokeDetailed: vi.fn(),
+      });
+      invokeDetailedWithProvider
+        .mockResolvedValueOnce({
+          text: "工具草稿",
+          toolCalls: [{ id: "date", name: "get_calendar_and_anniversaries", arguments: "{}" }],
+        })
+        .mockResolvedValueOnce({ text: "今天是春节。" });
+      createMessage.mockResolvedValueOnce(501).mockResolvedValueOnce(502);
+      const onUserMessageSaved = vi.fn();
+      const onAssistantMessageSaved = vi.fn();
+      const events = [];
+      for await (const event of runConversation({
+        persona: persona(), userId: 1, message: "今天是什么节日？", mode: "stream",
+        now: new Date("2026-02-17T07:00:00Z"), onUserMessageSaved, onAssistantMessageSaved,
+      })) events.push(event);
+      expect(events.filter(event => event.type === "delta")).toEqual([{ type: "delta", text: "今天是春节。" }]);
+      expect(createMessage.mock.calls.map(([m]) => [m.role, m.content])).toEqual([
+        ["user", "今天是什么节日？"], ["assistant", "今天是春节。"],
+      ]);
+      expect(onUserMessageSaved).toHaveBeenCalledWith(501);
+      expect(onAssistantMessageSaved).toHaveBeenCalledWith(502);
+      expect(invokeDetailedWithProvider.mock.calls[1][1].messages.at(-1)).toMatchObject({ role: "tool", toolCallId: "date" });
+      expect(invokeDetailedWithProvider.mock.calls[0][1].options.usageContext).toMatchObject({ userId: 1, personaId: 1, route: "web", purpose: "chat" });
+      expect(streamWithProvider).not.toHaveBeenCalled();
+    } finally {
+      ENV.companionToolsEnabled = enabled;
+    }
+  });
+
+  it("过去日常的证据作为引文进入本轮提示，独立于工具开关", async () => {
+    getDailyMessagesInTimeRange.mockResolvedValueOnce([{
+      role: "user", content: "寄出了生日礼物", createdAt: new Date("2026-11-15T11:00:00Z"),
+    }]);
+    const messages = await composeMessages({
+      persona: persona(), userId: 1, userMessage: "昨晚说过什么？", contextLimit: 20,
+      now: new Date("2026-11-16T11:00:00Z"),
+    });
+    expect(messages[0].content).toContain("勿补造活动或经历");
+    expect(messages[1]).toMatchObject({ role: "user", content: expect.stringContaining("寄出了生日礼物") });
+    expect(getDailyMessagesInTimeRange).toHaveBeenCalledOnce();
   });
 
   it("读取最后消息期间取消不会落入用户回合", async () => {

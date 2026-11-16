@@ -24,7 +24,7 @@ export default function Login() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +40,7 @@ export default function Login() {
         if (!config.registrationEnabled) setIsRegister(false);
       })
       .catch(() => {
-        // 配置查询失败时保留本地兼容的注册入口，服务端仍会执行最终门控。
+        // 未取得配置时只显示登录入口。
       });
 
     return () => {

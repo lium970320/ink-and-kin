@@ -8,6 +8,7 @@ export function writeCredentialsFile(filePath: string, contents: string): void {
     if (process.platform === "win32") {
       execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
         $ErrorActionPreference = 'Stop'
+        Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1')
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
         $security = New-Object System.Security.AccessControl.FileSecurity
         $security.SetOwner($identity)

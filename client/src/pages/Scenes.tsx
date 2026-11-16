@@ -629,7 +629,7 @@ export default function ScenesPage() {
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col antialiased pb-safe">
       {/* ── Top Navigation Bar (Editorial Quiet Luxury & Mobile Responsive) ── */}
-      <header className="sticky top-0 z-40 bg-background/85 backdrop-blur-xl border-b border-border/65 shrink-0 transition-all">
+      <header className="sticky top-0 z-40 app-header bg-background/85 backdrop-blur-xl border-b border-border/65 shrink-0 transition-all">
         <div className="px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 max-w-6xl mx-auto w-full">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
             <Button
@@ -640,6 +640,7 @@ export default function ScenesPage() {
               title="返回对话"
             >
               <ArrowLeft className="w-4 h-4" />
+              <span className="text-xs font-medium md:hidden">返回</span>
               <span className="text-xs font-medium hidden md:inline">返回对话</span>
             </Button>
 

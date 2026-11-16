@@ -19,7 +19,7 @@ import { registerQqRoutes } from "../channels/qq";
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
-    server.listen(port, () => {
+    server.listen(port, ENV.listenHost, () => {
       server.close(() => resolve(true));
     });
     server.on("error", () => resolve(false));
@@ -75,18 +75,19 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+  // Create the initial local account before any registration request can arrive.
+  await bootstrapAdminAccount().catch((error) =>
+    console.error("[Bootstrap] First-run setup failed:", error),
+  );
+
+  server.listen(port, ENV.listenHost, () => {
+    const host = ENV.listenHost.includes(":") ? `[${ENV.listenHost}]` : ENV.listenHost;
+    console.log(`Server running on http://${host}:${port}/`);
   });
 
   // Move pre-scoped TTS files out of the shared folder.
   await migrateLegacyTTSFiles().catch((e) =>
     console.warn("[TTS] Legacy audio migration failed:", e),
-  );
-
-  // Create the first administrator on an empty instance.
-  await bootstrapAdminAccount().catch((e) =>
-    console.error("[Bootstrap] First-run setup failed:", e),
   );
 
   // Collection jobs: mirror every state change into the database, and mark

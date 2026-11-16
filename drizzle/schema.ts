@@ -124,7 +124,9 @@ export const messages = pgTable("messages", {
   /** 消息模式：daily=日常对话，scene=场景剧情；供分类/统计/剧情记忆回放的显式标记。 */
   mode: varchar("mode", { length: 16 }).default("daily").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, table => ({
+  dailyRecall: index("messages_daily_recall_idx").on(table.userId, table.personaId, table.mode, table.createdAt, table.id),
+}));
 
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = typeof messages.$inferInsert;

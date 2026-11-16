@@ -91,7 +91,16 @@ export async function authenticateRequest(req: Request): Promise<User> {
 }
 
 export function registerAuthRoutes(app: Express) {
+  app.get("/api/auth/config", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ registrationEnabled: ENV.registrationEnabled });
+  });
+
   app.post("/api/auth/register", async (req: Request, res: Response) => {
+    if (!ENV.registrationEnabled) {
+      res.status(403).json({ error: "此实例未开放注册，请联系部署者获取账号。" });
+      return;
+    }
     if (rejectIfRateLimited(req, res)) return;
 
     const { username, password } = req.body;

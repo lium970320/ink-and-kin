@@ -36,6 +36,7 @@ export class OllamaProvider implements LLMProvider {
   async invoke(messages: LLMMessage[], options?: LLMOptions): Promise<string> {
     const response = await fetch(`${this.url.replace(/\/+$/, "")}/api/chat`, {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: this.model,
@@ -58,6 +59,7 @@ export class OllamaProvider implements LLMProvider {
   async *stream(messages: LLMMessage[], options?: LLMOptions): AsyncGenerator<{ text: string }> {
     const response = await fetch(`${this.url.replace(/\/+$/, "")}/api/chat`, {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: this.model,

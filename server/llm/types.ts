@@ -4,9 +4,16 @@ export type LLMContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; url: string };
 
+export type LLMToolDefinition = { name: string; description: string; parameters: Record<string, unknown> };
+export type LLMToolChoice = "auto" | "none" | "required" | { type: "function"; name: string };
+export type LLMToolCall = { id: string; name: string; arguments: string };
+
 export type LLMMessage = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string | LLMContentPart[];
+  toolCalls?: LLMToolCall[];
+  reasoningContent?: string;
+  toolCallId?: string;
 };
 
 export type LLMOptions = {
@@ -25,6 +32,10 @@ export type LLMOptions = {
   frequencyPenalty?: number;
   presencePenalty?: number;
   requestTimeoutMs?: number;
+  tools?: LLMToolDefinition[];
+  toolChoice?: LLMToolChoice;
+  /** 允许详细调用完整读取 SSE，工具过程始终留在服务器。 */
+  streamResponse?: boolean;
   onRoute?: (route: LLMRouteInfo) => void;
   onModel?: (model: string) => void;
   onUsage?: (usage: LLMTokenUsage) => void;
@@ -64,6 +75,12 @@ export type InvokeParams = {
 };
 
 export type InvokeResult = string;
+export type LLMInvokeDetailedResult = {
+  text: string;
+  finishReason?: string;
+  toolCalls?: LLMToolCall[];
+  reasoningContent?: string;
+};
 
 export interface LLMProvider {
   name: string;
@@ -79,6 +96,7 @@ export interface LLMProvider {
   capabilities: LLMCapabilities;
   isConfigured(): boolean;
   invoke(messages: LLMMessage[], options?: LLMOptions): Promise<string>;
+  invokeDetailed?(messages: LLMMessage[], options?: LLMOptions): Promise<LLMInvokeDetailedResult>;
   /** Optional: yields text incrementally. */
   stream?(messages: LLMMessage[], options?: LLMOptions): AsyncIterable<LLMStreamChunk>;
 }

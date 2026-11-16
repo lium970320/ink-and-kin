@@ -7,8 +7,8 @@
  * all, this creates a local administrator and writes its credentials to a
  * file the operator can read.
  *
- * Set `MIRRAI_BOOTSTRAP_ADMIN=manual` to disable this and require
- * registration through the UI instead.
+ * For manual first-run setup, set `MIRRAI_BOOTSTRAP_ADMIN=manual` and enable
+ * registration on the local instance.
  */
 import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, unlinkSync } from "fs";
@@ -54,8 +54,8 @@ export interface BootstrapResult {
 /**
  * Creates the first administrator when the instance has no users.
  *
- * Never throws: a failure here must not stop the server from booting — the
- * operator can still register through the UI.
+ * Never throws: an instance with existing accounts should still start so that
+ * the operator can diagnose a first-run failure.
  */
 export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
   if (ENV.bootstrapAdmin === "manual") {
@@ -79,7 +79,7 @@ export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
     const credentialsPath = path.join(dataRoot, "first-run-credentials.txt");
 
     const contents = [
-      "Mirrai 首次运行凭据 / Mirrai first-run credentials",
+      "书中人首次运行凭据 / Ink & Kin first-run credentials",
       "",
       `用户名 / Username: ${ADMIN_USERNAME}`,
       `密码 / Password:   ${password}`,
@@ -103,7 +103,7 @@ export async function bootstrapAdminAccount(): Promise<BootstrapResult> {
 
     console.log("");
     console.log("  ┌──────────────────────────────────────────────┐");
-    console.log("  │  Mirrai 已创建本地管理员账号                  │");
+    console.log("  │  书中人已创建本地管理员账号                   │");
     console.log("  │  A local administrator account was created    │");
     console.log("  └──────────────────────────────────────────────┘");
     console.log(`     用户名 / Username: ${ADMIN_USERNAME}`);

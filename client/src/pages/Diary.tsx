@@ -227,11 +227,11 @@ export default function Diary() {
   const [, navigate] = useLocation();
   const params = useParams<{ id?: string }>();
   const { isAuthenticated } = useAuth();
+  const utils = trpc.useUtils();
   const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth());
+  const [year, setYear] = useState(now.getUTCFullYear());
+  const [month, setMonth] = useState(now.getUTCMonth());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
 
   const queryPersonaId =
@@ -266,10 +266,6 @@ export default function Diary() {
     { personaId: selectedPersonaId || 0 },
     { enabled: isAuthenticated && !!selectedPersonaId }
   );
-  const { data: missingDates, refetch: refetchMissingDates } = trpc.diary.getMissingDates.useQuery(
-    { personaId: selectedPersonaId || 0 },
-    { enabled: isAuthenticated && !!selectedPersonaId }
-  );
   const { data: entries, refetch: refetchEntries } = trpc.diary.list.useQuery(
     { personaId: selectedPersonaId || 0 },
     { enabled: isAuthenticated && !!selectedPersonaId }
@@ -280,23 +276,13 @@ export default function Diary() {
   );
 
   const generateMutation = trpc.diary.generate.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, input) => {
       toast.success("日记生成成功");
-      refetchDates();
-      refetchEntries();
-      refetchMissingDates();
+      void refetchDates();
+      void refetchEntries();
+      if (input.date) void utils.diary.getByDate.invalidate({ personaId: input.personaId, date: input.date });
     },
-    onError: (e: any) => toast.error("生成失败：" + e.message),
-  });
-
-  const generateAllMissingMutation = trpc.diary.generateAllMissing.useMutation({
-    onSuccess: res => {
-      toast.success(`成功补全 ${res.count} 篇未填写的历史日记`);
-      refetchDates();
-      refetchEntries();
-      refetchMissingDates();
-    },
-    onError: (e: any) => toast.error("批量生成失败：" + e.message),
+    onError: error => toast.error("生成失败：" + error.message),
   });
 
   const deleteMutation = trpc.diary.delete.useMutation({
@@ -304,15 +290,14 @@ export default function Diary() {
       toast.success("日记已移除");
       setDeleteTarget(null);
       setSelectedDate(null);
-      refetchDates();
-      refetchEntries();
-      refetchMissingDates();
+      void refetchDates();
+      void refetchEntries();
+      if (selectedPersonaId) void utils.diary.getByDate.invalidate({ personaId: selectedPersonaId });
     },
     onError: (e: any) => toast.error(e.message),
   });
 
-  const datesSet = new Set((diaryDates || []).map((d: any) => d.date));
-  const missingSet = new Set(missingDates || []);
+  const datesSet = new Set(diaryDates);
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfWeek(year, month);
 
@@ -333,18 +318,12 @@ export default function Diary() {
     }
   };
 
-  const handleGenerate = async (date: string) => {
+  const handleGenerate = (date: string) => {
     if (!selectedPersonaId) return;
-    setGenerating(true);
-    try {
-      await generateMutation.mutateAsync({ personaId: selectedPersonaId, date });
-      setSelectedDate(date);
-    } finally {
-      setGenerating(false);
-    }
+    generateMutation.mutate({ personaId: selectedPersonaId, date });
   };
 
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const todayStr = now.toISOString().slice(0, 10);
 
   const handleBack = () => {
     if (typeof window !== "undefined" && window.history.length > 1) {
@@ -359,22 +338,24 @@ export default function Diary() {
   const totalDiaryCount = diaryDates?.length || 0;
 
   return (
-    <div className="min-h-screen bg-background flex flex-col relative overflow-x-hidden">
+    <div className="min-h-screen bg-background flex flex-col relative overflow-x-clip">
       <div
         aria-hidden="true"
         className="pointer-events-none fixed -top-28 left-1/3 w-96 h-96 rounded-full bg-primary/[0.04] blur-3xl"
       />
 
-      <header className="sticky top-0 z-30 app-header">
+      <header className="sticky top-0 z-40 app-header">
         <div className="container app-nav max-w-2xl">
           <button
             type="button"
             onClick={handleBack}
-            className="app-nav-back -ml-1"
+            className="app-nav-back -ml-1 gap-1 cursor-pointer"
             title="返回上一个页面"
           >
             <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm">返回</span>
           </button>
+          <div className="app-nav-divider" />
           <div className="app-nav-title-group">
             <div className="app-nav-mark">
               <BookOpen className="w-3.5 h-3.5 text-primary" />
@@ -386,34 +367,14 @@ export default function Diary() {
           </div>
           <div className="app-nav-spacer" />
 
-          {/* 单一清晰的顶栏主操作：一键补全缺失日记（无缺失时显示已装订篇数徽章） */}
-          {missingDates && missingDates.length > 0 && selectedPersonaId ? (
-            <Button
-              size="sm"
-              onClick={() => generateAllMissingMutation.mutate({ personaId: selectedPersonaId })}
-              disabled={generateAllMissingMutation.isPending}
-              title={`存在 ${missingDates.length} 天对话尚未收录为日记：${missingDates.slice(0, 3).join("、")}`}
-              className="rounded-xl gap-1.5 h-8 px-3 bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs text-xs font-medium"
-            >
-              {generateAllMissingMutation.isPending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5" />
-              )}
-              <span>
-                {generateAllMissingMutation.isPending
-                  ? "正在补全..."
-                  : `一键补全 (${missingDates.length})`}
-              </span>
-            </Button>
-          ) : selectedPersonaId ? (
+          {selectedPersonaId && (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted/65 border border-border/60 text-[11px] text-muted-foreground">
               <CalendarDays className="w-3 h-3 text-primary/75" />
               <span>
                 已收录 <span className="font-mono tabular-nums text-foreground font-medium">{totalDiaryCount}</span> 篇
               </span>
             </span>
-          ) : null}
+          )}
         </div>
       </header>
 
@@ -465,25 +426,6 @@ export default function Diary() {
 
         {selectedPersonaId && (
           <>
-            {/* 待补全日期轻提示说明条（仅作信息提示，不放置重复按钮） */}
-            {missingDates && missingDates.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.25, ease: EASE_OUT_EXPO }}
-                className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-primary/[0.06] border border-primary/15 text-xs text-muted-foreground"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-                  <span className="truncate">
-                    尚有 <span className="font-mono tabular-nums text-foreground font-medium">{missingDates.length}</span> 天历史对话待整理（含{" "}
-                    <span className="font-mono tabular-nums">{missingDates.slice(0, 2).join("、")}</span>
-                    {missingDates.length > 2 ? " 等" : ""}），可点选日期单独生成或由右上角一键补全
-                  </span>
-                </div>
-              </motion.div>
-            )}
-
             {/* 手账月历卡片 */}
             <div className="warm-card warm-card-static rounded-3xl border border-border/70 p-5">
               <div className="flex items-center justify-between mb-4">
@@ -535,7 +477,6 @@ export default function Diary() {
                   const day = i + 1;
                   const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
                   const hasDiary = datesSet.has(dateStr);
-                  const isMissing = missingSet.has(dateStr);
                   const isToday = dateStr === todayStr;
                   const isSelected = dateStr === selectedDate;
                   return (
@@ -561,16 +502,6 @@ export default function Diary() {
                           }`}
                         />
                       )}
-                      {!hasDiary && isMissing && (
-                        <span
-                          title="该日有对话可生成日记"
-                          className={`absolute bottom-1.5 w-1.5 h-1.5 rounded-full border ${
-                            isSelected
-                              ? "border-primary-foreground"
-                              : "border-primary/70 bg-transparent"
-                          }`}
-                        />
-                      )}
                     </button>
                   );
                 })}
@@ -580,10 +511,6 @@ export default function Diary() {
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                   已生成日记
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full border border-primary/70" />
-                  有对话待整理
                 </span>
               </div>
             </div>
@@ -621,15 +548,15 @@ export default function Diary() {
                       <Button
                         size="sm"
                         onClick={() => handleGenerate(selectedDate)}
-                        disabled={generating}
+                        disabled={generateMutation.isPending || selectedDate > todayStr}
                         className="rounded-xl gap-1.5 px-5 h-9 bg-primary hover:bg-primary/90 text-primary-foreground shadow-xs"
                       >
-                        {generating ? (
+                        {generateMutation.isPending ? (
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         ) : (
                           <Sparkles className="w-3.5 h-3.5" />
                         )}
-                        <span>{generating ? "正在提炼手账..." : "生成当日日记"}</span>
+                        <span>{generateMutation.isPending ? "生成中..." : "生成当日日记"}</span>
                       </Button>
                     </div>
                   )}

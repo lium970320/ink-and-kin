@@ -1,7 +1,7 @@
 import { LLMRequestError, mayRetryLLM, safeLLMError } from "./errors";
 import { getRelayFailoverPolicy } from "./relay-failover-policy";
-import { isRelayCoolingDown, markRelaySuccess, markRelayTransientFailure, selectAvailableCandidates } from "./relay-health";
-import type { LLMMessage, LLMOptions, LLMProvider, LLMStreamChunk } from "./types";
+import { isRelayCoolingDown, markRelayAccountFailure, markRelaySuccess, markRelayTransientFailure, selectRelayRecoveryCandidates } from "./relay-health";
+import type { LLMInvokeDetailedResult, LLMMessage, LLMOptions, LLMProvider, LLMStreamChunk } from "./types";
 
 export type RoutedCandidate = {
   provider: LLMProvider;
@@ -115,12 +115,24 @@ class RoutedProvider implements LLMProvider {
     return { model: summary?.model, reasoningEffort: summary?.reasoningEffort };
   }
 
-  private available(options?: LLMOptions): RoutedCandidate[] {
+  private async *candidatePlan(options: LLMOptions, requireTools = false) {
     assertActive(options?.signal);
     if (!this.candidates.length) throw new LLMRequestError("invalid_request");
-    const available = selectAvailableCandidates(this.candidates, this.settings.userId);
-    if (!available.length) throw new LLMRequestError("transient");
-    return available;
+    const candidates = requireTools
+      ? this.candidates.filter(candidate => candidate.provider.capabilities.tools && candidate.provider.invokeDetailed)
+      : this.candidates;
+    if (!candidates.length) throw new LLMRequestError("invalid_request", undefined, "unsupported_tools");
+    const { userId, hasFallback } = this.settings;
+    const cooling = candidates.filter(candidate => candidate.relayId !== undefined && isRelayCoolingDown(userId, candidate.relayId));
+    const available = candidates.filter(candidate => !cooling.includes(candidate));
+    const policy = getRelayFailoverPolicy({ candidateCount: this.candidates.length, hasFallback });
+    for (const candidate of available) {
+      yield { candidate, attempts: policy.maxAttemptsPerCandidate, timeoutMs: policy.attemptTimeoutMs, recovery: false };
+    }
+    assertActive(options.signal);
+    for (const candidate of selectRelayRecoveryCandidates(cooling, userId, !available.length && !hasFallback)) {
+      yield { candidate, attempts: 1, timeoutMs: policy.attemptTimeoutMs, recovery: true };
+    }
   }
 
   private startRoute(candidate: RoutedCandidate, options: LLMOptions, scope: AttemptScope, timeoutMs: number): LLMOptions {
@@ -137,37 +149,70 @@ class RoutedProvider implements LLMProvider {
   }
 
   private recordFailure(candidate: RoutedCandidate, error: LLMRequestError): void {
-    if (candidate.relayId !== undefined && mayRetryLLM(error)) markRelayTransientFailure(this.settings.userId, candidate.relayId);
+    if (candidate.relayId === undefined) return;
+    if (error.protocol === "relay_account") markRelayAccountFailure(this.settings.userId, candidate.relayId);
+    else if (mayRetryLLM(error)) markRelayTransientFailure(this.settings.userId, candidate.relayId);
   }
   private recordSuccess(candidate: RoutedCandidate): void {
     if (candidate.relayId !== undefined) markRelaySuccess(this.settings.userId, candidate.relayId);
   }
 
   async invoke(messages: LLMMessage[], options: LLMOptions = {}): Promise<string> {
-    const available = this.available(options);
-    const policy = getRelayFailoverPolicy({ candidateCount: this.candidates.length, hasFallback: this.settings.hasFallback });
+    return this.invokeCandidates(options, (provider, requestOptions) => provider.invoke(messages, requestOptions));
+  }
+
+  async invokeDetailed(messages: LLMMessage[], options: LLMOptions = {}): Promise<LLMInvokeDetailedResult> {
+    const requiresTools = Boolean(options.tools?.length || messages.some(message => message.role === "tool" || message.toolCalls?.length));
+    return this.invokeCandidates(options, async (provider, requestOptions) =>
+      provider.invokeDetailed
+        ? provider.invokeDetailed(messages, requestOptions)
+        : { text: await provider.invoke(messages, requestOptions) }, requiresTools);
+  }
+
+  private async invokeCandidate<T>(
+    candidate: RoutedCandidate,
+    timeoutMs: number,
+    options: LLMOptions,
+    invoke: (provider: LLMProvider, options: LLMOptions) => Promise<T>,
+  ): Promise<T> {
+    const scope = new AttemptScope(timeoutMs, options.signal);
+    try {
+      const result = await scope.run(() => {
+        const requestOptions = this.startRoute(candidate, options, scope, timeoutMs);
+        if (!candidate.provider.reportsAttempts) options.onAttempt?.();
+        return invoke(candidate.provider, requestOptions);
+      });
+      assertActive(options.signal);
+      this.recordSuccess(candidate);
+      return result;
+    } catch (error) {
+      const safe = scope.error(error);
+      this.recordFailure(candidate, safe);
+      throw safe;
+    } finally { scope.close(); }
+  }
+
+  private async invokeCandidates<T>(
+    options: LLMOptions,
+    invoke: (provider: LLMProvider, options: LLMOptions) => Promise<T>,
+    requiresTools = false,
+  ): Promise<T> {
     let lastError: LLMRequestError = new LLMRequestError("transient");
-    for (const candidate of available) {
-      const probing = candidate.relayId !== undefined && isRelayCoolingDown(this.settings.userId, candidate.relayId);
-      const attempts = probing ? 1 : policy.maxAttemptsPerCandidate;
+    let retry: { candidate: RoutedCandidate; timeoutMs: number } | undefined;
+    const plan = this.candidatePlan(options, requiresTools);
+    for await (const { candidate, attempts, timeoutMs, recovery } of plan) {
       for (let attempt = 0; attempt < attempts; attempt++) {
-        const scope = new AttemptScope(policy.attemptTimeoutMs, options.signal);
         try {
-          const result = await scope.run(() => {
-            const requestOptions = this.startRoute(candidate, options, scope, policy.attemptTimeoutMs);
-            if (!candidate.provider.reportsAttempts) options.onAttempt?.();
-            return candidate.provider.invoke(messages, requestOptions);
-          });
-          assertActive(options.signal);
-          this.recordSuccess(candidate);
-          return result;
+          return await this.invokeCandidate(candidate, timeoutMs, options, invoke);
         } catch (error) {
-          lastError = scope.error(error);
-          this.recordFailure(candidate, lastError);
+          lastError = safeLLMError(error, options.signal);
+          if (lastError.protocol === "relay_account") break;
           if (!mayRetryLLM(lastError, options.signal)) throw lastError;
-        } finally { scope.close(); }
+          if (!retry && !recovery && attempts === 1 && !this.settings.hasFallback) retry = { candidate, timeoutMs };
+        }
       }
     }
+    if (retry) return this.invokeCandidate(retry.candidate, retry.timeoutMs, options, invoke);
     throw lastError;
   }
 
@@ -187,19 +232,15 @@ class RoutedProvider implements LLMProvider {
   }
 
   private async *streamCandidates(messages: LLMMessage[], options: LLMOptions, consumer: AbortSignal): AsyncGenerator<LLMStreamChunk> {
-    const available = this.available(options);
-    const policy = getRelayFailoverPolicy({ candidateCount: this.candidates.length, hasFallback: this.settings.hasFallback });
     let lastError: LLMRequestError = new LLMRequestError("transient");
     let emittedBody = false;
-    for (const candidate of available) {
-      const probing = candidate.relayId !== undefined && isRelayCoolingDown(this.settings.userId, candidate.relayId);
-      const attempts = probing ? 1 : policy.maxAttemptsPerCandidate;
+    for await (const { candidate, attempts, timeoutMs } of this.candidatePlan(options)) {
       for (let attempt = 0; attempt < attempts; attempt++) {
         if (consumer.aborted) return;
-        const scope = new AttemptScope(policy.attemptTimeoutMs, options.signal, consumer);
+        const scope = new AttemptScope(timeoutMs, options.signal, consumer);
         let iterator: AsyncIterator<LLMStreamChunk> | undefined;
         try {
-          const requestOptions = this.startRoute(candidate, options, scope, policy.attemptTimeoutMs);
+          const requestOptions = this.startRoute(candidate, options, scope, timeoutMs);
           if (candidate.provider.stream) {
             iterator = candidate.provider.stream(messages, requestOptions)[Symbol.asyncIterator]();
             let firstNext = true;
@@ -231,6 +272,7 @@ class RoutedProvider implements LLMProvider {
           if (consumer.aborted) return;
           lastError = scope.error(error);
           this.recordFailure(candidate, lastError);
+          if (!emittedBody && lastError.protocol === "relay_account") break;
           if (emittedBody || !mayRetryLLM(lastError, options.signal)) throw lastError;
         } finally {
           scope.close();

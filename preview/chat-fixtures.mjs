@@ -108,7 +108,7 @@ export function chatFixture(path, input) {
       snapshots: ownsPersona ? DAYS.map((date, index) => ({ date, emotionalState: ["warm", "playful", "happy"][index], messageCount: 12 })) : [],
       distribution: ownsPersona ? ["warm", "playful", "happy"].map(emotionalState => ({ emotionalState, count: 12 })) : [],
     };
-    case "diary.getDates": return ownsPersona ? DAYS.map(date => ({ date })) : [];
+    case "diary.getDates": return ownsPersona ? [...DAYS] : [];
     case "diary.getMissingDates": return [];
     case "diary.list": return copy(ownsPersona ? DIARY : []);
     case "diary.getByDate": return ownsPersona ? copy(DIARY.find(entry => entry.date === query.date) ?? null) : null;

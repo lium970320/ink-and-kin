@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import PersonaStatePanel from "@/components/PersonaStatePanel";
+import { ChannelPersonaDiagnostics } from "@/components/ChannelPersonaDiagnostics";
+import MemoryReviewCandidates from "@/components/MemoryReviewCandidates";
 import QqDeliveryPanel from "@/components/QqDeliveryPanel";
 import { isQqDeliveryComplete } from "@shared/qq-delivery";
 import { AnimatePresence, motion } from "framer-motion";
@@ -325,7 +326,7 @@ export default function Roleplay() {
   // Workbench Modal States (左侧陪伴工作台各面板)
   const [workbenchPersonaId, setWorkbenchPersonaId] = useState<number | null>(null);
   const [showMoodModal, setShowMoodModal] = useState(false);
-  const [showStateModal, setShowStateModal] = useState(false);
+  const [stateModalSection, setStateModalSection] = useState<"overview" | "calls" | null>(null);
   const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
   const [showSourceLibraryModal, setShowSourceLibraryModal] = useState(false);
@@ -528,7 +529,7 @@ export default function Roleplay() {
     if (channelId === selectedChannelId) return;
     if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
     setShowMoodModal(false);
-    setShowStateModal(false);
+    setStateModalSection(null);
     setShowDiagnosticsModal(false);
     setShowMemoryModal(false);
     setShowSourceLibraryModal(false);
@@ -1183,15 +1184,16 @@ export default function Roleplay() {
         <div className="gradient-mesh-bg" />
 
         {/* Studio Top Header (1:1 with Scenes) */}
-        <header className="sticky top-0 z-30 app-header border-b border-border/60 bg-background/88 backdrop-blur-xl">
+        <header className="sticky top-0 z-40 app-header border-b border-border/60 bg-background/88 backdrop-blur-xl">
           <div className="container max-w-4xl h-14 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
               <button
                 onClick={() => setCurrentView("chat")}
-                className="w-8.5 h-8.5 rounded-xl bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center transition-all shadow-2xs active:scale-95 shrink-0 cursor-pointer"
+                className="h-8.5 px-2.5 rounded-xl bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center gap-1 transition-all shadow-2xs active:scale-95 shrink-0 cursor-pointer"
                 title="返回频道"
               >
                 <ArrowLeft className="w-4 h-4" />
+                <span className="text-xs font-medium">返回</span>
               </button>
               <div className="w-9 h-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-lg ring-1 ring-primary/20 shrink-0">
                 <Film className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -2347,7 +2349,7 @@ export default function Roleplay() {
       <div className="gradient-mesh-bg" />
 
       {/* Top Header (Clean & Uncluttered -Editorial Quiet Luxury) */}
-      <header className="sticky top-0 z-30 app-header border-b border-border/60 bg-background/86 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 app-header border-b border-border/60 bg-background/86 backdrop-blur-xl">
         <div className="container max-w-6xl h-14 flex items-center justify-between gap-2.5 sm:gap-3">
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button
@@ -2355,10 +2357,11 @@ export default function Roleplay() {
                 if (activeWebTaskRef.current) cancelWebTask(activeWebTaskRef.current, false);
                 navigate("/");
               }}
-              className="w-8.5 h-8.5 rounded-xl bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center transition-all shadow-2xs active:scale-95 shrink-0 cursor-pointer"
+              className="h-8.5 px-2.5 rounded-xl bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center gap-1 transition-all shadow-2xs active:scale-95 shrink-0 cursor-pointer"
               title="返回大厅"
             >
               <ArrowLeft className="w-4 h-4" />
+              <span className="text-xs font-medium">返回</span>
             </button>
             <div className="w-8.5 h-8.5 rounded-xl bg-primary/10 text-primary border border-primary/15 flex items-center justify-center shadow-2xs shrink-0 hidden xs:flex">
               <Users className="w-4 h-4" />
@@ -3234,24 +3237,24 @@ export default function Roleplay() {
         onOpenPersonaDiagnostics={(personaId: number) => {
           setWorkbenchPersonaId(personaId);
           setShowMoodModal(false);
-          setShowStateModal(true);
+          setStateModalSection("overview");
         }}
       />
 
-      {/* 3. 角色深度运行诊断 (PersonaStatePanel · 从面板内打开) */}
+      {/* 3. 角色运行诊断 */}
       <MotionModal
-        open={showStateModal}
-        onClose={() => setShowStateModal(false)}
+        open={stateModalSection !== null}
+        onClose={() => setStateModalSection(null)}
         ariaLabel="角色深度心智与运行状态"
-        className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
+        className="max-w-4xl h-full max-h-[88vh] overflow-hidden flex flex-col p-0"
       >
         {channel?.members?.length > 1 && (
-          <div className="px-6 py-2.5 border-b border-border/50 bg-muted/25 flex items-center justify-between gap-3 shrink-0">
-            <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <div className="px-3 sm:px-6 py-2.5 border-b border-border/50 bg-muted/25 flex items-center justify-between gap-2 shrink-0">
+            <span className="text-xs font-semibold text-foreground flex shrink-0 items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-primary" />
-              切换查看频道分身：
+              频道角色
             </span>
-            <div className="flex items-center gap-1 p-1 rounded-xl bg-muted/55 border border-border/60">
+            <div className="flex min-w-0 items-center gap-1 overflow-x-auto p-1 rounded-xl bg-muted/55 border border-border/60">
               {channel.members.map((m: any) => {
                 const active = (workbenchPersonaId || firstMemberId) === m.personaId;
                 return (
@@ -3259,7 +3262,8 @@ export default function Roleplay() {
                     key={m.personaId}
                     type="button"
                     onClick={() => setWorkbenchPersonaId(m.personaId)}
-                    className={`relative px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    aria-pressed={active}
+                    className={`relative shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                       active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
@@ -3278,10 +3282,13 @@ export default function Roleplay() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
-          <PersonaStatePanel
+        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+          <ChannelPersonaDiagnostics
+            key={workbenchPersonaId || firstMemberId}
             personaId={workbenchPersonaId || firstMemberId || 0}
-            onClose={() => setShowStateModal(false)}
+            enabled={stateModalSection !== null}
+            initialSection={stateModalSection ?? "overview"}
+            onClose={() => setStateModalSection(null)}
           />
         </div>
       </MotionModal>
@@ -3300,7 +3307,7 @@ export default function Roleplay() {
         onOpenPersonaState={(personaId: number) => {
           setWorkbenchPersonaId(personaId);
           setShowDiagnosticsModal(false);
-          setShowStateModal(true);
+          setStateModalSection("calls");
         }}
       />
 
@@ -3850,17 +3857,35 @@ function RoleplayMemoryModal({
 }) {
   const [activeTab, setActiveTab] = useState<"all" | "active" | "archived">("active");
   const [search, setSearch] = useState("");
+  const utils = trpc.useUtils();
+  const extractOperation = useRef<{ personaId: number; id: string } | null>(null);
+  const extractInFlight = useRef(false);
   const { data: memories, isLoading, isError, refetch } = trpc.memory.list.useQuery(
     { personaId },
     { enabled: open && Boolean(personaId) }
   );
   const extractMutation = trpc.memory.autoExtract.useMutation({
-    onSuccess: (res) => {
-      toast.success(`AI 已提取 ${res.extracted?.length || 0} 条记忆`);
-      refetch();
+    onSuccess: (data, input) => {
+      extractOperation.current = null;
+      void utils.memoryReview.list.invalidate({ personaId: input.personaId, status: "pending" });
+      toast.success(`生成 ${data.extracted.length} 条待审阅候选，尚未应用`);
     },
-    onError: (err) => toast.error(err.message),
+    onError: (error, input) => {
+      if (error.data?.code === "CONFLICT") {
+        void utils.memoryReview.list.invalidate({ personaId: input.personaId, status: "pending" });
+      }
+      toast.error(error.message);
+    },
+    onSettled: () => { extractInFlight.current = false; },
   });
+  const extractMemories = () => {
+    if (!personaId || extractInFlight.current) return;
+    if (extractOperation.current?.personaId !== personaId) {
+      extractOperation.current = { personaId, id: crypto.randomUUID() };
+    }
+    extractInFlight.current = true;
+    extractMutation.mutate({ personaId, operationId: extractOperation.current.id });
+  };
 
   const filtered = useMemo(() => {
     let list = memories || [];
@@ -3880,7 +3905,7 @@ function RoleplayMemoryModal({
       ariaLabel="记忆时间轴与档案"
       className="max-w-4xl max-h-[88vh] overflow-hidden flex flex-col p-0"
     >
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-6 py-4 border-b border-border/60 bg-muted/15 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-chart-4/12 text-chart-4 border border-chart-4/20 flex items-center justify-center">
             <Clock className="w-5 h-5" />
@@ -3899,12 +3924,12 @@ function RoleplayMemoryModal({
         <div className="flex items-center gap-2">
           <Button
             size="sm"
-            onClick={() => personaId && extractMutation.mutate({ personaId })}
+            onClick={extractMemories}
             disabled={extractMutation.isPending || !personaId}
             className="h-8 text-xs px-3 rounded-xl bg-primary/10 text-primary border border-primary/25 hover:bg-primary/18 shadow-none cursor-pointer"
           >
             <Sparkles className={`w-3.5 h-3.5 mr-1 ${extractMutation.isPending ? "animate-spin" : ""}`} />
-            AI 提取记忆
+            AI 提取记忆候选
           </Button>
           <button
             onClick={onClose}
@@ -3988,6 +4013,7 @@ function RoleplayMemoryModal({
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-3">
+        {open && personaId > 0 && <MemoryReviewCandidates key={personaId} personaId={personaId} />}
         {isLoading ? (
           <div className="text-center py-16 space-y-2">
             <Loader2 className="w-7 h-7 animate-spin text-primary/60 mx-auto" />
@@ -4006,7 +4032,7 @@ function RoleplayMemoryModal({
           <div className="text-center py-16 space-y-2">
             <Clock className="w-8 h-8 text-muted-foreground/40 mx-auto" />
             <p className="text-xs text-muted-foreground">
-              {memories?.length ? "没有匹配的记忆档案，换个关键词试试" : "TA 还没有沉淀记忆，对话推进后会自动记录共同回忆"}
+              {memories?.length ? "没有匹配的记忆档案，换个关键词试试" : "还没有记忆档案，可提取候选后在上方审阅。"}
             </p>
           </div>
         ) : (
@@ -4225,6 +4251,11 @@ function RoleplayEmotionModal({
 
   const isChannelMode = !report || (report.totalDays === 0 && report.totalMessages === 0);
   const effectiveReport = isChannelMode ? channelReport : report;
+  const distribution = (effectiveReport?.distribution ?? []).map(item => ({
+    state: "state" in item ? item.state : item.emotionalState,
+    count: item.count,
+  }));
+  const dominantMood = distribution[0] ? getMoodBadge(distribution[0].state) : null;
 
   return (
     <MotionModal
@@ -4323,9 +4354,7 @@ function RoleplayEmotionModal({
               <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
                 <span className="text-[10px] text-muted-foreground font-semibold">主流情绪</span>
                 <p className="text-lg font-semibold text-primary mt-0.5">
-                  {effectiveReport.distribution?.[0]?.state
-                    ? `${getMoodBadge(effectiveReport.distribution[0].state).emoji} ${getMoodBadge(effectiveReport.distribution[0].state).label}`
-                    : "温柔"}
+                  {dominantMood ? `${dominantMood.emoji} ${dominantMood.label}` : "暂无"}
                 </p>
               </div>
               <div className="p-3.5 rounded-2xl bg-muted/20 border border-border/60 text-center">
@@ -4339,11 +4368,11 @@ function RoleplayEmotionModal({
             </div>
 
             {/* 情绪分布 */}
-            {(effectiveReport.distribution || []).length > 0 && (
+            {distribution.length > 0 && (
               <div className="space-y-2">
                 <span className="text-xs font-semibold text-foreground">情绪分布：</span>
                 <div className="space-y-1.5">
-                  {effectiveReport.distribution.map((d: any) => {
+                  {distribution.map(d => {
                     const mood = getMoodBadge(d.state);
                     const pct = Math.round((d.count / Math.max(effectiveReport.totalMessages, 1)) * 100);
                     return (
@@ -4719,6 +4748,17 @@ function ChannelDiagnosticsPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {(personaId || members[0]?.personaId) ? (
+            <button
+              type="button"
+              onClick={() => onOpenPersonaState(personaId || members[0]?.personaId || 0)}
+              className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-primary/8 hover:bg-primary/15 text-primary border border-primary/25 rounded-xl transition-colors shadow-2xs cursor-pointer"
+              title="查看单角色最近模型调用链路与深度运行诊断"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              调用链路
+            </button>
+          ) : null}
           <button
             onClick={handleRefreshAll}
             disabled={isRefreshing || statsQuery.isFetching}

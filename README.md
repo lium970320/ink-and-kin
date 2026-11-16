@@ -1,6 +1,4 @@
-> **界面阶段快照分支（2026-10-25）**：当前仅完成界面迁移，业务后端未接通。使用合成数据预览请先阅读 [快照说明与启动方法](UI-SNAPSHOT.md)。本分支尚不作为可部署版本。
-
-# 书中人
+# 书中人 · Ink & Kin
 
 书中人基于 **Ch1rpy（GitHub：Ch1rpy2613）的 [Mirrai](https://github.com/Ch1rpy2613/Mirrai)** 开发。本基础版取自上游提交 [`162019895b70509f495b406b86e1cd61c08147a5`](https://github.com/Ch1rpy2613/Mirrai/commit/162019895b70509f495b406b86e1cd61c08147a5)。
 
@@ -8,11 +6,9 @@
 
 与书中人相识，让故事继续。
 
-## 当前版本
+书中人是一款可以自行托管的角色对话和故事共创应用。它支持流式聊天、可审阅的角色记忆、原文库检索、场景、多人角色频道，以及可选的 QQ 私聊接入。
 
-这是 `0.1.0` 首个源码版本，目前已在本地固定，尚未公开发布。以核对时的上游最新源码为起点，完成基础问题修复，尚未移植后续扩展模块。上游最新正式发布为 `v1.2.0`，本快照比该发布多一个提交；本项目不继承上游的版本编号。
-
-原有流式对话、角色资料与记忆、模板、角色卡、采集器、渠道和主动提醒等能力来自上述上游版本。后续模块按独立分支适配、验证后合入，以版本标签固定经过验收的源码。具体变更见 [功能与版本记录](FORK_CHANGES.md)。
+公开快照以 Git 标签固定，可供下载源码。也可以使用合成数据体验 [只读界面预览](UI-SNAPSHOT.md)。 [版本标签](https://github.com/lium970320/ink-and-kin/tags) · [功能与版本记录](FORK_CHANGES.md)
 
 ## 来源与贡献
 
@@ -24,17 +20,21 @@
 
 ## 源码运行
 
-使用 Node.js 22.12 或更高版本，以及 package.json 固定的 pnpm 10.33.3。安装、构建和数据目录应放在独立本地目录。
+准备 Node.js 22.12 或更新版本、Corepack（用于运行项目固定的 pnpm 10.33.3）和一个独立的 PostgreSQL 数据库。请在本机目录解压或克隆源码。
 
-1. `corepack pnpm install --frozen-lockfile`
-2. 复制 `.env.example` 为 `.env`，配置自己的 PostgreSQL 连接、随机 JWT_SECRET 和所需模型。使用新建独立数据库。
-3. 新库先执行 `corepack pnpm db:push` 建立全部表结构。
-4. 执行 `node --env-file=.env scripts/migrate.mjs` 应用增量数据迁移；该命令不能替代新库建表。
-5. 在 `.env` 中设置 `NODE_ENV=development`，然后开发启动：`node --env-file=.env --import tsx server/_core/index.ts`。
-6. 检查：`corepack pnpm check`、`corepack pnpm test`、`corepack pnpm build`。
+1. 执行 `corepack pnpm install --frozen-lockfile`。
+2. 将 `.env.example` 另存为 `.env`，填好 `DATABASE_URL` 和随机生成的 `JWT_SECRET`，并设置 `NODE_ENV=production`。生成密钥可运行 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`。
+3. 执行 `corepack pnpm db:push` 建表或同步表结构，再运行 `node --env-file=.env scripts/migrate.mjs` 执行数据迁移。升级已有库前先备份。
+4. 执行 `corepack pnpm build`，然后运行 `node --env-file=.env dist/index.js`。
+5. 打开 [本机书中人](http://127.0.0.1:3000/)。空库会自动创建首个账号 `admin`，随机密码写入启动日志指向的 `first-run-credentials.txt`。登录后请修改密码并清理首次凭据文件。
+6. 在「设置 → AI 设置」添加自己的模型服务并测试连接。内置提供商支持其默认 API 来源。使用自建模型或中转站时，将信任的来源加入 `LLM_ALLOWED_ORIGINS` 后重启应用，例如 `https://relay.example.com` 或 `http://127.0.0.1:11434`。设置页仍填写完整 API 地址，例如 `https://relay.example.com/v1`。
 
-环境示例采用手动注册。模型、通道与采集器需要单独配置，不随源码提供账号或运行数据。部署到公网前须另行完成部署配置与实际环境验收。
+源码运行默认只监听 `127.0.0.1`，注册默认关闭。要为受信任的人创建账号，可以在本机临时设置 `ALLOW_REGISTRATION=true`，重启后完成注册，再关闭该开关并重启。单用户部署如果要使用进程环境中的模型配置，可在注册关闭时显式设置 `LLM_ALLOW_SERVER_FALLBACK=true`。
 
-## 已知验证边界
+开发时可把 `.env` 中的 `NODE_ENV` 改为 `development`，再运行 `node --env-file=.env --import tsx server/_core/index.ts`。运行 `corepack pnpm check` 和 `corepack pnpm test` 可检查类型及测试。
 
-本版在 Windows / Node.js 24.14.0 下通过全部 590 项测试、类型检查、构建及独立数据库迁移检查。提醒逻辑另通过三个时区的定向检查。迁移脚本自动读取 .env，`--dry-run` 使用只读事务。桌面及 Docker 资源清单已修复，但完整安装包、容器启动和第三方服务尚未实际验收。具体范围见版本记录。
+## 隐私与内容
+
+对话、素材和设置保存在你部署的数据库和文件目录。使用云端模型或可选的渠道及生成服务时，相关对话、角色资料、检索片段或图片会按功能发给所选服务。详细范围见 [安全与隐私说明](SECURITY.md)。
+
+内置题材包含非露骨感情和角色关系。文本提示要求遵守内容边界和模型服务的拒绝。自定义角色和模型的实际输出取决于所用模型与输入，本项目目前没有统一的实时内容分级。源码快照面向个人和受信任小组自托管。

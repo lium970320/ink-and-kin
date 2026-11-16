@@ -305,4 +305,16 @@ describe("file summaries", () => {
 
     expect(touchMemoryRecalled).not.toHaveBeenCalled();
   });
+
+  it("只读深层查询跳过召回计时，遗留的作品事实也不会进入现实记忆", async () => {
+    getMemoriesByPersonaId.mockResolvedValue([
+      { ...candidate({ id: 1, title: "星盘", category: "anchor" }), memoryType: "source_fact" },
+      candidate({ id: 2, title: "星盘", category: "anchor" }),
+    ]);
+    const selected = await retrieveMemories({
+      personaId: 1, userId: 1, userMessage: "星盘", recordRecall: false,
+    });
+    expect(selected.map(row => row.id)).toEqual([2]);
+    expect(touchMemoryRecalled).not.toHaveBeenCalled();
+  });
 });

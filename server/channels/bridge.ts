@@ -22,6 +22,9 @@ export interface ChannelChatParams {
   channel: ChannelId;
   /** Cancels generation when the channel is stopped or rebound. */
   signal?: AbortSignal;
+  onUserMessageSaved?: (id: number) => void;
+  onAssistantMessageSaved?: (id: number) => void;
+  onCrisisReply?: () => void;
   /**
    * The user's interface language.
    *
@@ -58,10 +61,13 @@ export async function handleChannelChat(params: ChannelChatParams): Promise<stri
     mode: "once",
     locale: params.locale ?? "zh",
     signal: params.signal,
+    onUserMessageSaved: params.onUserMessageSaved,
+    onAssistantMessageSaved: params.onAssistantMessageSaved,
   })) {
     if (event.type === "delta") {
       reply = (reply ?? "") + event.text;
     }
+    if (event.type === "done" && event.crisis) params.onCrisisReply?.();
   }
 
   return reply;

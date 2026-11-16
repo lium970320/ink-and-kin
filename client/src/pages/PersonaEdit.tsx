@@ -215,7 +215,7 @@ export default function PersonaEdit() {
   const saveBasic = () => updateMutation.mutate({
     id: personaId, name, relationshipDesc,
     togetherFrom: togetherFrom || undefined, togetherTo: togetherTo || undefined,
-    llmProvider: llmProvider || null,
+    llmProvider,
   });
 
   const policy = proactiveQuery.data;
@@ -735,7 +735,7 @@ export default function PersonaEdit() {
         )}
 
         {persona.analysisStatus === "ready" && (
-          <LivingWorldProbePanel personaId={personaId} />
+          <LivingWorldProbePanel />
         )}
 
         {persona.analysisStatus !== "ready" && (

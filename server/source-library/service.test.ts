@@ -166,15 +166,15 @@ describe("检索、总览与聊天证据合同", () => {
   it("短追问只使用调用者明确提供的最近两条用户问题，不自行读取其他历史", async () => {
     const { service, calls } = fixture();
     await service.upload(1, uploadInput("灯塔有地图。"));
-    const context = await service.context(1, 11, "后来呢？", ["不可检索旧记录", "灯塔", "地图"]);
+    const context = await service.context(1, 11, "后来呢？", ["原文不可检索旧记录", "灯塔", "原文里灯塔的地图"]);
     const terms = calls.search.mock.calls.at(-1)![2];
     expect(terms).toEqual(expect.arrayContaining(["灯塔", "地图"]));
     expect(terms.join(" ")).not.toContain("旧");
     expect(context?.instruction).toContain("不可信引文数据");
     expect(JSON.parse(context!.evidence).entries[0].excerpt).toContain("灯塔有地图。");
-    const withoutHistory = await service.context(1, 11, "后来呢？");
-    expect(calls.search.mock.calls.at(-1)![2]).not.toContain("灯塔");
-    expect(JSON.parse(withoutHistory!.evidence)).toMatchObject({ status: "no_matching_excerpt", entries: [] });
+    calls.search.mockClear();
+    expect(await service.context(1, 11, "后来呢？")).toBeNull();
+    expect(calls.search).not.toHaveBeenCalled();
   });
 
   it("区分无需资料上下文、没有上传来源和已有来源但没有命中", async () => {
@@ -184,8 +184,44 @@ describe("检索、总览与聊天证据合同", () => {
     expect(JSON.parse(absent!.evidence)).toEqual({ type: "source_library_evidence", status: "no_uploaded_source", entries: [] });
     expect(calls.search).not.toHaveBeenCalled();
     await service.upload(1, uploadInput("地图在灯塔。"));
-    const missed = await service.context(1, 11, "海港在哪里？");
+    expect(await service.context(1, 11, "海港在哪里？")).toBeNull();
+    const missed = await service.context(1, 11, "原文里的海港在哪里？");
     expect(JSON.parse(missed!.evidence)).toEqual({ type: "source_library_evidence", status: "no_matching_excerpt", entries: [] });
     expect(missed!.instruction).toContain("资料不足时说明无法确认");
+  });
+
+  it("世界书触发词按角色和来源提取，日常高频表达不会进入原文模式", async () => {
+    const { service, calls } = fixture();
+    await service.upload(1, uploadInput("# 赤铜回廊\n赤铜回廊藏着星盘。", 11, "银河旅记.md"));
+    const profile = { profileSections: { life: { sourceTerms: ["办公室", "赤铜回廊"] } } };
+    expect(await service.context(1, 11, "我在办公室", [], profile)).toBeNull();
+    expect(await service.context(1, 11, "我在学校", ["银河旅记"])).toBeNull();
+    expect(calls.search).not.toHaveBeenCalled();
+    expect(JSON.parse((await service.context(1, 11, "赤铜回廊是什么？"))!.evidence).entries[0].excerpt).toContain("星盘");
+    expect(await service.context(1, 12, "赤铜回廊是什么？")).toBeNull();
+  });
+
+  it("只有显式原文查询可以使用已启用的外部检索，聊天和越权均不调用", async () => {
+    const { service } = fixture();
+    const fetch = vi.fn(async () => Response.json({
+      data: [{ index: 0, embedding: [1, 0, 0, 0] }, { index: 1, embedding: [1, 0, 0, 0] }],
+    }));
+    vi.stubEnv("EMBEDDING_ENABLED", "true");
+    vi.stubEnv("EMBEDDING_API_KEY", "fixture");
+    vi.stubEnv("EMBEDDING_BASE_URL", "https://embedding.invalid/v1");
+    vi.stubEnv("RERANK_ENABLED", "false");
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await service.upload(1, uploadInput("灯塔藏着星盘。"));
+      expect(JSON.parse((await service.context(1, 11, "原文中的灯塔"))!.evidence).entries).toHaveLength(1);
+      expect(await service.search(1, 11, "灯塔", false)).toHaveLength(1);
+      await expect(service.search(2, 11, "灯塔")).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await service.search(1, 11, "灯塔")).toHaveLength(1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -40,6 +40,7 @@ vi.mock("../db", () => ({
 // 书中人 tsconfig 未显式指定 target（默认 ES5），这里不用顶层 await import；
 // vitest 会把上面的 vi.mock 提升到模块加载前，静态 import 同样拿到 mock 后的模块。
 import { RoleplayTurnCancelledError, runRoleplayChannelTurn, type RoleplayTurnBeat } from "./roleplay-channel";
+import { LLMRequestError } from "../llm/errors";
 import type { QqDeliveryBatch } from "../../shared/qq-delivery";
 
 const CHANNEL = {
@@ -152,6 +153,55 @@ describe("频道主生成链路：空正文降级重试 + 【】旁白保留", (
     expect(result.spoken).toBe(true);
     expect(result.replyText).toContain("台灯");
     expect(calledRoutes).not.toContain("roleplay.channel_narration_decorate");
+  });
+
+  it.each([
+    { title: "主生成的正文拒绝", route: "roleplay.channel_turn", structured: false, savedBeats: 0 },
+    { title: "反思的结构化拒绝", route: "roleplay.channel_reflection", structured: true, savedBeats: 0 },
+    { title: "续拍的正文拒绝", route: "roleplay.channel_turn", structured: false, savedBeats: 1 },
+  ])("$title 会立即停止频道推进", async ({ route, structured, savedBeats }) => {
+    let generated = 0;
+    let callsAtRefusal = 0;
+    h.invoke.mockImplementation(async params => {
+      const calledRoute = params.options.usageContext.route;
+      if (calledRoute === "roleplay.channel_turn" && generated++ < savedBeats) return GOOD_REPLY;
+      if (calledRoute === route) {
+        callsAtRefusal = h.invoke.mock.calls.length;
+        if (structured) throw new LLMRequestError("safety", 400);
+        return savedBeats === 0
+          ? '{"shouldSpeak":false,"reply":"我无法继续写这个场景，请换个方向。"}'
+          : "I decline this request.";
+      }
+      if (calledRoute === "roleplay.channel_reflection") return '{"nextSpeakerHint":"same","mood":"warm"}';
+      return "";
+    });
+
+    await expect(runRoleplayChannelTurn({ channelId: 11, userId: 1, allowSilence: true }))
+      .rejects.toThrow("模型服务拒绝了当前内容，频道推进已停止。请调整剧情方向。");
+
+    expect(callsAtRefusal).toBeGreaterThan(0);
+    expect(h.invoke).toHaveBeenCalledTimes(callsAtRefusal);
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(savedBeats);
+  });
+
+  it("普通元回复仍可修正格式", async () => {
+    const turnOptions = mockTurnReplies(["I'll help you with the outline.", GOOD_REPLY]);
+
+    const result = await runRoleplayChannelTurn({ channelId: 11, userId: 1 });
+
+    expect(turnOptions).toHaveLength(2);
+    expect(result.replyText).toContain("台灯");
+    expect(h.createRoleplayMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("角色在对话里说自己不会写诗时正常落库", async () => {
+    const turnOptions = mockTurnReplies([GOOD_REPLY.replace("别急。", "我不会写诗，也不能提供证词。")]);
+
+    const result = await runRoleplayChannelTurn({ channelId: 11, userId: 1 });
+
+    expect(turnOptions).toHaveLength(1);
+    expect(result.replyText).toContain("我不会写诗");
+    expect(h.createRoleplayMessage).toHaveBeenCalledOnce();
   });
 
   it("两次都空：本拍不落库，交给候选轮转（保持原有安全行为）", async () => {

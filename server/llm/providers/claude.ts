@@ -4,7 +4,7 @@ import { assertNoSafetyRefusal, classifyLLMError, providerPayloadError, safeLLME
 import { configuredEffort, normalizeReasoningEffort, type ReasoningConfig } from "../reasoning";
 import { requestScope } from "../request-signal";
 import { parseSSEData } from "../sse";
-import { getTextContent, type LLMMessage, type LLMOptions, type LLMProvider, type LLMContentPart } from "../types";
+import { getTextContent, type LLMMessage, type LLMOptions, type LLMProvider, type LLMContentPart, type LLMInvokeDetailedResult, type LLMToolCall } from "../types";
 const CLAUDE_THINKING_BUDGET: Record<string, number> = { low: 1024, medium: 4096, high: 8192, xhigh: 16384, max: 16384 };
 export function resolveClaudeOutputEffort(reasoningEffort?: string, model?: string): string {
   const key = reasoningEffort?.trim().toLowerCase();
@@ -40,6 +40,47 @@ export function resolveClaudeThinkingBudget(reasoningEffort?: string): number | 
 
 
 function content(value: string | LLMContentPart[]) { return typeof value === "string" ? value : value.map(part => part.type === "text" ? { type: "text", text: part.text } : { type: "image", source: { type: "url", url: part.url } }); }
+
+function toolInput(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+type ClaudeToolResult = { type: "tool_result"; tool_use_id?: string; content: string };
+
+function toClaudeMessages(messages: LLMMessage[]) {
+  const output = [];
+  let toolResults: ClaudeToolResult[] | undefined;
+  for (const message of messages) {
+    if (message.role === "tool") {
+      if (!toolResults) {
+        toolResults = [];
+        output.push({ role: "user", content: toolResults });
+      }
+      toolResults.push({ type: "tool_result", tool_use_id: message.toolCallId, content: getTextContent(message.content) });
+      continue;
+    }
+    toolResults = undefined;
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      const text = getTextContent(message.content);
+      output.push({
+        role: "assistant",
+        content: [
+          ...(text ? [{ type: "text", text }] : []),
+          ...message.toolCalls.map(call => ({ type: "tool_use", id: call.id, name: call.name, input: toolInput(call.arguments) })),
+        ],
+      });
+    } else {
+      output.push({ role: message.role, content: content(message.content) });
+    }
+  }
+  return output;
+}
+
 export class ClaudeProvider implements LLMProvider {
   name = "Claude"; supportsReasoningEffort = true; reportsAttempts = true;
   capabilities = { streaming: true, vision: true, tools: true, jsonMode: false };
@@ -57,21 +98,43 @@ export class ClaudeProvider implements LLMProvider {
   }
   private buildBody(messages: LLMMessage[], options: LLMOptions | undefined, stream: boolean, adaptive: boolean) {
     const reasoning = this.effectiveReasoning(options);
-    const budget = reasoning?.mode === "budget" ? reasoning.budgetTokens : resolveClaudeThinkingBudget(configuredEffort(reasoning));
+    const hasTools = Boolean(options?.tools?.length && options.toolChoice !== "none");
+    const hasToolHistory = messages.some(message => message.role === "tool" || message.toolCalls?.length);
+    // 工具轮不保留 Anthropic 的签名思考块，整轮禁用 thinking 以便安全回传完整工具历史。
+    const budget = hasTools || hasToolHistory
+      ? undefined
+      : reasoning?.mode === "budget" ? reasoning.budgetTokens : resolveClaudeThinkingBudget(configuredEffort(reasoning));
+    const choice = options?.toolChoice;
     let system = ""; const filtered: LLMMessage[] = [];
     for (const message of messages) { if (message.role === "system") system += (system ? String.fromCharCode(10) : "") + getTextContent(message.content); else filtered.push(message); }
     return JSON.stringify({ model: this.model, max_tokens: budget ? Math.max(options?.maxTokens ?? 4096, budget + 1024) : options?.maxTokens ?? 4096,
       ...(budget ? adaptive ? { thinking: { type: "adaptive" }, output_config: { effort: resolveClaudeOutputEffort(configuredEffort(reasoning), this.model) } } : { thinking: { type: "enabled", budget_tokens: budget } } : {}),
-      ...(options?.topP !== undefined ? { top_p: options.topP } : {}), ...(stream ? { stream: true } : {}), system: system || undefined, messages: filtered.map(message => ({ role: message.role, content: content(message.content) })) });
+      ...(hasTools ? {
+        tools: options?.tools?.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })),
+        ...(choice ? { tool_choice: typeof choice === "object" ? { type: "tool", name: choice.name } : { type: choice === "required" ? "any" : choice } } : {}),
+      } : {}),
+      ...(options?.topP !== undefined ? { top_p: options.topP } : {}), ...(stream ? { stream: true } : {}), system: system || undefined, messages: toClaudeMessages(filtered) });
   }
   private async post(messages: LLMMessage[], options: LLMOptions | undefined, stream: boolean, scope: ReturnType<typeof requestScope>) {
     const reasoning = this.effectiveReasoning(options); let adaptive = resolveClaudeThinkingMode(this.model) === "adaptive";
-    const send = () => { const body = this.buildBody(messages, options, stream, adaptive); scope.check(); options?.onAttempt?.(); return fetch(`${this.baseUrl.replace(/\/+$/, "")}/v1/messages`, { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": this.apiKey, "anthropic-version": "2023-06-01" }, body, signal: scope.signal }); };
+    const send = () => {
+      const body = this.buildBody(messages, options, stream, adaptive);
+      scope.check();
+      options?.onAttempt?.();
+      return fetch(`${this.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
+        method: "POST",
+        redirect: "error",
+        headers: { "Content-Type": "application/json", "x-api-key": this.apiKey, "anthropic-version": "2023-06-01" },
+        body,
+        signal: scope.signal,
+      });
+    };
     let response = await send();
     if (!response.ok) {
       const text = await response.text(); const error = Object.assign(new Error(text), { status: response.status });
       const kind = classifyLLMError(error, options?.signal);
-      const hasThinking = reasoning && reasoning.mode !== "default";
+      const hasThinking = reasoning && reasoning.mode !== "default" && !options?.tools?.length &&
+        !messages.some(message => message.role === "tool" || message.toolCalls?.length);
       const wantsAdaptive = /requires? adaptive|thinking.type.*adaptive|only supports? adaptive/i.test(text);
       const wantsLegacy = /(?:unsupported|does not support).*adaptive|requires?.*(?:enabled|budget_tokens)/i.test(text);
       if (response.status === 400 && hasThinking && kind !== "safety" && kind !== "auth" && kind !== "permission" && ((!adaptive && wantsAdaptive) || (adaptive && wantsLegacy))) {
@@ -82,13 +145,30 @@ export class ClaudeProvider implements LLMProvider {
     return response;
   }
   async invoke(messages: LLMMessage[], options?: LLMOptions): Promise<string> {
+    return (await this.invokeDetailed(messages, options)).text;
+  }
+  async invokeDetailed(messages: LLMMessage[], options?: LLMOptions): Promise<LLMInvokeDetailedResult> {
     const scope = requestScope(options?.signal, options?.requestTimeoutMs ?? 120000);
     try {
       const response = await this.post(messages, options, false, scope); const data = await response.json();
       if (typeof data.model === "string") options?.onModel?.(data.model);
       const usage = readClaudeUsage(data.usage); if (usage) options?.onUsage?.(usage);
       if (data.error) throw providerPayloadError(data.error); assertNoSafetyRefusal(data.stop_reason);
-      return Array.isArray(data.content) ? data.content.filter((block: { type?: string; text?: unknown }) => block.type === "text" && typeof block.text === "string").map((block: { text: string }) => block.text).join("") : "";
+      let text = "";
+      const toolCalls: LLMToolCall[] = [];
+      if (Array.isArray(data.content)) {
+        for (const block of data.content) {
+          if (block?.type === "text" && typeof block.text === "string") text += block.text;
+          if (block?.type === "tool_use" && typeof block.id === "string" && block.id && typeof block.name === "string" && block.name) {
+            toolCalls.push({ id: block.id, name: block.name, arguments: JSON.stringify(block.input ?? {}) });
+          }
+        }
+      }
+      return {
+        text,
+        ...(typeof data.stop_reason === "string" ? { finishReason: data.stop_reason } : {}),
+        ...(toolCalls.length ? { toolCalls } : {}),
+      };
     } finally { scope.close(); }
   }
   async *stream(messages: LLMMessage[], options?: LLMOptions) {

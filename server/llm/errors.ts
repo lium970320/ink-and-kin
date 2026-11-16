@@ -7,7 +7,11 @@ const MESSAGES: Record<LLMFailureKind, string> = {
   safety: "模型服务拒绝了此请求，请调整请求内容。", cancelled: "模型请求已取消。", unknown: "模型调用失败，请检查配置后重试。",
 };
 export class LLMRequestError extends Error {
-  constructor(public readonly kind: LLMFailureKind, public readonly status?: number) {
+  constructor(
+    public readonly kind: LLMFailureKind,
+    public readonly status?: number,
+    public readonly protocol?: "unsupported_tools" | "relay_account",
+  ) {
     super(MESSAGES[kind]); this.name = kind === "cancelled" ? "AbortError" : "LLMRequestError";
   }
 }
@@ -20,7 +24,7 @@ export function classifyLLMError(error: unknown, signal?: AbortSignal): LLMFailu
   const status = typeof data.status === "number" ? data.status : Number(text.match(/(?:error|status|http)[: ]+(\d{3})\b/i)?.[1] ?? text.match(/^([45]\d{2})\b/)?.[1]);
   if (/sensitive_words_detected|policy_block(?:ed)?|content[_ -]?filter|safety|policy[_ -]?(?:violation|reject)|moderation|refusal|refused|prohibited|安全|内容审核/.test(text)) return "safety";
   if (status === 401 || /invalid[_ -]?(?:api[_ -]?)?key|authentication|unauthorized|认证失败/.test(text)) return "auth";
-  if (status === 403 || /permission|forbidden|access[_ -]?denied|insufficient_account_balance|no_available_accounts|insufficient_quota|billing/.test(text)) return "permission";
+  if (status === 402 || status === 403 || /permission|forbidden|access[_ -]?denied|insufficient_account_balance|no_available_accounts|insufficient_quota|billing/.test(text)) return "permission";
   if ([400, 404, 405, 413, 415, 422].includes(status) || /invalid[_ -]?(?:request|parameter)|unsupported|not found|deprecated|not configured|不支持|不兼容/.test(text)) return "invalid_request";
   if (status === 429 || /rate[_ -]?limit|too many requests/.test(text)) return "rate_limit";
   if (/econnreset|econnrefused|etimedout|enotfound|eai_again|socket hang up|fetch failed|failed to fetch|network error|networkerror|timed out|timeout/.test(text)) return "network";
@@ -31,13 +35,32 @@ export function mayRetryLLM(error: unknown, signal?: AbortSignal): boolean { ret
 export function safeLLMError(error: unknown, signal?: AbortSignal): LLMRequestError {
   if (signal?.aborted) return new LLMRequestError("cancelled");
   if (error instanceof LLMRequestError) return error;
-  const safe = new LLMRequestError(classifyLLMError(error, signal));
   const data = error && typeof error === "object" ? error as Record<string, unknown> : {};
   const description = [data.code, data.type, error instanceof Error ? error.message : ""].join(" ");
-  if (safe.kind === "permission" && /insufficient_account_balance|no_available_accounts/i.test(description)) {
+  const status = typeof data.status === "number" ? data.status : undefined;
+  const kind = classifyLLMError(error, signal);
+  const account = kind !== "safety" && kind !== "cancelled" &&
+    (status === 401 || status === 402 ||
+      /payment[_ -]?required|insufficient[_ -]?(?:quota|funds|credit|(?:account[_ -]?)?balance)|quota[_ -]?exceeded|preauthorization hold|available balance is below|billing[_ -]?(?:error|hard[_ -]?limit)|no[_ -]?available[_ -]?accounts?|authentication[_ -]?error|invalid[_ -]?(?:api[_ -]?)?key|余额不足|额度不足|欠费/i.test(description));
+  const toolField = /\b(?:tools?|tool_calls?|tool_choice|functions?|function_call|tool_use|tool_result)\b|工具调用|函数调用/i;
+  const incompatibleToolSchema =
+    kind !== "safety" && kind !== "cancelled" && kind !== "auth" && kind !== "permission" &&
+    toolField.test(description) &&
+    (([400, 404, 422, 501].includes(status ?? 0) && /unsupported|not supported|unknown|unrecognized|unexpected|invalid|extra_forbidden|not permitted|not implemented|schema|不支持|未实现|未知字段|非法参数|不兼容/i.test(description)) ||
+      /(?:unsupported|unknown|unrecognized|unexpected)\s+(?:field|parameter|argument|key)s?\b.{0,40}\b(?:tools?|tool_choice|functions?)\b|\b(?:tools?|function calling|tool use)\b.{0,40}\b(?:not supported|unsupported)\b|不支持.{0,12}(?:tools?|工具调用|函数调用)/i.test(description));
+  const safe = new LLMRequestError(
+    account && kind !== "auth" ? "permission" : incompatibleToolSchema ? "invalid_request" : kind,
+    status,
+    account ? "relay_account" : incompatibleToolSchema ? "unsupported_tools" : undefined,
+  );
+  if (safe.protocol === "relay_account" && safe.kind === "permission") {
     safe.message = "模型服务账户余额或可用账户不足，请检查账户配置。";
   }
   return safe;
+}
+
+export function isUnsupportedToolsProtocolError(error: unknown): boolean {
+  return safeLLMError(error).protocol === "unsupported_tools";
 }
 export async function providerResponseError(response: Response): Promise<LLMRequestError> {
   let text = "";

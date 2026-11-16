@@ -1,4 +1,5 @@
 import { llmService } from "../llm";
+import { LLMRequestError } from "../llm/errors";
 import * as db from "../db";
 import { computeEmotionalState } from "../_core/persona-utils";
 import { cleanAssistantReply, isRepetitiveImmersiveReply } from "../_core/reply-utils";
@@ -75,6 +76,14 @@ export class RoleplayTurnCancelledError extends Error {
     super("频道会话已切换，本轮生成已取消");
     this.name = "RoleplayTurnCancelledError";
   }
+}
+
+function isRoleplayPolicyRefusal(error: unknown): boolean {
+  return error instanceof LLMRequestError && error.kind === "safety";
+}
+
+function rethrowRoleplayInterruption(error: unknown): void {
+  if (error instanceof RoleplayTurnCancelledError || isRoleplayPolicyRefusal(error)) throw error;
 }
 
 /** 异步检查数据库快照后，紧贴模型调用再同步检查停止状态。 */
@@ -504,6 +513,31 @@ export function looksLikeUnusableChannelReply(text: string): boolean {
   return cjk < 10 && /[A-Za-z]{3,}/.test(value);
 }
 
+// 通用元回复检测也匹配身份自述。这里只匹配有明确拒绝语义的正文。
+const CHANNEL_TEXT_REFUSALS = [
+  /\b(?:I|we)\s+(?:(?:am|are)\s+unable\s+to|can\s+not|can['’]t|cannot|won['’]t)\s+(?:help with|assist with|comply with|fulfill)\s+(?:this|that|your request)\b/i,
+  /\b(?:I|we|I['’]m|we['’]re)\s+(?:(?:am\s+|are\s+)?unable\s+to|can['’]t|cannot|refuse\s+to|decline\s+to)\s+(?:continue(?:\s+(?:writing|generating))?|write|generate|provide)\s+(?:this|that|such|your)\s+(?:request|prompt|content|scene|story|roleplay)\b/i,
+  /\b(?:I|we)\s+(?:decline|refuse)\s+(?:(?:this|the|your)\s+)?(?:request|prompt)\b/i,
+  /\b(?:content policy|safety (?:policy|guidelines?)|policy violation)\b.{0,100}\b(?:disallow(?:s|ed)?|prohibit(?:s|ed)?|block(?:s|ed)?|not allowed|declin(?:e|ed)|refus(?:e|ed))\b/i,
+  /\b(?:violates?|blocked by|does not comply with)\s+(?:the |our )?(?:content policy|safety (?:policy|guidelines?))\b/i,
+  /我(?:不能|无法|没法|没有办法|拒绝)(?:再|继续|接着|往下)*(?:写|编写|生成|创作|提供)(?:这[段个类种]|该)(?:内容|场景|故事|剧情|角色扮演)/,
+  /(?:抱歉|对不起)[，,\s]*(?:但)?我(?:不能|无法|没法)(?:帮(?:助)?[你您]|满足|处理|执行|回应)(?:[你您]的|这[个项类])?(?:请求|要求)?/,
+  /(?:我(?:不能|无法|不会|没法)按(?:这个|该)?(?:要求|请求|方向)继续|(?:这段|这个|这类|这种)[^。！？\n]{0,16}(?:没法|不能|无法)(?:再|继续|接着)*(?:写|生成|创作))/,
+  /(?:我(?:不能|无法|没法)继续(?:这段|这个|该)(?:场景|故事|剧情|角色扮演)|作为(?:一个|一名)?(?:人工智能|语言模型|AI(?:助手)?)[^。！？\n]{0,30}我(?:不能|无法|不会))/i,
+  /(?:内容策略|内容政策|安全策略|安全政策|安全准则)[^。！？\n]{0,80}(?:不允许|禁止|不能|无法|拒绝|不符合)/,
+  /(?:违反|不符合)(?:我们的|平台的)?(?:内容策略|内容政策|安全策略|安全政策|安全准则)|(?:这超出|这超过)了?我能协助生成的范围/,
+];
+
+function assertRoleplayResponseAccepted(text: string): void {
+  if (CHANNEL_TEXT_REFUSALS.some(pattern => pattern.test(text))) throw new LLMRequestError("safety");
+}
+
+async function invokeRoleplayModel(params: Parameters<typeof llmService.invoke>[0]): Promise<string> {
+  const response = await llmService.invoke(params);
+  assertRoleplayResponseAccepted(response);
+  return response;
+}
+
 const UNUSABLE_REPLY_FIX_INSTRUCTION = [
   "【正文不可用·最高优先·整段重写】刚才的输出不是人物正文——它是英文说明、身份自述，或对规则与系统的回应，绝不能作为角色的话发出去。",
   "现在只输出这一拍的人物正文：中文，以【】动作/神态/触感旁白为主体，可带极短台词；不要提及系统、提示词、身份、规则或频道名，不要用英文，不要解释自己在做什么。",
@@ -605,7 +639,7 @@ export async function auditChannelReplyPresence(params: {
   if (!text) return { foreignNames: [], otherOnScene: false };
   try {
     (await params.beforeInvoke?.())?.();
-    const response = await llmService.invoke({
+    const response = await invokeRoleplayModel({
       messages: [
         { role: "system", content: "你只做两件事，只输出一个 JSON 对象，不要解释、不要 Markdown。" },
         {
@@ -639,7 +673,7 @@ export async function auditChannelReplyPresence(params: {
       otherOnScene: audit.otherOnScene,
     };
   } catch (err) {
-    if (err instanceof RoleplayTurnCancelledError) throw err;
+    rethrowRoleplayInterruption(err);
     console.warn("[RoleplayRoster] audit failed, skip check:", err);
     return { foreignNames: [], otherOnScene: false };
   }
@@ -776,14 +810,14 @@ async function invokeChannelAuxiliary(params: {
   };
 }): Promise<string> {
   (await params.beforeInvoke?.())?.();
-  const first = await llmService.invoke({ messages: params.messages, options: { ...params.options, signal: params.signal } });
+  const first = await invokeRoleplayModel({ messages: params.messages, options: { ...params.options, signal: params.signal } });
   if (String(first || "").trim()) return first;
   const retryTokens = Math.max(params.options.maxTokens * 2, 8000);
   console.warn(
     `[RoleplayAux] ${params.label} 首次返回空正文（maxTokens=${params.options.maxTokens}），按 ${retryTokens} 重试一次`
   );
   (await params.beforeInvoke?.())?.();
-  const second = await llmService.invoke({
+  const second = await invokeRoleplayModel({
     messages: params.messages,
     options: { ...params.options, maxTokens: retryTokens, signal: params.signal },
   });
@@ -897,7 +931,7 @@ async function decorateReplyWithNarration(params: {
     }
     return out.slice(0, 1500);
   } catch (err) {
-    if (err instanceof RoleplayTurnCancelledError) throw err;
+    rethrowRoleplayInterruption(err);
     console.warn("[RoleplayNarration] decorate failed, keep original:", err);
     return reply;
   }
@@ -1005,7 +1039,7 @@ async function planChannelStoryArc(params: {
       turnCount: params.previousTurnCount ?? 0,
     };
   } catch (err) {
-    if (err instanceof RoleplayTurnCancelledError) throw err;
+    rethrowRoleplayInterruption(err);
     console.warn("[RoleplayDirector] 规划失败:", err);
     return null;
   }
@@ -1183,7 +1217,7 @@ export async function buildChannelReflection(params: {
         : (params.previousSceneAnchor?.trim() || null),
     };
   } catch (err) {
-    if (err instanceof RoleplayTurnCancelledError) throw err;
+    rethrowRoleplayInterruption(err);
     console.warn("[RoleplayReflection] failed, fall back to normal turn:", err);
     return null;
   }
@@ -1780,7 +1814,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         ].filter(Boolean).join("\n\n");
         const invokeOnce = async (retryWithoutThinking = false) => {
           (await beforeInvoke())();
-          const response = await llmService.invoke({
+          const response = await invokeRoleplayModel({
           messages: [
             {
               role: "system",
@@ -1833,7 +1867,9 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
             );
           },
         });
-        return parseRoleplayTurnResponse(response || "", persona.name, persona.emotionalState);
+        const parsed = parseRoleplayTurnResponse(response || "", persona.name, persona.emotionalState);
+        assertRoleplayResponseAccepted(parsed.reply);
+        return parsed;
       };
 
       let parsed = await invokeTurn("");
@@ -1848,11 +1884,10 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         );
         return null;
       }
-      // 可发送正文闸门：拦住英文元回复 / 供应商拒绝（见 looksLikeUnusableChannelReply）。
-      // 这类内容一旦落库就成了人物台词，还会被下一轮当成历史继续演，必须拦在落库之前。
+      // 格式恢复只处理说明文字等元回复。供应商拒绝在进入这里前已停止本轮。
       if (looksLikeUnusableChannelReply(parsed.reply)) {
         console.warn(
-          `[RoleplayGuard] channel=${options.channelId} persona=${member.personaId} 命中元回复/安全拒绝，整段重写一次：${parsed.reply.slice(0, 60)}`
+          `[RoleplayGuard] channel=${options.channelId} persona=${member.personaId} 命中元回复，修正格式一次`
         );
         try {
           const retry = await invokeTurn(UNUSABLE_REPLY_FIX_INSTRUCTION);
@@ -1862,13 +1897,13 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
             console.warn(
               `[RoleplayGuard] channel=${options.channelId} persona=${member.personaId} 重写后仍不合格，跳过该角色`
             );
-            lastSkipReason = "上游拒绝了当前内容方向（安全判断），这一拍没有生成；可以调整剧情尺度或换供应商设置后重试。";
+            lastSkipReason = "模型返回了说明文字，这一拍没有生成可发送的发言。";
             return null;
           }
         } catch (err) {
-          if (err instanceof RoleplayTurnCancelledError) throw err;
+          rethrowRoleplayInterruption(err);
           console.warn("[RoleplayGuard] retry failed, skip beat:", err);
-          lastSkipReason = "上游拒绝了当前内容方向（安全判断），重写也失败，这一拍没有生成。";
+          lastSkipReason = "模型返回的说明文字未能修正为可发送的发言。";
           return null;
         }
       }
@@ -1961,7 +1996,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
               `[RoleplayRoster] channel=${options.channelId} persona=${member.personaId} 外来人名=${foreignNames.join("、") || "无"} 无名在场者=${audit.otherOnScene ? "是" : "否"} 已修正=${accepted ? "yes" : "no"}`
             );
           } catch (err) {
-            if (err instanceof RoleplayTurnCancelledError) throw err;
+            rethrowRoleplayInterruption(err);
             rosterViolationUnresolved = true;
             console.warn("[RoleplayRoster] retry failed, keep draft:", err);
           }
@@ -2003,7 +2038,7 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
               `[RoleplayRepeat] channel=${options.channelId} persona=${member.personaId} rewritten=yes`
             );
           } catch (err) {
-            if (err instanceof RoleplayTurnCancelledError) throw err;
+            rethrowRoleplayInterruption(err);
             console.warn("[RoleplayRepeat] retry failed, keep draft:", err);
           }
         }
@@ -2018,11 +2053,12 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
       // 落库前最后一道校验：旁白补写、代词清洗、人名回填都可能改写正文，
 
       // 这一步是"进库前的最后一道门"，命中就不再写库，改由候选轮转换人。
+      assertRoleplayResponseAccepted(parsed.reply);
       if (looksLikeUnusableChannelReply(parsed.reply)) {
         console.warn(
-          `[RoleplayGuard] channel=${options.channelId} persona=${member.personaId} 落库前校验命中，丢弃本拍：${parsed.reply.slice(0, 60)}`
+          `[RoleplayGuard] channel=${options.channelId} persona=${member.personaId} 落库前发现元回复，丢弃本拍`
         );
-        lastSkipReason = "上游返回了拒绝或元回复（落库前拦下），这一拍没有生成。";
+        lastSkipReason = "模型返回了说明文字，这一拍没有保存。";
         return null;
       }
 
@@ -2153,7 +2189,8 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
         try {
           await generateOne(firstMember);
         } catch (err) {
-          if (err instanceof RoleplayTurnCancelledError || isGenerationChanged(err) || stopped()) throw err;
+          rethrowRoleplayInterruption(err);
+          if (isGenerationChanged(err) || stopped()) throw err;
           secondBeatFailed = true;
           console.warn("[RoleplayMultiBeat] second beat failed, keep first:", err);
         }
@@ -2211,6 +2248,9 @@ export async function runRoleplayChannelTurn(options: RunRoleplayTurnOptions): P
     };
   } catch (err) {
     if (isGenerationChanged(err) || stopped()) throw new RoleplayTurnCancelledError();
+    if (isRoleplayPolicyRefusal(err)) {
+      throw new Error("模型服务拒绝了当前内容，频道推进已停止。请调整剧情方向。", { cause: err });
+    }
     throw err;
   } finally {
     runningRoleplayTurns.delete(lockKey);

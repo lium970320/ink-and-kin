@@ -852,6 +852,9 @@ function MessageBubble({
             {msg.channel === "qq" && (
               <span className="text-[9.5px] px-1.5 py-0.2 bg-sky-500/10 text-sky-700 dark:text-sky-300 border border-sky-500/20 rounded-md font-semibold">QQ</span>
             )}
+            {msg.channel === "mobile" && (
+              <span className="text-[9.5px] px-1.5 py-0.2 bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 rounded-md font-semibold">手机</span>
+            )}
             {!isUser && msg.messageType === "text" && <TTSButton text={msg.content} enabled={ttsEnabled} />}
           </div>
         )}
@@ -4079,18 +4082,15 @@ function EmotionReport({
 // ─── DIARY MODAL (EMBEDDED FLOATING MODAL) ──────────────────────────────────
 
 function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; personaId: number; personaName: string; onClose: () => void }) {
+  const utils = trpc.useUtils();
   const now = new Date();
-  const todayKey = beijingDateKey(now);
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth());
+  const todayKey = now.toISOString().slice(0, 10);
+  const [year, setYear] = useState(now.getUTCFullYear());
+  const [month, setMonth] = useState(now.getUTCMonth());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [confirmDeleteEntryId, setConfirmDeleteEntryId] = useState<number | null>(null);
 
   const { data: diaryDates, refetch: refetchDates } = trpc.diary.getDates.useQuery(
-    { personaId },
-    { enabled: open && !!personaId }
-  );
-  const { data: missingDates, refetch: refetchMissingDates } = trpc.diary.getMissingDates.useQuery(
     { personaId },
     { enabled: open && !!personaId }
   );
@@ -4104,23 +4104,13 @@ function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; 
   );
 
   const generateMutation = trpc.diary.generate.useMutation({
-    onSuccess: () => {
-      toast.success("今日日记生成成功");
+    onSuccess: (_, input) => {
+      toast.success("日记生成成功");
       void refetchDates();
       void refetchEntries();
-      void refetchMissingDates();
+      if (input.date) void utils.diary.getByDate.invalidate({ personaId: input.personaId, date: input.date });
     },
-    onError: (e: any) => toast.error("生成失败：" + e.message),
-  });
-
-  const generateAllMissingMutation = trpc.diary.generateAllMissing.useMutation({
-    onSuccess: (res) => {
-      toast.success(`成功补全 ${res.count} 篇未填写的历史日记`);
-      void refetchDates();
-      void refetchEntries();
-      void refetchMissingDates();
-    },
-    onError: (e: any) => toast.error("批量生成失败：" + e.message),
+    onError: error => toast.error("生成失败：" + error.message),
   });
 
   const deleteMutation = trpc.diary.delete.useMutation({
@@ -4130,12 +4120,12 @@ function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; 
       setSelectedDate(null);
       void refetchDates();
       void refetchEntries();
-      void refetchMissingDates();
+      void utils.diary.getByDate.invalidate({ personaId });
     },
     onError: (e: any) => toast.error(e.message),
   });
 
-  const datesSet = new Set((diaryDates || []).map((d: any) => d.date));
+  const datesSet = new Set(diaryDates);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDay = new Date(year, month, 1).getDay();
 
@@ -4168,11 +4158,6 @@ function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; 
               <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-semibold border border-primary/20 font-mono tabular-nums">
                 {entries?.length || 0} 篇日记
               </span>
-              {missingDates && missingDates.length > 0 && (
-                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-500/12 text-amber-700 dark:text-amber-300 font-semibold border border-amber-500/25 font-mono tabular-nums">
-                  {missingDates.length} 篇待补全
-                </span>
-              )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
               记录角色视角下的每日总结、情绪变化与对话摘录
@@ -4181,28 +4166,15 @@ function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; 
         </div>
 
         <div className="flex items-center gap-2">
-          {missingDates && missingDates.length > 0 && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => generateAllMissingMutation.mutate({ personaId })}
-              disabled={generateAllMissingMutation.isPending}
-              className="text-xs border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20"
-            >
-              <Sparkles className={`w-3.5 h-3.5 ${generateAllMissingMutation.isPending ? "animate-spin" : ""}`} />
-              {generateAllMissingMutation.isPending ? "正在补全..." : `一键补全 ${missingDates.length} 篇日记`}
-            </Button>
-          )}
           <Button
             type="button"
             size="sm"
-            onClick={() => generateMutation.mutate({ personaId })}
-            disabled={generateMutation.isPending}
+            onClick={() => generateMutation.mutate({ personaId, date: todayKey })}
+            disabled={generateMutation.isPending || datesSet.has(todayKey)}
             className="text-xs"
           >
             <Sparkles className={`w-3.5 h-3.5 ${generateMutation.isPending ? "animate-spin" : ""}`} />
-            {generateMutation.isPending ? "生成中..." : "生成今日日记"}
+            {generateMutation.isPending ? "生成中..." : datesSet.has(todayKey) ? "今日已生成" : "生成今日日记"}
           </Button>
           <button
             type="button"
@@ -4388,7 +4360,7 @@ function DiaryModal({ open, personaId, personaName, onClose }: { open: boolean; 
                     type="button"
                     size="sm"
                     onClick={() => generateMutation.mutate({ personaId, date: selectedDate })}
-                    disabled={generateMutation.isPending}
+                    disabled={generateMutation.isPending || selectedDate > todayKey}
                     className="text-xs"
                   >
                     <Sparkles className="w-3.5 h-3.5" />

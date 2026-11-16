@@ -88,6 +88,7 @@ describe("bootstrapAdminAccount", () => {
     if (process.platform === "win32") {
       const permissions = JSON.parse(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
         $ErrorActionPreference = 'Stop'
+        Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1')
         $acl = Get-Acl -LiteralPath $env:INK_AND_KIN_CREDENTIALS_PATH
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
         $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))

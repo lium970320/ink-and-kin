@@ -6,16 +6,17 @@ import { eligibleRealityMemories } from "../memory-review";
  * and nothing ever read it back into a conversation. This module decides which
  * memories are worth putting in front of the model.
  *
- * The scoring is deliberately dependency-free — no vector database, no extra
- * service — so it works in the packaged desktop builds. Chinese text is
- * matched with character bigrams, which needs no word segmenter.
+ * 严格使用本地排序。已有关键词、事实锚点、置顶优先级上叠加 BM25，
+ * 不向原文查找配置的外部服务传输用户的现实记忆。
  */
 import * as db from "../db";
+import { scoreCandidatesBm25 } from "../social/hybrid-retrieval";
 
 export interface MemoryCandidate {
   id: number;
   title: string;
   description: string | null;
+  keywords?: string[];
   category: string;
   date: string | null;
   isPinned: boolean;
@@ -114,6 +115,10 @@ export function recencyWeight(createdAt: Date, now: number): number {
   return 1 / (1 + ageDays / 30);
 }
 
+function memorySearchText(memory: MemoryCandidate) {
+  return [memory.title, memory.description, memory.date, ...(memory.keywords ?? [])].filter(Boolean).join(" ");
+}
+
 /**
  * Scores a single memory.
  *
@@ -126,8 +131,7 @@ export function scoreMemory(
   messageTokens: Set<string>,
   now: number,
 ): number {
-  const text = [memory.title, memory.description, memory.date].filter(Boolean).join(" ");
-  const coverage = keywordCoverage(text, messageTokens);
+  const coverage = keywordCoverage(memorySearchText(memory), messageTokens);
   const recency = recencyWeight(memory.createdAt, now);
   const category = CATEGORY_WEIGHTS[memory.category] ?? 0.5;
   const pin = memory.isPinned ? 1 : 0;
@@ -164,10 +168,17 @@ export function selectMemories(
   const now = options.now ?? Date.now();
   const messageTokens = tokenize(userMessage);
 
-  const scored = candidates.map((memory) => ({
-    ...memory,
-    score: scoreMemory(memory, messageTokens, now),
-  }));
+  const lexical = scoreCandidatesBm25(userMessage, candidates.map(memory => ({
+    id: memory.id, item: memory, title: memory.title,
+    content: [memory.description, memory.date].filter(Boolean).join(" "),
+    keywords: memory.keywords,
+  })));
+  const scored = candidates.map((memory, index) => {
+    const bm25 = lexical[index].score;
+    const damping = memory.lastRecalledAt &&
+      now - new Date(memory.lastRecalledAt).getTime() < RECALL_DAMPING_WINDOW_MS ? RECALL_DAMPING_FACTOR : 1;
+    return { ...memory, score: scoreMemory(memory, messageTokens, now) + damping * 0.28 * bm25 / (1 + bm25) };
+  });
 
   const anchors = scored
     .filter((m) => m.category === "anchor")
@@ -175,10 +186,7 @@ export function selectMemories(
 
   const ordinary = scored
     .filter((m) => m.category !== "anchor")
-    .filter((m) => m.isPinned || keywordCoverage(
-      [m.title, m.description, m.date].filter(Boolean).join(" "),
-      messageTokens,
-    ) >= minKeywordScore)
+    .filter((m) => m.isPinned || keywordCoverage(memorySearchText(m), messageTokens) >= minKeywordScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 
@@ -256,12 +264,16 @@ export async function retrieveMemories(params: {
   userMessage: string;
   topK?: number;
   now?: number;
+  recordRecall?: boolean;
 }): Promise<ScoredMemory[]> {
-  const rows = await eligibleRealityMemories(await db.getMemoriesByPersonaId(params.personaId, params.userId), params.userId, params.personaId);
+  const stored = await db.getMemoriesByPersonaId(params.personaId, params.userId);
+  const rows = await eligibleRealityMemories(stored.filter(row =>
+    row.source !== "source_material" && row.memoryType !== "source_fact"), params.userId, params.personaId);
   const candidates: MemoryCandidate[] = rows.map((row) => ({
     id: row.id,
     title: row.title,
     description: row.description,
+    keywords: row.keywords,
     category: row.category,
     date: row.date,
     isPinned: row.isPinned,
@@ -292,7 +304,7 @@ export async function retrieveMemories(params: {
 
   const merged = [...selected, ...fileSelected];
 
-  if (selected.length > 0) {
+  if (params.recordRecall !== false && selected.length > 0) {
     const now = new Date(params.now ?? Date.now());
     await Promise.all(
       selected.map((m) => db.touchMemoryRecalled(m.id, params.userId, now).catch(() => undefined)),

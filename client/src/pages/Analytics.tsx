@@ -104,7 +104,7 @@ export default function Analytics() {
   const personaEngagement = data?.personaEngagement || [];
 
   return (
-    <div className="min-h-screen bg-background relative overflow-x-hidden">
+    <div className="min-h-screen bg-background relative overflow-x-clip">
       <div
         aria-hidden="true"
         className="pointer-events-none fixed -top-32 right-1/4 w-96 h-96 rounded-full bg-primary/[0.04] blur-3xl"
@@ -115,11 +115,13 @@ export default function Analytics() {
           <button
             type="button"
             onClick={() => navigate("/")}
-            className="app-nav-back -ml-1"
+            className="app-nav-back -ml-1 gap-1 cursor-pointer"
             title="返回大厅"
           >
             <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm">返回</span>
           </button>
+          <div className="app-nav-divider" />
           <div className="app-nav-title-group">
             <div className="app-nav-mark">
               <Activity className="w-3.5 h-3.5 text-primary" />

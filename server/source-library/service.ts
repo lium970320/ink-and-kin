@@ -1,21 +1,59 @@
-import { SOURCE_LIBRARY_LIMITS, SOURCE_LIBRARY_INSTRUCTION, SourceLibraryError, sourceQueryTerms, rankSourceHits, formatSourceEvidence, type SourceHit } from './core';
+import { SOURCE_LIBRARY_LIMITS, SOURCE_LIBRARY_INSTRUCTION, SourceLibraryError, sourceCandidateTerms, sourceRankCandidate, rankSourceHits, formatSourceEvidence, type SourceHit } from './core';
 import { prepareSourceBytes } from './parser';
 import type { SourceLibraryRepository } from './repository';
+import { isRerankConfigured, resolveEmbeddingConfig } from '../llm/retrieval-providers';
+import { hybridRankCandidates } from '../social/hybrid-retrieval';
+import { resolveSourceRecallQuery } from '../social/source-recall';
 
 export function createSourceLibraryService(repo: SourceLibraryRepository) {
   async function authorize(userId: number, personaId: number) {
     if (!await repo.ownsPersona(userId, personaId)) throw new SourceLibraryError('NOT_FOUND', '角色不存在或不属于当前账号。');
   }
-  async function search(userId: number, personaId: number, query: string) {
+  async function search(userId: number, personaId: number, query: string, allowExternal = true) {
     await authorize(userId, personaId);
     const bounded = Array.from(query.trim()).slice(0, 120).join('');
-    const seeds = rankSourceHits(await repo.searchCandidates(userId, personaId, sourceQueryTerms(bounded)), bounded);
+    if (!bounded) return [];
+    const lexical = await repo.searchCandidates(userId, personaId, sourceCandidateTerms(bounded));
+    let seeds = rankSourceHits(lexical, bounded);
+    const embedding = resolveEmbeddingConfig({ enabled: allowExternal ? undefined : false });
+    const rerankConfig = { enabled: allowExternal ? undefined : false };
+    if (embedding.enabled || isRerankConfigured(rerankConfig)) {
+      try {
+        const cacheRows = embedding.enabled && repo.cachedCandidates
+          ? await repo.cachedCandidates(userId, personaId, embedding.fingerprint) : [];
+        const candidates = new Map(lexical.map(chunk => [chunk.id, sourceRankCandidate(chunk)]));
+        for (const { embedding, ...chunk } of cacheRows) {
+          candidates.set(chunk.id, { ...sourceRankCandidate(chunk), embedding });
+        }
+        const ranked = await hybridRankCandidates(bounded, Array.from(candidates.values()), {
+          limit: SOURCE_LIBRARY_LIMITS.maxSearchResults,
+          embeddingConfig: embedding,
+          rerankConfig,
+          onVectors: async (rows, fingerprint) => {
+            await repo.saveVectors?.(userId, personaId, fingerprint,
+              rows.flatMap(row => typeof row.id === 'number' ? [{ id: row.id, embedding: row.embedding }] : []));
+          },
+        });
+        // 再次核对块仍存在，处理服务商请求期间原文被替换或删除。
+        const current = await Promise.all(ranked.map(row => repo.getChunk(userId, personaId, row.item.id)));
+        const rankedIds = new Set(ranked.map(row => row.item.id));
+        seeds = [
+          ...ranked.flatMap((row, index) => {
+            const chunk = current[index];
+            return chunk ? [{ ...chunk, score: row.fusedScore, matchedTerms: row.matchedTerms }] : [];
+          }),
+          ...seeds.filter(seed => !rankedIds.has(seed.id)),
+        ].slice(0, SOURCE_LIBRARY_LIMITS.maxSearchResults);
+      } catch {
+        // 外部向量缓存不可用时保留本地匹配结果。
+      }
+    }
     const neighbors = await repo.neighborCandidates(userId, personaId, seeds);
     const result: SourceHit[] = [];
     for (let index = 0; index < seeds.length; index++) {
       for (const hit of [seeds[index], ...neighbors.filter(n => n.seedRank === index)]) {
         if (result.some(old => old.id === hit.id)) continue;
-        result.push({ ...hit, score: seeds[index].score - .025 * (hit.distanceFromSeed ?? 0), matchedTerms: seeds[index].matchedTerms });
+        result.push({ ...hit, score: seeds[index].score * (1 - .025 * (hit.distanceFromSeed ?? 0)), matchedTerms: seeds[index].matchedTerms });
         if (result.length === 8) return result;
       }
     }
@@ -57,12 +95,22 @@ export function createSourceLibraryService(repo: SourceLibraryRepository) {
       return { stats: { sourceCount: sources.length, chunkCount: metadata.length, chapterCount: sources.reduce((sum, row) => sum + row.chapterCount, 0), tokenEstimate: metadata.reduce((sum, row) => sum + row.tokenEstimate, 0) }, topKeywords: keywords(metadata), sources,
         search: { query, results: (query.trim() ? await search(userId, personaId, query) : []).map(hit => ({ ...hit, sourceId: hit.documentId })) } };
     },
-    async context(userId: number, personaId: number, query: string, previousUserQueries: string[] = []) {
+    async context(userId: number, personaId: number, query: string, previousUserQueries: string[] = [], personaData?: unknown) {
       await authorize(userId, personaId);
       const docs = await repo.listDocuments(userId, personaId);
-      if (!docs.length && !/原文|原著|书中|小说|作品|资料/.test(query)) return null;
-      const retrievalQuery = Array.from(query).length <= 24 ? [...previousUserQueries.slice(-2), query].join(' ').slice(-120) : Array.from(query).slice(0, 120).join('');
-      const hits = docs.length ? await search(userId, personaId, retrievalQuery) : [];
+      const sourceTitles = docs.map(doc => doc.title);
+      let retrievalQuery = resolveSourceRecallQuery(query, previousUserQueries, { personaData, sourceTitles });
+      if (!retrievalQuery && docs.length) {
+        const metadata = await repo.listChunkMetadata(userId, personaId, 96);
+        retrievalQuery = resolveSourceRecallQuery(query, previousUserQueries, {
+          personaData, sourceTitles,
+          chapterTitles: metadata.map(row => row.chapterTitle),
+          chunkKeywords: metadata.flatMap(row => row.keywords),
+        });
+      }
+      if (!retrievalQuery) return null;
+      // 普通聊天上下文用本地检索，专门的原文查询入口才允许转发查询给配置的服务商。
+      const hits = docs.length ? await search(userId, personaId, retrievalQuery, false) : [];
       const formatted = formatSourceEvidence(hits, SOURCE_LIBRARY_LIMITS.evidenceBytes, retrievalQuery);
       return { instruction: SOURCE_LIBRARY_INSTRUCTION, evidence: formatted.evidence || JSON.stringify({ type: 'source_library_evidence', status: docs.length ? 'no_matching_excerpt' : 'no_uploaded_source', entries: [] }) };
     },

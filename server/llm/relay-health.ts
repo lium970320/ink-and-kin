@@ -1,8 +1,10 @@
 const INITIAL_COOLDOWN_MS = 5 * 60_000;
 const MAX_COOLDOWN_MS = 30 * 60_000;
 const PROBE_LEASE_MS = 120_000;
+const ACCOUNT_COOLDOWN_MS = 15 * 60_000;
 
 type RelayState = {
+  reason: "transient" | "account";
   failures: number;
   unavailableUntil: number;
   probeUntil: number;
@@ -26,10 +28,15 @@ export function clearRelayHealth(userId?: number): void {
 export function markRelayTransientFailure(userId: number, relayId: number, now = Date.now()): number {
   const key = keyFor(userId, relayId);
   const previous = states.get(key);
-  const failures = Math.min((previous?.failures ?? 0) + 1, 4);
+  const failures = Math.min((previous?.reason === "transient" ? previous.failures : 0) + 1, 4);
   const cooldown = Math.min(MAX_COOLDOWN_MS, INITIAL_COOLDOWN_MS * 2 ** (failures - 1));
-  states.set(key, { failures, unavailableUntil: now + cooldown, probeUntil: previous?.probeUntil ?? 0 });
+  states.set(key, { reason: "transient", failures, unavailableUntil: now + cooldown, probeUntil: previous?.probeUntil ?? 0 });
   return cooldown;
+}
+
+export function markRelayAccountFailure(userId: number, relayId: number, now = Date.now()): void {
+  const key = keyFor(userId, relayId);
+  states.set(key, { reason: "account", failures: 0, unavailableUntil: now + ACCOUNT_COOLDOWN_MS, probeUntil: states.get(key)?.probeUntil ?? 0 });
 }
 
 export function markRelaySuccess(userId: number, relayId: number): void {
@@ -38,6 +45,15 @@ export function markRelaySuccess(userId: number, relayId: number): void {
 
 export function isRelayCoolingDown(userId: number, relayId: number, now = Date.now()): boolean {
   return (states.get(keyFor(userId, relayId))?.unavailableUntil ?? 0) > now;
+}
+
+export function selectRelayRecoveryCandidates<T extends { relayId?: number }>(
+  candidates: readonly T[], userId: number, allowAccountProbe: boolean, now = Date.now(),
+): T[] {
+  const transient = candidates.filter(candidate => candidate.relayId !== undefined &&
+    states.get(keyFor(userId, candidate.relayId))?.reason === "transient");
+  if (transient.length) return selectAvailableCandidates(transient, userId, now);
+  return allowAccountProbe ? selectAvailableCandidates(candidates, userId, now) : [];
 }
 
 /** Preserve caller ordering. If every station is cooling down, lease one probe.

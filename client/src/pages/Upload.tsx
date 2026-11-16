@@ -157,7 +157,7 @@ export default function Upload() {
   const visibleUploads = Object.entries(uploadingFiles).filter(([key]) => uploadDetails[key]?.personaId === personaId && uploadDetails[key]?.category === materialCategory);
 
   return (
-    <div className="min-h-dvh relative bg-background">
+    <div className="min-h-dvh relative bg-background overflow-x-clip">
       <div aria-hidden="true" className="gradient-mesh-bg" />
       <header className="sticky top-0 z-40 app-header">
         <div className="container app-nav">

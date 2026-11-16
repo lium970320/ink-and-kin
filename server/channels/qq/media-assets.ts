@@ -34,7 +34,7 @@ function isOwnedImage(row: PersonaFileRow, userId: number, personaId: number) {
   return row.userId === userId && row.personaId === personaId && row.fileType === "image" && isPositiveId(row.id);
 }
 
-function mimeFromBytes(data: Buffer): QqImageMime | null {
+export function mimeFromBytes(data: Buffer): QqImageMime | null {
   if (data.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) return "image/png";
   if (data.subarray(0, JPEG_MAGIC.length).equals(JPEG_MAGIC)) return "image/jpeg";
   if (data.length >= 16 && data.toString("latin1", 0, 4) === "RIFF" &&

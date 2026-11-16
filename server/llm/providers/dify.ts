@@ -35,6 +35,7 @@ export class DifyProvider implements LLMProvider {
   async invoke(messages: LLMMessage[], options?: LLMOptions): Promise<string> {
     const response = await fetch(`${this.url.replace(/\/+$/, "")}/chat-messages`, {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -62,6 +63,7 @@ export class DifyProvider implements LLMProvider {
   async *stream(messages: LLMMessage[], options?: LLMOptions): AsyncGenerator<{ text: string }> {
     const response = await fetch(`${this.url.replace(/\/+$/, "")}/chat-messages`, {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",

@@ -1080,10 +1080,6 @@ function ProfileTab() {
     onSuccess: () => { toast.success("密码已修改"); setShowPasswordDialog(false); setCurrentPwd(""); setNewPwd(""); setConfirmPwd(""); },
     onError: (e: any) => toast.error(e.message),
   });
-  const resetPassword = trpc.user.resetPassword.useMutation({
-    onSuccess: result => setResetPasswordValue(result.temporaryPassword),
-    onError: (e: any) => toast.error(e.message),
-  });
 
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
@@ -1094,8 +1090,6 @@ function ProfileTab() {
   const [confirmPwd, setConfirmPwd] = useState("");
   const [showCurrentPwd, setShowCurrentPwd] = useState(false);
   const [showNewPwd, setShowNewPwd] = useState(false);
-  const [showResetPasswordDialog, setShowResetPasswordDialog] = useState(false);
-  const [resetPasswordValue, setResetPasswordValue] = useState("");
 
   useEffect(() => {
     if (profile) {
@@ -1212,20 +1206,6 @@ function ProfileTab() {
               修改密码
             </Button>
           </div>
-          <div className="flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/15 rounded-xl">
-            <div className="flex items-center gap-3 min-w-0">
-              <RefreshCw className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-              <div className="min-w-0">
-                <p className="text-sm text-foreground">一键重置密码</p>
-                <p className="text-xs text-muted-foreground">仅本地开发环境可用，自动生成一次性临时密码</p>
-              </div>
-            </div>
-            <Button size="sm" variant="outline" className="rounded-xl text-xs border-amber-500/30 flex-shrink-0"
-              onClick={() => { setResetPasswordValue(""); setShowResetPasswordDialog(true); }}
-              disabled={resetPassword.isPending}>
-              {resetPassword.isPending ? "重置中..." : "重置密码"}
-            </Button>
-          </div>
           {profile.loginMethod && (
             <div className="flex items-center gap-3 p-3 bg-muted/20 rounded-xl">
               <Shield className="w-4 h-4 text-muted-foreground" />
@@ -1287,45 +1267,6 @@ function ProfileTab() {
               onClick={() => changePassword.mutate({ currentPassword: currentPwd, newPassword: newPwd })}>
               {changePassword.isPending ? "修改中..." : "确认修改"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showResetPasswordDialog} onOpenChange={open => {
-        setShowResetPasswordDialog(open);
-        if (!open) setResetPasswordValue("");
-      }}>
-        <DialogContent className="bg-card border-border rounded-2xl max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">{resetPasswordValue ? "临时密码已生成" : "一键重置密码"}</DialogTitle>
-          </DialogHeader>
-          {resetPasswordValue ? (
-            <div className="space-y-4 py-2">
-              <p className="text-sm text-muted-foreground">旧密码已失效。临时密码只在这里显示一次，关闭窗口后不会再次显示。</p>
-              <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/40 p-3">
-                <code className="flex-1 min-w-0 break-all text-sm font-semibold text-foreground">{resetPasswordValue}</code>
-                <Button size="icon" variant="outline" className="h-8 w-8 flex-shrink-0 rounded-lg" title="复制临时密码"
-                  onClick={() => navigator.clipboard.writeText(resetPasswordValue).then(() => toast.success("临时密码已复制"))}>
-                  <Copy className="w-3.5 h-3.5" />
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4 py-2">
-              <p className="text-sm text-muted-foreground">系统会自动生成随机临时密码，当前登录态保持不变，旧密码会立即失效。</p>
-              <p className="text-xs text-amber-600 dark:text-amber-400">请确认你已准备好保存新生成的临时密码。</p>
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowResetPasswordDialog(false)} className="rounded-xl">
-              {resetPasswordValue ? "关闭" : "取消"}
-            </Button>
-            {!resetPasswordValue && (
-              <Button className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl"
-                onClick={() => resetPassword.mutate()} disabled={resetPassword.isPending}>
-                {resetPassword.isPending ? "重置中..." : "确认重置"}
-              </Button>
-            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4056,12 +3997,6 @@ function DataManagementTab() {
               <StatTile value={accountStats.totalPersonas} label="分身" />
               <StatTile value={accountStats.totalMessages} label="消息" />
               <StatTile value={accountStats.totalFiles} label="文件" />
-              <StatTile value={accountStats.totalMemories ?? 0} label="记忆" />
-              <StatTile value={accountStats.totalSources ?? 0} label="资料" />
-              <StatTile value={accountStats.totalRoleplayChannels ?? 0} label="Roleplay 频道" />
-              <StatTile value={accountStats.totalLlmUsageRecords ?? 0} label="用量记录" />
-              <StatTile value={accountStats.totalSceneImageGenerationLogs ?? 0} label="场景配图记录" />
-              <StatTile value={accountStats.totalRuntimeStates ?? 0} label="运行态" />
             </div>
           </div>
         </section>
@@ -4070,12 +4005,12 @@ function DataManagementTab() {
       {/* Export */}
       <section className="warm-card warm-card-static p-5 sm:p-6 space-y-4">
         <SectionHeader icon={Download} title="数据导出"
-          subtitle="导出账户资料、分身、角色运行态、对话、记忆、资料库、日记、Roleplay 频道、平台绑定、LLM 用量和场景配图记录。JSON 不包含密码哈希、会话 Cookie、LLM API Key、本机上传文件实体、TTS 缓存或本机数据库文件。" />
+          subtitle="下载包含账户基本资料、分身资料和对话记录的 JSON 文件。" />
         <Button size="sm" variant="outline" className="rounded-xl border-border"
           onClick={() => exportData.mutate()}
           disabled={exportData.isPending}>
           <Download className="w-3.5 h-3.5 mr-1.5" />
-          {exportData.isPending ? "导出中..." : "导出全部数据"}
+          {exportData.isPending ? "导出中..." : "导出数据"}
         </Button>
       </section>
 
@@ -4101,8 +4036,8 @@ function DataManagementTab() {
           <div className="space-y-4 py-2">
             <div className="p-3 bg-destructive/5 rounded-xl border border-destructive/10">
               <p className="text-xs text-destructive leading-relaxed">
-                此操作将永久删除你的账户及所有数据，包括 {accountStats?.totalPersonas || 0} 个分身、
-                {accountStats?.totalMessages || 0} 条消息、{accountStats?.totalRuntimeStates || 0} 条运行态和 {accountStats?.totalFiles || 0} 个文件元数据。
+                此操作将永久删除你的账户及相关数据。
+                {accountStats && `当前统计：${accountStats.totalPersonas} 个分身、${accountStats.totalMessages} 条消息、${accountStats.totalFiles} 个文件元数据。`}
                 此操作不可撤销。
               </p>
             </div>
@@ -4181,7 +4116,7 @@ export default function SettingsPage() {
           <aside
             role="tablist"
             aria-label="用户中心分区导航"
-            className="flex md:flex-col gap-1 p-1.5 bg-card/75 backdrop-blur-xl border border-border/70 rounded-2xl md:sticky md:top-20 overflow-x-auto scrollbar-hide shadow-2xs"
+            className="flex md:flex-col gap-1 p-1.5 bg-card/85 backdrop-blur-xl border border-border/70 rounded-2xl sticky top-[3.75rem] z-30 md:top-20 overflow-x-auto scrollbar-hide shadow-2xs"
           >
             {TABS.map((tab, index) => {
               const Icon = tab.icon;

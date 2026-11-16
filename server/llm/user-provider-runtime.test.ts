@@ -6,15 +6,29 @@ import { resolveProviderForUser, resolveSingleProviderForUser, invalidateUserPro
 import { registry } from "./index";
 import { OpenAIProvider } from "./providers/openai";
 import { getUsageContext } from "./usage-context";
+import { ENV } from "../_core/env";
 const parent = { id: 1, userId: 17, providerName: "OpenAI", isDefault: true, apiKey: "own-parent-key", apiKeyHint: "-key", baseUrl: "https://parent.example.test/v1", model: "parent-model", systemMessage: null, extraConfig: { reasoningEffort: "high" } };
 const relay = { id: 101, llmConfigId: 1, userId: 17, providerName: "OpenAI", relayName: "示例站", enabled: true, priority: 100, apiKey: "own-relay-key", apiKeyHint: "-key", baseUrl: "https://relay.example.test/v1", model: "relay-model", reasoningEffort: null, extraConfig: null };
 const original = registry.getBaseConfig("OpenAI");
+const originalEnv = {
+  allowServerLlmFallback: ENV.allowServerLlmFallback,
+  registrationEnabled: ENV.registrationEnabled,
+  llmAllowedOrigins: ENV.llmAllowedOrigins,
+};
 beforeEach(() => {
   vi.clearAllMocks(); invalidateUserProviderCache(); mocks.configs.mockResolvedValue([parent]); mocks.relays.mockResolvedValue([]);
+  ENV.llmAllowedOrigins = ["parent", "relay", "backup", "higher", "lower", "draft"]
+    .map(name => `https://${name}.example.test`);
+  ENV.allowServerLlmFallback = false;
+  ENV.registrationEnabled = false;
   registry.registerFactory("OpenAI", cfg => new OpenAIProvider("OpenAI", cfg.apiKey ?? "", cfg.baseUrl ?? "", cfg.model ?? ""), { apiKey: "deployment-shared-key", baseUrl: "https://trusted.example.test/v1", model: "trusted-model" });
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ choices: [{ message: { content: "答复" } }] })));
 });
-afterEach(() => { vi.unstubAllGlobals(); if (original) registry.registerFactory("OpenAI", cfg => new OpenAIProvider("OpenAI", cfg.apiKey ?? "", cfg.baseUrl ?? "", cfg.model ?? ""), original); });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Object.assign(ENV, originalEnv);
+  if (original) registry.registerFactory("OpenAI", cfg => new OpenAIProvider("OpenAI", cfg.apiKey ?? "", cfg.baseUrl ?? "", cfg.model ?? ""), original);
+});
 const messages = [{ role: "user" as const, content: "普通请求" }];
 const requestBody = () => JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
 describe("用户配置与站级安全适配", () => {
@@ -25,9 +39,34 @@ describe("用户配置与站级安全适配", () => {
     await expect(resolveProviderForUser({ userId: 17, providerName: "OpenAI" })).rejects.toMatchObject({ kind: "auth" }); expect(fetch).not.toHaveBeenCalled();
   });
   it("完全没有用户配置时保留可信环境默认，仍独立标记用户", async () => {
+    ENV.allowServerLlmFallback = true;
     mocks.configs.mockResolvedValue([]); const a = await resolveProviderForUser({ userId: 17, providerName: "OpenAI" }); const b = await resolveProviderForUser({ userId: 23, providerName: "OpenAI" });
     expect(a).not.toBe(b); expect(getUsageContext(a!)).toEqual({ userId: 17 }); expect(getUsageContext(b!)).toEqual({ userId: 23 });
     await a!.invoke(messages); expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://trusted.example.test/v1/chat/completions");
+  });
+  it("默认和开放注册时均不向账号提供环境密钥", async () => {
+    mocks.configs.mockResolvedValue([]);
+    const input = { userId: 17, providerName: "OpenAI" };
+    await expect(resolveProviderForUser(input)).resolves.toBeUndefined();
+    ENV.allowServerLlmFallback = true;
+    ENV.registrationEnabled = true;
+    await expect(resolveProviderForUser(input)).resolves.toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("在聊天和探测发出网络请求前拒绝未授权端点，允许探测修正后的地址", async () => {
+    mocks.configs.mockResolvedValue([{ ...parent, baseUrl: "http://169.254.169.254" }]);
+    const input = { userId: 17, providerName: "OpenAI" };
+    await expect(resolveProviderForUser(input)).rejects.toMatchObject({ kind: "permission" });
+    await expect(resolveSingleProviderForUser({ ...input, baseUrl: "https://relay.example.test.untrusted" }))
+      .rejects.toMatchObject({ kind: "permission" });
+    expect(fetch).not.toHaveBeenCalled();
+
+    const corrected = await resolveSingleProviderForUser({ ...input, baseUrl: "https://api.openai.com/v1" });
+    expect(corrected.reflectsCurrentChatRoute).toBe(false);
+    await corrected.provider.invoke(messages);
+    expect(fetch).toHaveBeenCalledWith("https://api.openai.com/v1/chat/completions", expect.objectContaining({
+      redirect: "error",
+    }));
   });
   it("只取本用户最高优先启用站，null继承provider推理", async () => {
     mocks.relays.mockResolvedValue([relay, { ...relay, id: 102, priority: 120, model: "highest-model" }, { ...relay, id: 103, priority: 150, enabled: false }]);
@@ -115,6 +154,7 @@ describe("禁用与清空站点的环境边界", () => {
     expect(vi.mocked(fetch).mock.calls.map(call => call[0])).toEqual(["https://backup.example.test/v1/messages"]);
   });
   it("已存在用户配置但最后站被清空时不能复活ENV共享key", async () => {
+    ENV.allowServerLlmFallback = true;
     mocks.configs.mockResolvedValue([{ ...parent, apiKey: null, baseUrl: null, model: null }]); mocks.relays.mockResolvedValue([]);
     expect(await resolveProviderForUser({ userId: 17, providerName: "OpenAI" })).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
@@ -122,6 +162,17 @@ describe("禁用与清空站点的环境边界", () => {
 });
 
 describe("新站probe启用状态", () => {
+  it("允许自用实例首次读取 Ollama 的模型列表", async () => {
+    mocks.configs.mockResolvedValue([]);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ models: [{ name: "fixture" }] })));
+    const draft = { userId: 17, providerName: "Ollama", baseUrl: "http://localhost:11434", allowEmptyModel: true };
+    const { provider } = await resolveSingleProviderForUser(draft);
+    await expect(provider.listModels?.()).resolves.toEqual([{ id: "fixture" }]);
+
+    ENV.registrationEnabled = true;
+    await expect(resolveSingleProviderForUser(draft)).rejects.toMatchObject({ kind: "permission" });
+  });
+
   it("未保存新站成功也不返回停用标记，仍是单次草稿", async () => {
     mocks.configs.mockResolvedValue([]);
     mocks.relays.mockResolvedValue([]);

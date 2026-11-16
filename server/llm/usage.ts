@@ -1,4 +1,4 @@
-import type { LLMMessage, LLMTokenUsage, LLMRouteInfo } from "./types";
+import type { LLMMessage, LLMTokenUsage, LLMRouteInfo, LLMToolDefinition } from "./types";
 import type { UserUsageContext } from "./usage-context";
 export type TokenSource = "provider" | "estimated" | "mixed";
 export type LlmUsageRecord = {
@@ -23,8 +23,27 @@ export function resetLlmUsageForTests() { records.length = 0; nextId = 1; persis
 function metadata(value: string | undefined, fallback?: string) { return value && value.length <= 128 && !/[\x00-\x1f<>"'=?&#@]/.test(value) && !/:\/\/|sk-|bearer|token=|key=/i.test(value) ? value : fallback; }
 function count(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 2147483647; }
 const estimate = (chars: number) => Math.ceil(chars / 1.7);
-export function estimateInputTokens(messages: LLMMessage[]) { return messages.reduce((sum, message) => sum + (typeof message.content === "string" ? estimate(Array.from(message.content).length) : message.content.reduce((total, part) => total + (part.type === "text" ? estimate(Array.from(part.text).length) : 1000), 0)), 0); }
-function inputChars(messages: LLMMessage[]) { return messages.reduce((sum, message) => sum + (typeof message.content === "string" ? Array.from(message.content).length : message.content.reduce((total, part) => total + (part.type === "text" ? Array.from(part.text).length : 420), 0)), 0); }
+const charCount = (text: string) => Array.from(text).length;
+function toolHistoryChars(message: LLMMessage) {
+  return charCount(message.reasoningContent ?? "") + charCount(message.toolCallId ?? "") +
+    (message.toolCalls?.length ? charCount(JSON.stringify(message.toolCalls)) : 0);
+}
+export function estimateInputTokens(messages: LLMMessage[]) {
+  return messages.reduce((sum, message) => {
+    const content = typeof message.content === "string"
+      ? estimate(charCount(message.content))
+      : message.content.reduce((total, part) => total + (part.type === "text" ? estimate(charCount(part.text)) : 1000), 0);
+    return sum + content + estimate(toolHistoryChars(message));
+  }, 0);
+}
+function inputChars(messages: LLMMessage[]) {
+  return messages.reduce((sum, message) => {
+    const content = typeof message.content === "string"
+      ? charCount(message.content)
+      : message.content.reduce((total, part) => total + (part.type === "text" ? charCount(part.text) : 420), 0);
+    return sum + content + toolHistoryChars(message);
+  }, 0);
+}
 type Attempt = { usage: LLMTokenUsage; chars: number; provider: string; relayId?: number };
 export class UsageMeter {
   private readonly started = new Date();
@@ -43,9 +62,11 @@ export class UsageMeter {
     private requestedProvider?: string,
     reasoningEffort?: string,
     relayId?: number,
+    tools?: LLMToolDefinition[],
   ) {
-    this.estimatedInput = estimateInputTokens(messages);
-    this.chars = inputChars(messages);
+    const toolChars = tools?.length ? charCount(JSON.stringify(tools)) : 0;
+    this.estimatedInput = estimateInputTokens(messages) + estimate(toolChars);
+    this.chars = inputChars(messages) + toolChars;
     this.currentRoute = { provider, model, reasoningEffort, relayId };
     this.pendingRoute = { ...this.currentRoute };
   }

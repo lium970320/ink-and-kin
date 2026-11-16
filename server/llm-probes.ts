@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { llmService } from "./llm";
-import { resolveSingleProviderForUser } from "./llm/user-provider";
+import { parseLlmBaseUrl, resolveSingleProviderForUser } from "./llm/user-provider";
 import { LLMRequestError, safeLLMError } from "./llm/errors";
 import type { LLMOptions, LLMProvider } from "./llm/types";
 
@@ -9,13 +9,8 @@ export const llmProbeInput = z.object({
   providerName: z.string().trim().min(1).max(64),
   relayId: z.number().int().positive().optional(),
   apiKey: z.string().max(512).optional(),
-  baseUrl: z.string().trim().max(512).refine(value => {
-    if (!value) return true;
-    try {
-      const url = new URL(value);
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
-    } catch { return false; }
-  }, "API 地址必须为不含内嵌凭据的 HTTP 或 HTTPS 地址。").optional(),
+  baseUrl: z.string().trim().max(512).refine(value => !value || Boolean(parseLlmBaseUrl(value)),
+    "API 地址须为无内嵌凭据、查询参数或片段的 HTTP 或 HTTPS 地址。").optional(),
   model: z.string().trim().max(128).optional(),
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
 });

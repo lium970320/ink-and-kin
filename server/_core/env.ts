@@ -60,8 +60,24 @@ export const ENV = {
   cookieSecret: resolveJwtSecret(),
   databaseUrl: process.env.DATABASE_URL ?? "",
   isProduction: process.env.NODE_ENV === "production",
+  listenHost: process.env.APP_HOST?.trim() || "127.0.0.1",
+  registrationEnabled: process.env.ALLOW_REGISTRATION === "true",
 
   defaultLlmProvider: process.env.DEFAULT_LLM_PROVIDER ?? "openai",
+  llmAllowedOrigins: parseOriginList(process.env.LLM_ALLOWED_ORIGINS),
+  allowServerLlmFallback: process.env.LLM_ALLOW_SERVER_FALLBACK === "true",
+
+  // 天气和记忆工具仅在部署者明确开启后加入模型请求。
+  companionToolsEnabled: process.env.COMPANION_TOOLS_ENABLED === "true",
+  companionWeatherTimeoutMs: Math.max(500, Math.min(15_000,
+    Number(process.env.COMPANION_WEATHER_TIMEOUT_MS) || 5000)),
+
+  qqInputStatusEnabled: process.env.QQ_INPUT_STATUS_ENABLED !== "false",
+  qqRecallAwarenessEnabled: process.env.QQ_RECALL_AWARENESS_ENABLED !== "false",
+  qqForwardUnpackEnabled: process.env.QQ_FORWARD_UNPACK_ENABLED !== "false",
+  qqInboundImagesEnabled: process.env.QQ_INBOUND_IMAGES_ENABLED === "true",
+  qqPokeReplyEnabled: process.env.QQ_POKE_REPLY_ENABLED === "true",
+  qqTurnInterruptRecallEnabled: process.env.QQ_TURN_INTERRUPT_RECALL_ENABLED === "true",
 
   // 情绪判定引擎：llm（默认，由模型阅读对话判断）/ heuristic（纯关键词规则，零额外调用）
   emotionEngine: (process.env.EMOTION_ENGINE ?? "llm") as "llm" | "heuristic",
@@ -147,8 +163,8 @@ export const ENV = {
 
   /**
    * Whether to create a local admin account when the database has no users.
-   * "auto" keeps the single-user desktop experience zero-config; "manual"
-   * requires the operator to register through the UI.
+   * "auto" keeps the single-user desktop experience zero-config. Use
+   * "manual" with ALLOW_REGISTRATION=true to create the first account in the UI.
    */
   bootstrapAdmin: (process.env.MIRRAI_BOOTSTRAP_ADMIN ?? "auto").toLowerCase() as
     | "auto"

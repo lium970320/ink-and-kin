@@ -8,6 +8,12 @@ build-macos
 .env.*
 !.env.example
 uploads
+first-run-credentials.txt
+.项目记忆
+.live-wechat-state.json
+.live-test
+live-wechat-qr.png
+live-wechat-qr-url.txt
 *.log
 .DS_Store
 docs

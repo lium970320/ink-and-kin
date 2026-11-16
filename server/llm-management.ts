@@ -2,7 +2,11 @@ import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 import { encryptSecret } from "./_core/crypto";
 import { registry } from "./llm";
-import { invalidateUserProviderCache } from "./llm/user-provider";
+import {
+  canUseServerLlmFallback, invalidateUserProviderCache, isAllowedLlmOrigin,
+  LLM_ENDPOINT_NOT_ALLOWED, parseLlmBaseUrl,
+} from "./llm/user-provider";
+import { defaultUserProviderUrl } from "./llm/user-provider-factory";
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 const reasoning = new Set(["low", "medium", "high", "xhigh"]);
@@ -46,10 +50,14 @@ async function usableProviderName(userId: number, value: string) {
   return name;
 }
 function optionalText(value: string | undefined) { return value === undefined ? undefined : value.trim() || null; }
-function baseUrl(value: string | undefined) {
-  const trimmed = optionalText(value); if (!trimmed) return trimmed;
-  let url: URL; try { url = new URL(trimmed); } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "API 地址格式无效。" }); }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new TRPCError({ code: "BAD_REQUEST", message: "API 地址只支持无内嵌凭据的 HTTP 或 HTTPS 地址。" });
+function baseUrl(name: string, value: string | undefined) {
+  const trimmed = optionalText(value);
+  if (!trimmed) return trimmed;
+  const url = parseLlmBaseUrl(trimmed);
+  if (!url) throw new TRPCError({ code: "BAD_REQUEST", message: "API 地址须为无内嵌凭据、查询参数或片段的 HTTP 或 HTTPS 地址。" });
+  if (!isAllowedLlmOrigin(name, url)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: LLM_ENDPOINT_NOT_ALLOWED });
+  }
   return trimmed;
 }
 async function encryptedKey(value: string | undefined) {
@@ -67,14 +75,16 @@ export async function listUserLlmProviders(userId: number) {
   return names.map(name => {
     const entry = registered.find(provider => provider.name.toLowerCase() === name.toLowerCase());
     const instance = entry ? registry.get(name) : undefined;
-    const summary = instance?.getConfigSummary?.() ?? {};
+    const useEnvironment = canUseServerLlmFallback();
+    const summary = useEnvironment ? instance?.getConfigSummary?.() ?? {} : {};
     const config = configs.find(item => item.providerName.trim().toLowerCase() === name.toLowerCase());
     const extra = object(config?.extraConfig);
     const stations = relays.filter(relay => relay.llmConfigId === config?.id);
     const primary = stations.find(relay => relay.enabled);
-    return { name, configured: Boolean(entry?.configured || config?.apiKey || stations.some(relay => relay.enabled && relay.apiKey)),
+    const ownOllama = name === "Ollama" && config?.baseUrl && config.model;
+    return { name, configured: Boolean(useEnvironment && entry?.configured || config?.apiKey || ownOllama || stations.some(relay => relay.enabled && relay.apiKey)),
       supportsModelList: typeof instance?.listModels === "function", supportsReasoningEffort: entry ? instance?.supportsReasoningEffort : true,
-      baseUrl: primary?.baseUrl ?? config?.baseUrl ?? summary.baseUrl ?? null,
+      baseUrl: primary?.baseUrl ?? config?.baseUrl ?? summary.baseUrl ?? defaultUserProviderUrl(name) ?? null,
       model: primary?.model ?? config?.model ?? summary.model ?? null,
       reasoningEffort: extra.reasoningEffort === null ? null : typeof extra.reasoningEffort === "string" && reasoning.has(extra.reasoningEffort) ? extra.reasoningEffort : summary.reasoningEffort ?? null,
       dynamicRouting: name.toLowerCase() === "deepseek" && extra.deepseekDynamicRouting === true,
@@ -93,16 +103,17 @@ export async function saveUserLlmConfig(userId: number, input: {
   deepseekDynamicRouting?: boolean; extraConfig?: Record<string, unknown>;
 }) {
   const name = providerName(input.providerName);
+  const url = baseUrl(name, input.baseUrl);
   if (!registered(name)) {
     const configs = await db.getLlmConfigsByUserId(userId);
     const before = configs.find(config => config.providerName.trim().toLowerCase() === name.toLowerCase());
-    const ownsPair = !!(input.apiKey?.trim() || before?.apiKey) && !!(input.baseUrl !== undefined ? baseUrl(input.baseUrl) : before?.baseUrl);
+    const ownsPair = !!(input.apiKey?.trim() || before?.apiKey) && !!(url !== undefined ? url : before?.baseUrl);
     if (!ownsPair && !await hasOwnedEndpoint(userId, name)) throw new TRPCError({ code: "BAD_REQUEST", message: "自定义提供商须使用你自己的密钥和完整 API 地址。" });
   }
   const extra: Record<string, unknown> = { ...(input.extraConfig ?? {}), ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}), ...(input.deepseekDynamicRouting !== undefined ? { deepseekDynamicRouting: input.deepseekDynamicRouting } : {}) };
   if (typeof extra.fallbackProvider === "string" && extra.fallbackProvider.trim()) extra.fallbackProvider = await usableProviderName(userId, extra.fallbackProvider);
   const id = await db.upsertLlmConfig(userId, { providerName: name, ...await encryptedKey(input.apiKey),
-    ...(input.baseUrl !== undefined ? { baseUrl: baseUrl(input.baseUrl) } : {}), ...(input.model !== undefined ? { model: optionalText(input.model) } : {}),
+    ...(url !== undefined ? { baseUrl: url } : {}), ...(input.model !== undefined ? { model: optionalText(input.model) } : {}),
     ...(Object.keys(extra).length ? { extraConfig: validateExtra(extra) } : {}),
   });
   invalidateUserProviderCache(userId); return { id };
@@ -114,13 +125,14 @@ export async function saveUserLlmRelay(userId: number, input: {
   try {
     const { apiKey, ...fields } = input;
     const name = providerName(input.providerName);
+    const url = baseUrl(name, input.baseUrl);
     if (!registered(name)) {
       const relays = await db.getLlmRelaysByUserId(userId, name);
       const before = relays.find(relay => relay.id === input.id);
-      if (!(apiKey?.trim() || before?.apiKey) || !(input.baseUrl !== undefined ? baseUrl(input.baseUrl) : before?.baseUrl)) throw new TRPCError({ code: "BAD_REQUEST", message: "自定义中转站须使用你自己的密钥和完整 API 地址。" });
+      if (!(apiKey?.trim() || before?.apiKey) || !(url !== undefined ? url : before?.baseUrl)) throw new TRPCError({ code: "BAD_REQUEST", message: "自定义中转站须使用你自己的密钥和完整 API 地址。" });
     }
     const id = await db.saveLlmRelayConfig(userId, { ...fields, providerName: name, ...await encryptedKey(apiKey),
-      ...(input.baseUrl !== undefined ? { baseUrl: baseUrl(input.baseUrl) } : {}), ...(input.model !== undefined ? { model: optionalText(input.model) } : {}),
+      ...(url !== undefined ? { baseUrl: url } : {}), ...(input.model !== undefined ? { model: optionalText(input.model) } : {}),
     });
     invalidateUserProviderCache(userId); return { id };
   } catch (error) {
