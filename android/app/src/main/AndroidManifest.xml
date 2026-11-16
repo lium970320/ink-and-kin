@@ -44,6 +44,9 @@
                 <data
                     android:scheme="ink-and-kin"
                     android:host="pair" />
+                <data
+                    android:scheme="mirrai"
+                    android:host="pair" />
             </intent-filter>
         </activity>
 

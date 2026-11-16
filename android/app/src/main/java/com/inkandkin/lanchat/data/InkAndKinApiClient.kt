@@ -5,6 +5,7 @@ import com.inkandkin.lanchat.model.AuthExchangeResponseDto
 import com.inkandkin.lanchat.model.MessagesPageResponseDto
 import com.inkandkin.lanchat.model.MobileMessageDto
 import com.inkandkin.lanchat.model.MobilePingDto
+import com.inkandkin.lanchat.model.MobileServerKind
 import com.inkandkin.lanchat.model.MobileSettingsDto
 import com.inkandkin.lanchat.model.MobileVersionDto
 import com.inkandkin.lanchat.model.PairExchangeRequestDto
@@ -15,6 +16,8 @@ import com.inkandkin.lanchat.model.ScenesResponseDto
 import com.inkandkin.lanchat.model.SendImageRequestDto
 import com.inkandkin.lanchat.model.SendTextRequestDto
 import com.inkandkin.lanchat.model.SendVoiceRequestDto
+import com.inkandkin.lanchat.model.ServerProbe
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -24,6 +27,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -68,6 +72,7 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
         if (session != null && origin != null && UrlResolver.hasSameOrigin(origin, media.url) &&
             media.url.encodedPath.startsWith("/uploads/")
         ) {
+            verifyCurrentSessionOrigin(session)
             builder.header("Authorization", "Bearer ${session.token}")
         }
         chain.proceed(builder.build())
@@ -76,6 +81,13 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
     private val pingClient: OkHttpClient = okHttpClient.newBuilder()
         .connectTimeout(1600, TimeUnit.MILLISECONDS)
         .readTimeout(1800, TimeUnit.MILLISECONDS)
+        .callTimeout(2500, TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(false)
+        .build()
+
+    private val probeJson = Json { ignoreUnknownKeys = true }
+
+    private val authenticationClient: OkHttpClient = okHttpClient.newBuilder()
         .retryOnConnectionFailure(false)
         .build()
 
@@ -84,41 +96,51 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
         .retryOnConnectionFailure(false)
         .build()
 
-    /**
-     * GET /api/mobile/ping 测速验活，返回耗时毫秒；不可达返回 null
-     */
-    suspend fun ping(serverUrl: String): Long? = withContext(Dispatchers.IO) {
+    /** 探测不携带任何会话数据，返回可识别的服务身份与延迟。 */
+    suspend fun probe(serverUrl: String): ServerProbe? = withContext(Dispatchers.IO) { probeBlocking(serverUrl) }
+
+    internal fun probeBlocking(serverUrl: String): ServerProbe? {
         val base = UrlResolver.normalizeBaseUrl(serverUrl)
-        if (base.isEmpty()) return@withContext null
+        if (base.isEmpty()) return null
         val start = System.nanoTime()
-        return@withContext try {
+        return try {
             val req = Request.Builder()
                 .url("$base/api/mobile/ping")
                 .get()
                 .build()
             pingClient.newCall(req).execute().use { resp ->
-                val payload = if (resp.isSuccessful) {
-                    json.decodeFromString<MobilePingDto>(resp.peekBody(16_384L).string())
-                } else null
-                if (payload?.ok == true && payload.service == MobileProtocol.SERVICE &&
-                    payload.protocolVersion == MobileProtocol.VERSION
-                ) {
-                    ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(1L)
-                } else {
-                    null
-                }
+                if (!resp.isSuccessful) return@use null
+                val payload = probeJson.decodeFromString<MobilePingDto>(resp.peekBody(16_384L).string())
+                val kind = MobileProtocol.recognizePing(payload) ?: return@use null
+                val latency = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(1L)
+                ServerProbe(kind, latency)
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (_: Exception) {
             null
         }
     }
 
+    suspend fun ping(serverUrl: String): Long? = probe(serverUrl)?.latencyMs
+
+    private fun requirePairingOrigin(serverUrl: String, expectedKind: MobileServerKind?): String {
+        val base = UrlResolver.normalizeBaseUrl(serverUrl)
+        val actual = probeBlocking(base)?.kind ?: throw IOException("该地址未返回受支持的书中人或 Mirrai 服务。")
+        if (expectedKind != null && actual != expectedKind) {
+            throw IOException("服务器类型与选择或配对链接不符，请核对地址后重试。")
+        }
+        return base
+    }
+
     /**
      * POST /api/mobile/pair/exchange
      */
-    suspend fun pairExchange(serverUrl: String, code: String, deviceName: String): AuthExchangeResponseDto =
+    suspend fun pairExchange(
+        serverUrl: String, code: String, deviceName: String, expectedKind: MobileServerKind? = null
+    ): AuthExchangeResponseDto =
         withContext(Dispatchers.IO) {
-            val base = UrlResolver.normalizeBaseUrl(serverUrl)
+            val base = requirePairingOrigin(serverUrl, expectedKind)
             val bodyStr = json.encodeToString(
                 PairExchangeRequestDto(code = code.trim(), deviceName = deviceName)
             )
@@ -126,7 +148,8 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
                 url = "$base/api/mobile/pair/exchange",
                 method = "POST",
                 bodyJson = bodyStr,
-                includeAuth = false
+                includeAuth = false,
+                client = authenticationClient
             )
             val parsed = json.decodeFromString<AuthExchangeResponseDto>(raw)
             if (!parsed.ok || parsed.token.isBlank()) {
@@ -142,9 +165,10 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
         serverUrl: String,
         username: String,
         password: String,
-        deviceName: String
+        deviceName: String,
+        expectedKind: MobileServerKind? = null
     ): AuthExchangeResponseDto = withContext(Dispatchers.IO) {
-        val base = UrlResolver.normalizeBaseUrl(serverUrl)
+        val base = requirePairingOrigin(serverUrl, expectedKind)
         val bodyStr = json.encodeToString(
             PasswordLoginRequestDto(
                 username = username.trim(),
@@ -156,7 +180,8 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
             url = "$base/api/mobile/auth/login",
             method = "POST",
             bodyJson = bodyStr,
-            includeAuth = false
+            includeAuth = false,
+            client = authenticationClient
         )
         val parsed = json.decodeFromString<AuthExchangeResponseDto>(raw)
         if (!parsed.ok || parsed.token.isBlank()) {
@@ -363,9 +388,14 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
     /**
      * GET /api/mobile/version
      */
-    suspend fun getVersion(): MobileVersionDto = withContext(Dispatchers.IO) {
+    suspend fun getVersion(kind: MobileServerKind = MobileServerKind.INK_AND_KIN): MobileVersionDto = withContext(Dispatchers.IO) {
+        if (kind == MobileServerKind.MIRRAI) return@withContext MobileVersionDto(available = false)
+        val base = requireBaseUrl()
+        if (probeBlocking(base)?.kind != MobileServerKind.INK_AND_KIN) {
+            return@withContext MobileVersionDto(available = false)
+        }
         val raw = executeJson(
-            url = "${requireBaseUrl()}/api/mobile/version",
+            url = "$base/api/mobile/version",
             method = "GET",
             includeAuth = false
         )
@@ -430,6 +460,7 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
             val session = sessionStore.snapshot() ?: throw IOException("请先配对或登录")
             val origin = session.baseUrl.toHttpUrlOrNull() ?: throw IOException("已登录地址无效")
             if (!UrlResolver.hasSameOrigin(origin, target)) throw IOException("服务器已切换，请重新登录")
+            verifyCurrentSessionOrigin(session)
             reqBuilder.header("Authorization", "Bearer ${session.token}")
         }
         reqBuilder.header("Accept", "application/json")
@@ -457,16 +488,53 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
         }
     }
 
-    internal suspend fun revokeSession(session: MobileSession): Boolean = withContext(Dispatchers.IO) {
-        val origin = session.baseUrl.toHttpUrlOrNull() ?: return@withContext false
-        val endpoint = origin.newBuilder().encodedPath("/api/mobile/auth/logout").query(null).fragment(null).build()
+    private fun verifyCurrentSessionOrigin(session: MobileSession) {
+        if (probeBlocking(session.baseUrl)?.kind != session.kind) {
+            throw IOException("无法核对当前地址的服务器身份，请检查连接。")
+        }
+        if (!sessionStore.isCurrent(session)) throw IOException("当前会话已切换。")
+    }
+
+    internal suspend fun revokeDeviceSession(
+        session: MobileSession, kind: MobileServerKind, deviceId: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (session.kind != kind || probeBlocking(session.baseUrl)?.kind != kind) return@withContext false
+        val origin = UrlResolver.normalizeBaseUrl(session.baseUrl).toHttpUrlOrNull() ?: return@withContext false
+        val path = when (kind) {
+            MobileServerKind.INK_AND_KIN -> "/api/mobile/auth/logout"
+            MobileServerKind.MIRRAI -> "/api/trpc/mobile.revokeDevice"
+        }
+        if (kind == MobileServerKind.MIRRAI && deviceId.isBlank()) return@withContext false
+        val body = when (kind) {
+            MobileServerKind.INK_AND_KIN -> "{}"
+            MobileServerKind.MIRRAI -> buildJsonObject {
+                put("json", buildJsonObject { put("deviceId", deviceId.trim()) })
+            }.toString()
+        }
+        val endpoint = origin.newBuilder().encodedPath(path).build()
         val request = Request.Builder().url(endpoint)
             .header("Authorization", "Bearer ${session.token}")
-            .post("{}".toRequestBody(JSON_MEDIA))
+            .post(body.toRequestBody(JSON_MEDIA))
             .build()
-        val call = okHttpClient.newCall(request)
+        val call = authenticationClient.newCall(request)
         call.timeout().timeout(5, TimeUnit.SECONDS)
-        call.execute().use { response -> response.isSuccessful || response.code == 401 }
+        try {
+            call.execute().use { response ->
+                if (response.code == 401) return@use true
+                if (!response.isSuccessful) return@use false
+                if (kind == MobileServerKind.INK_AND_KIN) return@use true
+                val root = probeJson.parseToJsonElement(response.peekBody(16_384L).string()) as? JsonObject
+                val result = root?.get("result") as? JsonObject
+                val data = result?.get("data") as? JsonObject
+                val jsonData = data?.get("json") as? JsonObject
+                val revoked = jsonData?.get("revoked") as? JsonPrimitive
+                revoked?.takeUnless { it.isString }?.booleanOrNull == true
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun cancelPendingRequests() {

@@ -73,6 +73,17 @@ class LanRealtimeHub(
     private val connectivityManager =
         context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
+    private val socketClient = apiClient.okHttpClient.newBuilder().addInterceptor { chain ->
+        val request = chain.request()
+        val session = request.tag(MobileSession::class.java) ?: throw java.io.IOException("缺少会话")
+        if (!sessionStore.isCurrent(session) || apiClient.probeBlocking(session.baseUrl)?.kind != session.kind ||
+            !sessionStore.isCurrent(session)
+        ) {
+            throw java.io.IOException("服务器身份不匹配或暂不可达")
+        }
+        chain.proceed(request)
+    }.build()
+
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -113,7 +124,7 @@ class LanRealtimeHub(
         }
         shouldStayConnected = true
         val targetWsUrl = UrlResolver.buildWebSocketUrl(session.baseUrl)
-        if (!forceReconnect && webSocket != null && activeWsUrl == targetWsUrl && activeSession?.token == session.token &&
+        if (!forceReconnect && webSocket != null && activeWsUrl == targetWsUrl && activeSession?.activation == session.activation &&
             (_connectionState.value == ConnectionState.CONNECTED || _connectionState.value == ConnectionState.CONNECTING)
         ) {
             return
@@ -172,11 +183,12 @@ class LanRealtimeHub(
         _connectionState.value = ConnectionState.CONNECTING
 
         val request = Request.Builder()
+            .tag(MobileSession::class.java, session)
             .url(wsUrl)
             .header("Authorization", "Bearer ${session.token}")
             .build()
 
-        val ws = apiClient.okHttpClient.newWebSocket(request, object : WebSocketListener() {
+        val ws = socketClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (this@LanRealtimeHub.webSocket !== webSocket || !sessionStore.isCurrent(session)) return
                 reconnectAttempts = 0

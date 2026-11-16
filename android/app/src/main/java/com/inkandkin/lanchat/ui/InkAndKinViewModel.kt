@@ -8,7 +8,9 @@ import com.inkandkin.lanchat.BuildConfig
 import com.inkandkin.lanchat.InkAndKinApp
 import com.inkandkin.lanchat.data.AuthExpiredException
 import com.inkandkin.lanchat.data.PairDeepLinkPayload
+import com.inkandkin.lanchat.data.SavedServer
 import com.inkandkin.lanchat.data.SessionStore
+import com.inkandkin.lanchat.data.appLabel
 import com.inkandkin.lanchat.data.UrlResolver
 import com.inkandkin.lanchat.data.WsDownstreamEvent
 import com.inkandkin.lanchat.media.ImageCompressor
@@ -17,6 +19,7 @@ import com.inkandkin.lanchat.model.ChatMessageItem
 import com.inkandkin.lanchat.model.ConnectionState
 import com.inkandkin.lanchat.model.DiscoveredServer
 import com.inkandkin.lanchat.model.MobileMessageDto
+import com.inkandkin.lanchat.model.MobileServerKind
 import com.inkandkin.lanchat.model.MobileUserDto
 import com.inkandkin.lanchat.model.MobileVersionDto
 import com.inkandkin.lanchat.model.PersonaSummaryDto
@@ -56,6 +59,10 @@ data class InkAndKinUiState(
     val baseUrl: String = "",
     val pairInputUrl: String = "",
     val pairInputCode: String = "",
+    val pairInputKind: MobileServerKind? = null,
+    val serverKind: MobileServerKind? = null,
+    val sessionActivation: Long = 0L,
+    val savedServers: List<SavedServer> = emptyList(),
     val user: MobileUserDto? = null,
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val discoveredServers: List<DiscoveredServer> = emptyList(),
@@ -115,7 +122,7 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             realtimeHub.connectionState.collect { conn ->
                 _uiState.update { it.copy(connectionState = conn) }
-                if (conn == ConnectionState.AUTH_EXPIRED && _uiState.value.isAuthenticated) {
+                if (conn == ConnectionState.AUTH_EXPIRED && conn == realtimeHub.connectionState.value && _uiState.value.isAuthenticated) {
                     handleAuthExpired("配对已失效，请重新验证")
                 }
             }
@@ -180,6 +187,9 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
             baseUrl = savedUrl,
             pairInputUrl = savedUrl,
             user = sessionStore.user,
+            serverKind = sessionStore.snapshot()?.kind,
+            sessionActivation = sessionStore.snapshot()?.activation ?: 0L,
+            savedServers = sessionStore.savedServers(),
             connectionState = realtimeHub.connectionState.value,
             personas = cachedPersonas,
             activePersonaId = initialPersonaId,
@@ -192,12 +202,17 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun updatePairInputUrl(url: String) {
+        if (_uiState.value.isPairingBusy) return
         val deepLink = UrlResolver.parsePairDeepLink(url)
         if (deepLink != null) {
             handlePairDeepLink(deepLink)
             return
         }
-        _uiState.update { it.copy(pairInputUrl = url, manualPingMs = null, pairingHint = null) }
+        _uiState.update {
+            val sameAddress = UrlResolver.normalizeBaseUrl(url) == UrlResolver.normalizeBaseUrl(it.pairInputUrl)
+            it.copy(pairInputUrl = url, pairInputKind = if (sameAddress) it.pairInputKind else null,
+                pairInputCode = if (sameAddress) it.pairInputCode else "", manualPingMs = null, pairingHint = null)
+        }
     }
 
     fun updatePairInputCode(code: String) {
@@ -205,19 +220,16 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(pairInputCode = filtered, pairingHint = null) }
     }
 
-    /**
-     * 处理扫码唤起 Deep Link: ink-and-kin://pair?url=...&code=...
-     */
     fun handlePairDeepLink(payload: PairDeepLinkPayload) {
-        if (_uiState.value.isAuthenticated || _uiState.value.isPairingBusy) {
-            emitToast("已连接时请先解除绑定，再扫描新服务器的配对码。")
-            return
-        }
+        if (_uiState.value.isPairingBusy) return
+        if (_uiState.value.isAuthenticated) showPairing()
         _uiState.update {
             it.copy(
                 pairInputUrl = payload.serverUrl,
                 pairInputCode = payload.code,
-                pairingHint = "请确认这是你信任的书中人服务器，再选择配对。"
+                pairInputKind = payload.kind,
+                manualPingMs = null,
+                pairingHint = "请确认这是你信任的${payload.kind.appLabel}服务器，再选择配对。"
             )
         }
     }
@@ -232,53 +244,75 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * 局域网 UDP 30003 自动扫描 + HTTP Ping 测速
+     * 扫描支持的两种局域网服务。
      */
     fun scanLanServers() {
         if (_uiState.value.isScanningLan) return
         viewModelScope.launch {
             _uiState.update { it.copy(isScanningLan = true) }
             val extras = buildList {
+                sessionStore.savedServers().forEach { add(it.baseUrl) }
                 if (sessionStore.baseUrl.isNotBlank()) add(sessionStore.baseUrl)
                 if (_uiState.value.pairInputUrl.isNotBlank()) add(_uiState.value.pairInputUrl)
             }
             val list = discoveryClient.discoverServers(extras)
             val bestReachable = list.firstOrNull { it.reachable }
             _uiState.update { state ->
-                val nextUrl = if (state.pairInputUrl.isBlank() && bestReachable != null) {
-                    bestReachable.baseUrl
-                } else if (bestReachable != null && list.none { it.baseUrl == UrlResolver.normalizeBaseUrl(state.pairInputUrl) && it.reachable }) {
-                    bestReachable.baseUrl
-                } else {
-                    state.pairInputUrl
-                }
+                val suggested = bestReachable?.takeIf { state.pairInputUrl.isBlank() && !state.isPairingBusy }
                 state.copy(
                     isScanningLan = false,
                     discoveredServers = list,
-                    pairInputUrl = nextUrl,
-                    manualPingMs = if (bestReachable?.baseUrl == UrlResolver.normalizeBaseUrl(nextUrl)) bestReachable.latencyMs else state.manualPingMs
+                    pairInputUrl = suggested?.baseUrl ?: state.pairInputUrl,
+                    pairInputKind = suggested?.kind ?: state.pairInputKind,
+                    manualPingMs = suggested?.latencyMs ?: state.manualPingMs
                 )
             }
         }
     }
 
-    fun selectDiscoveredServer(server: DiscoveredServer) {
+    fun selectDiscoveredServer(server: DiscoveredServer) = switchServerAtAddress(server.baseUrl, server.kind)
+
+    fun selectSavedServer(server: SavedServer) = switchServerAtAddress(server.baseUrl, server.kind)
+
+    fun openServerPicker() {
+        if (!_uiState.value.isPairingBusy) showPairing()
+    }
+
+    fun switchServerAtAddress(rawUrl: String, expectedKind: MobileServerKind? = null) {
         if (_uiState.value.isPairingBusy) return
-        val url = UrlResolver.normalizeBaseUrl(server.baseUrl)
-        if (url.isBlank()) return
-        if (_uiState.value.isAuthenticated && url != sessionStore.baseUrl) {
-            endSession(url, "已选择另一服务器，请重新配对或登录。")
+        val url = UrlResolver.normalizeBaseUrl(rawUrl)
+        if (url.isBlank()) {
+            emitToast("请输入服务器地址。")
+            return
         }
-        _uiState.update {
-            it.copy(
-                pairInputUrl = url,
-                manualPingMs = server.latencyMs,
-                pairInputCode = if (it.pairInputUrl == url) it.pairInputCode else ""
-            )
+        _uiState.update { it.copy(isPairingBusy = true) }
+        viewModelScope.launch {
+            try {
+                val probe = apiClient.probe(url) ?: throw IOException("该服务器暂时不可达，请确认手机所在网络。")
+                if (expectedKind != null && probe.kind != expectedKind) {
+                    throw IOException("该地址当前连接到${probe.kind.appLabel}，请核对服务器。")
+                }
+                val active = sessionStore.snapshot()
+                if (active?.baseUrl == url && active.kind == probe.kind) return@launch
+                val stored = sessionStore.savedServers().firstOrNull { it.baseUrl == url && it.kind == probe.kind }
+                if (stored != null) {
+                    stopSessionWork()
+                    check(sessionStore.selectServer(stored))
+                    onSessionActivated()
+                } else {
+                    showPairing(url, probe.kind, "请用${probe.kind.appLabel}的配对码或账号登录。")
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                emitToast(error.message ?: "切换服务器失败。")
+            } finally {
+                _uiState.update { it.copy(isPairingBusy = false) }
+            }
         }
     }
 
     fun pingManualUrl(rawUrl: String = _uiState.value.pairInputUrl) {
+        if (_uiState.value.isPairingBusy || _uiState.value.isPingingManual) return
         val normalized = UrlResolver.normalizeBaseUrl(rawUrl)
         if (normalized.isBlank()) {
             emitToast("请先输入台式机局域网地址")
@@ -286,10 +320,13 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             _uiState.update { it.copy(isPingingManual = true, pairInputUrl = normalized, manualPingMs = null) }
-            val ms = apiClient.ping(normalized)
-            _uiState.update { it.copy(isPingingManual = false, manualPingMs = ms) }
-            if (ms != null) {
-                emitToast("连接畅通 · 延迟 ${ms} ms")
+            val probe = apiClient.probe(normalized)
+            _uiState.update { current ->
+                if (UrlResolver.normalizeBaseUrl(current.pairInputUrl) != normalized) current.copy(isPingingManual = false)
+                else current.copy(isPingingManual = false, manualPingMs = probe?.latencyMs)
+            }
+            if (probe != null) {
+                emitToast("${probe.kind.appLabel} · ${probe.latencyMs} ms")
             } else {
                 emitToast("无法连通 $normalized，请确认手机与台式机在同一局域网")
             }
@@ -315,17 +352,20 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         }
         if (_uiState.value.isPairingBusy || _uiState.value.isAuthenticated) return
 
+        val expectedKind = _uiState.value.pairInputKind
+        _uiState.update { it.copy(isPairingBusy = true, pairingHint = "正在验证配对码…") }
         viewModelScope.launch {
-            _uiState.update { it.copy(isPairingBusy = true, pairingHint = "正在验证配对码…") }
             try {
-                if (apiClient.ping(cleanUrl) == null) throw IOException("该地址未返回受支持的书中人服务。")
+                val kind = verifyPairingServer(cleanUrl, expectedKind)
                 val res = apiClient.pairExchange(
                     serverUrl = cleanUrl,
                     code = cleanCode,
-                    deviceName = SessionStore.buildDeviceName()
+                    deviceName = SessionStore.buildDeviceName(),
+                    expectedKind = kind
                 )
-                onAuthenticationSuccess(cleanUrl, res.token, res.deviceId, res.user)
+                onAuthenticationSuccess(cleanUrl, res.token, res.deviceId, res.user, kind)
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 val msg = e.message ?: "配对失败，请检查配对码与网络连接"
                 _uiState.update { it.copy(isPairingBusy = false, pairingHint = msg) }
                 emitToast(msg)
@@ -348,18 +388,21 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         }
         if (_uiState.value.isPairingBusy || _uiState.value.isAuthenticated) return
 
+        val expectedKind = _uiState.value.pairInputKind
+        _uiState.update { it.copy(isPairingBusy = true, pairingHint = "正在验证账号…") }
         viewModelScope.launch {
-            _uiState.update { it.copy(isPairingBusy = true, pairingHint = "正在验证账号…") }
             try {
-                if (apiClient.ping(cleanUrl) == null) throw IOException("该地址未返回受支持的书中人服务。")
+                val kind = verifyPairingServer(cleanUrl, expectedKind)
                 val res = apiClient.loginWithPassword(
                     serverUrl = cleanUrl,
                     username = username,
                     password = password,
-                    deviceName = SessionStore.buildDeviceName()
+                    deviceName = SessionStore.buildDeviceName(),
+                    expectedKind = kind
                 )
-                onAuthenticationSuccess(cleanUrl, res.token, res.deviceId, res.user)
+                onAuthenticationSuccess(cleanUrl, res.token, res.deviceId, res.user, kind)
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 val msg = e.message ?: "登录失败，请检查用户名与密码"
                 _uiState.update { it.copy(isPairingBusy = false, pairingHint = msg) }
                 emitToast(msg)
@@ -367,72 +410,75 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private suspend fun verifyPairingServer(url: String, expected: MobileServerKind?): MobileServerKind {
+        val kind = apiClient.probe(url)?.kind ?: throw IOException("该地址未返回书中人或 Mirrai 的服务标识。")
+        if (expected != null && expected != kind) {
+            throw IOException("该地址返回${kind.appLabel}，请确认配对码和服务器匹配。")
+        }
+        return kind
+    }
+
     private fun onAuthenticationSuccess(
-        cleanUrl: String,
+        url: String,
         token: String,
         deviceId: String,
-        user: MobileUserDto?
+        user: MobileUserDto?,
+        kind: MobileServerKind
     ) {
-        sessionStore.saveSession(cleanUrl, token, deviceId, user)
+        sessionStore.saveSession(url, token, deviceId, user, kind)
+        onSessionActivated()
+    }
+
+    private fun onSessionActivated() {
         coldStartAutoEntered = false
-        _uiState.update {
-            it.copy(
-                isAuthenticated = true,
-                baseUrl = cleanUrl,
-                pairInputUrl = cleanUrl,
-                pairInputCode = "",
-                user = user,
-                isPairingBusy = false,
-                pairingHint = null
-            )
-        }
+        val discovered = _uiState.value.discoveredServers
+        _uiState.value = createInitialState().copy(discoveredServers = discovered, isScanningLan = _uiState.value.isScanningLan)
         if (app.isInForeground.value) realtimeHub.ensureConnected(forceReconnect = true)
         LanConnectionService.syncServiceState(app)
-        emitToast("已成功连接书中人")
         refreshPersonas(allowAutoEnter = true)
         loadRemoteSettingsSilently()
     }
 
     fun logoutAndUnpair() {
         val session = sessionStore.snapshot()
-        endSession(sessionStore.baseUrl)
-        scanLanServers()
+        val deviceId = sessionStore.deviceId
+        showPairing(forgetCurrent = true)
         if (session != null) viewModelScope.launch {
             val revoked = try {
-                apiClient.revokeSession(session)
+                apiClient.revokeDeviceSession(session, session.kind, deviceId)
             } catch (_: IOException) {
                 false
             }
-            if (!revoked && !sessionStore.isAuthenticated) {
-                emitToast("本机已退出。服务器撤销未确认，可在网页设置中撤销该设备。")
-            }
+            if (!revoked) emitToast("本机已退出。可在${session.kind.appLabel}网页上撤销该设备。")
         }
     }
 
     private fun handleAuthExpired(reason: String) {
-        endSession(sessionStore.baseUrl, reason)
+        showPairing(sessionStore.baseUrl, sessionStore.snapshot()?.kind, reason, forgetCurrent = true)
         emitToast(reason)
     }
 
-    private fun endSession(nextUrl: String, hint: String? = null) {
+    private fun stopSessionWork() {
         sessionWork.coroutineContext.cancelChildren()
         typingTimeoutJobs.clear()
         historyVersions.clear()
         voicePlayer.stopAll()
         realtimeHub.disconnect()
-        sessionStore.clearAuthKeepServerUrl()
         apiClient.cancelPendingRequests()
         app.clearSessionNotifications()
+    }
+
+    private fun showPairing(
+        nextUrl: String = "", kind: MobileServerKind? = null, hint: String? = null, forgetCurrent: Boolean = false
+    ) {
+        stopSessionWork()
+        sessionStore.switchToPairing(nextUrl, forgetCurrent)
         LanConnectionService.syncServiceState(app)
-        _uiState.update {
-            InkAndKinUiState(
-                pairInputUrl = nextUrl,
-                pairingHint = hint,
-                discoveredServers = it.discoveredServers,
-                keepAliveEnabled = sessionStore.keepAliveEnabled,
-                autoPlayVoice = sessionStore.autoPlayVoice
-            )
-        }
+        _uiState.value = createInitialState().copy(
+            pairInputKind = kind, pairingHint = hint, discoveredServers = _uiState.value.discoveredServers,
+            isScanningLan = _uiState.value.isScanningLan
+        )
+        scanLanServers()
     }
 
     fun refreshPersonas(allowAutoEnter: Boolean = false) {
@@ -1017,11 +1063,12 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun checkAppVersion(showUpToDateToast: Boolean = true) {
-        if (_uiState.value.isCheckingVersion) return
+        val session = sessionStore.snapshot() ?: return
+        if (_uiState.value.isCheckingVersion || session.kind != MobileServerKind.INK_AND_KIN) return
         sessionWork.launch {
             _uiState.update { it.copy(isCheckingVersion = true) }
             try {
-                val ver = apiClient.getVersion()
+                val ver = apiClient.getVersion(session.kind)
                 _uiState.update { it.copy(isCheckingVersion = false, versionInfo = ver) }
                 if (!ver.available && showUpToDateToast) {
                     emitToast("当前服务器尚未提供 Android 安装包。")

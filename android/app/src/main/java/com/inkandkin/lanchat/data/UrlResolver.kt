@@ -1,17 +1,38 @@
 package com.inkandkin.lanchat.data
 
 import android.net.Uri
+import com.inkandkin.lanchat.model.MobilePingDto
+import com.inkandkin.lanchat.model.MobileServerKind
+import com.inkandkin.lanchat.model.UdpDiscoverResponseDto
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-data class PairDeepLinkPayload(val serverUrl: String, val code: String)
+data class PairDeepLinkPayload(val serverUrl: String, val code: String, val kind: MobileServerKind)
 
 object MobileProtocol {
-    const val SERVICE = "ink-and-kin"
     const val VERSION = 1
-    const val PAIR_SCHEME = "ink-and-kin"
-    const val DISCOVER_PORT = 30003
-    const val DISCOVER_MAGIC = "INK_AND_KIN_DISCOVER"
+    private val mirraiVersion = Regex("1\\.[0-9]+(?:\\.[0-9]+)?")
+
+    fun recognizePing(payload: MobilePingDto): MobileServerKind? {
+        if (!payload.ok) return null
+        val kind = MobileServerKind.fromService(payload.service) ?: return null
+        val supported = when (kind) {
+            MobileServerKind.INK_AND_KIN -> payload.protocolVersion == VERSION
+            MobileServerKind.MIRRAI -> payload.version?.matches(mirraiVersion) == true &&
+                (payload.protocolVersion == null || payload.protocolVersion == VERSION)
+        }
+        return kind.takeIf { supported }
+    }
+
+    fun recognizeDiscovery(payload: UdpDiscoverResponseDto, senderPort: Int): MobileServerKind? {
+        val kind = MobileServerKind.fromService(payload.service) ?: return null
+        if (senderPort != kind.discoveryPort || payload.port !in 1..65535) return null
+        val supported = when (kind) {
+            MobileServerKind.INK_AND_KIN -> payload.protocolVersion == VERSION
+            MobileServerKind.MIRRAI -> payload.protocolVersion == null || payload.protocolVersion == VERSION
+        }
+        return kind.takeIf { supported }
+    }
 }
 
 object UrlResolver {
@@ -69,11 +90,12 @@ object UrlResolver {
     }
 
     fun parsePairDeepLink(uri: Uri?): PairDeepLinkPayload? {
-        if (uri == null || !uri.isHierarchical || uri.scheme != MobileProtocol.PAIR_SCHEME || uri.host != "pair") return null
+        if (uri == null || !uri.isHierarchical || uri.host != "pair") return null
+        val kind = MobileServerKind.fromService(uri.scheme) ?: return null
         val server = normalizeBaseUrl(uri.getQueryParameter("url").orEmpty())
         val code = uri.getQueryParameter("code").orEmpty()
         if (server.isEmpty() || !code.matches(Regex("[0-9]{6}"))) return null
-        return PairDeepLinkPayload(server, code)
+        return PairDeepLinkPayload(server, code, kind)
     }
 
     fun parsePairDeepLink(raw: String?): PairDeepLinkPayload? =

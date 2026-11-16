@@ -145,8 +145,8 @@ class MainActivity : ComponentActivity() {
                 Box(modifier = Modifier.fillMaxSize()) {
                     val currentScreenKey = when {
                         !state.isAuthenticated -> "pairing"
-                        state.activePersona != null -> "chat_${state.activePersona!!.id}"
-                        else -> "persona_list"
+                        state.activePersona != null -> "chat_${state.sessionActivation}_${state.activePersona!!.id}"
+                        else -> "persona_list_${state.sessionActivation}"
                     }
 
                     AnimatedContent(
@@ -162,6 +162,7 @@ class MainActivity : ComponentActivity() {
                                     onCodeChange = viewModel::updatePairInputCode,
                                     onScanLan = viewModel::scanLanServers,
                                     onSelectServer = viewModel::selectDiscoveredServer,
+                                    onSelectSavedServer = viewModel::selectSavedServer,
                                     onPingUrl = { viewModel.pingManualUrl() },
                                     onPairWithCode = { viewModel.pairWithCode() },
                                     onLoginWithPassword = { u, p ->
@@ -237,8 +238,22 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { showSettingsSheet = false },
                             onSelectProactiveMode = viewModel::updateProactiveTargetMode,
                             onScanLan = viewModel::scanLanServers,
-                            onSelectServer = viewModel::selectDiscoveredServer,
-                            onApplyManualUrl = { rawUrl -> viewModel.pingManualUrl(rawUrl) },
+                            onSelectServer = {
+                                showSettingsSheet = false
+                                viewModel.selectDiscoveredServer(it)
+                            },
+                            onSelectSavedServer = {
+                                showSettingsSheet = false
+                                viewModel.selectSavedServer(it)
+                            },
+                            onAddServer = {
+                                showSettingsSheet = false
+                                viewModel.openServerPicker()
+                            },
+                            onApplyManualUrl = { rawUrl ->
+                                showSettingsSheet = false
+                                viewModel.switchServerAtAddress(rawUrl)
+                            },
                             onToggleKeepAlive = { enabled ->
                                 if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                     val granted = ContextCompat.checkSelfPermission(

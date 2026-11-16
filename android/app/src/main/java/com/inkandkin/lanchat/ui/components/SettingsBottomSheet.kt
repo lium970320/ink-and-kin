@@ -52,8 +52,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.inkandkin.lanchat.BuildConfig
+import com.inkandkin.lanchat.data.SavedServer
 import com.inkandkin.lanchat.data.UrlResolver
+import com.inkandkin.lanchat.data.appLabel
 import com.inkandkin.lanchat.model.DiscoveredServer
+import com.inkandkin.lanchat.model.MobileServerKind
 import com.inkandkin.lanchat.model.ProactiveTargetMode
 import com.inkandkin.lanchat.ui.InkAndKinUiState
 import com.inkandkin.lanchat.ui.theme.LocalInkAndKinPalette
@@ -66,6 +69,8 @@ fun SettingsBottomSheet(
     onSelectProactiveMode: (ProactiveTargetMode) -> Unit,
     onScanLan: () -> Unit,
     onSelectServer: (DiscoveredServer) -> Unit,
+    onSelectSavedServer: (SavedServer) -> Unit,
+    onAddServer: () -> Unit,
     onApplyManualUrl: (String) -> Unit,
     onToggleKeepAlive: (Boolean) -> Unit,
     onToggleAutoPlayVoice: (Boolean) -> Unit,
@@ -288,6 +293,17 @@ fun SettingsBottomSheet(
                         }
                     }
 
+                    SavedServerList(
+                        servers = state.savedServers,
+                        activeUrl = state.baseUrl,
+                        activeKind = state.serverKind,
+                        isBusy = state.isPairingBusy,
+                        onSelect = onSelectSavedServer
+                    )
+                    TextButton(onClick = onAddServer, enabled = !state.isPairingBusy) {
+                        Text("添加服务器")
+                    }
+
                     state.discoveredServers.forEach { srv ->
                         val active = srv.baseUrl == state.baseUrl
                         Surface(
@@ -304,7 +320,8 @@ fun SettingsBottomSheet(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(text = srv.baseUrl, style = MaterialTheme.typography.bodyMedium)
+                                Text(text = listOfNotNull(srv.kind?.appLabel, srv.baseUrl).joinToString(" · "),
+                                    style = MaterialTheme.typography.bodyMedium)
                                 Text(
                                     text = if (srv.reachable && srv.latencyMs != null) "${srv.latencyMs} ms" else "不可达",
                                     style = MaterialTheme.typography.labelMedium,
@@ -336,8 +353,8 @@ fun SettingsBottomSheet(
                 }
             }
 
-            // 4. 应用版本检查与安装包直接覆盖更新
-            Surface(
+            // 书中人服务器提供同一应用的安装包。
+            if (state.serverKind == MobileServerKind.INK_AND_KIN) Surface(
                 shape = RoundedCornerShape(18.dp),
                 color = palette.cardBg,
                 border = BorderStroke(0.8.dp, palette.cardBorder),

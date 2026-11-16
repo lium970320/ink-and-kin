@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,9 +67,12 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.inkandkin.lanchat.data.SavedServer
 import com.inkandkin.lanchat.data.UrlResolver
+import com.inkandkin.lanchat.data.appLabel
 import com.inkandkin.lanchat.model.DiscoveredServer
 import com.inkandkin.lanchat.ui.InkAndKinUiState
+import com.inkandkin.lanchat.ui.components.SavedServerList
 import com.inkandkin.lanchat.ui.theme.LocalInkAndKinPalette
 
 @Composable
@@ -78,14 +82,15 @@ fun PairingScreen(
     onCodeChange: (String) -> Unit,
     onScanLan: () -> Unit,
     onSelectServer: (DiscoveredServer) -> Unit,
+    onSelectSavedServer: (SavedServer) -> Unit,
     onPingUrl: () -> Unit,
     onPairWithCode: () -> Unit,
     onLoginWithPassword: (String, String) -> Unit
 ) {
     val palette = LocalInkAndKinPalette.current
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    var username by rememberSaveable(state.pairInputUrl, state.pairInputKind) { mutableStateOf("") }
+    var password by remember(state.pairInputUrl, state.pairInputKind) { mutableStateOf("") }
     var showPassword by rememberSaveable { mutableStateOf(false) }
 
     Column(
@@ -152,12 +157,14 @@ fun PairingScreen(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "支持使用手机系统相机扫描台式机设置页二维码一键唤起绑定，也可在下方自动发现台式机后输入配对码。",
+                    text = "支持书中人和 Mirrai。用手机相机扫描服务器设置页的二维码，或在下方选择服务器并输入配对码。",
                     style = MaterialTheme.typography.labelMedium.copy(lineHeight = 18.sp),
                     color = palette.narrationText
                 )
             }
         }
+
+        SavedServerList(state.savedServers, isBusy = state.isPairingBusy, onSelect = onSelectSavedServer)
 
         // 局域网自动发现与地址卡片
         Surface(
@@ -262,7 +269,7 @@ fun PairingScreen(
                                         )
                                         Spacer(modifier = Modifier.width(9.dp))
                                         Text(
-                                            text = srv.baseUrl,
+                                            text = listOfNotNull(srv.kind?.appLabel, srv.baseUrl).joinToString(" · "),
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis

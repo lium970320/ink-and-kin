@@ -3,11 +3,15 @@ package com.inkandkin.lanchat.data
 import android.content.Context
 import android.net.wifi.WifiManager
 import com.inkandkin.lanchat.model.DiscoveredServer
+import com.inkandkin.lanchat.model.MobileServerKind
 import com.inkandkin.lanchat.model.UdpDiscoverResponseDto
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.net.DatagramPacket
@@ -23,11 +27,10 @@ class LanDiscoveryClient(
 ) {
     private val json = Json {
         ignoreUnknownKeys = true
-        coerceInputValues = true
     }
 
     /**
-     * 在 UDP 30003 查找书中人实例，再用 HTTP ping 核对服务身份和版本。
+     * 用各自的 UDP 端口探测，再用 HTTP 验证收到回复的地址与服务身份。
      */
     suspend fun discoverServers(extraCandidates: List<String> = emptyList()): List<DiscoveredServer> =
         withContext(Dispatchers.IO) {
@@ -37,36 +40,37 @@ class LanDiscoveryClient(
                 runCatching { acquire() }
             }
 
-            val candidateUrls = LinkedHashSet<String>()
-            extraCandidates.map { UrlResolver.normalizeBaseUrl(it) }
+            val manualUrls = extraCandidates.map { UrlResolver.normalizeBaseUrl(it) }
                 .filter { it.isNotBlank() }
-                .forEach { candidateUrls.add(it) }
-
-            val udpOriginUrls = LinkedHashSet<String>()
+                .toSet()
+            val udpOrigins = MobileServerKind.entries.associateWith { LinkedHashSet<String>() }
 
             try {
                 DatagramSocket().use { socket ->
                     socket.broadcast = true
                     socket.soTimeout = 350
 
-                    val payload = MobileProtocol.DISCOVER_MAGIC.toByteArray(Charsets.UTF_8)
                     val targets = collectBroadcastAddresses()
+                    val probes = MobileServerKind.entries.associateWith { it.discoveryRequest.toByteArray(Charsets.UTF_8) }
 
                     repeat(2) { round ->
                         for (addr in targets) {
-                            runCatching {
-                                val packet = DatagramPacket(payload, payload.size, addr, MobileProtocol.DISCOVER_PORT)
-                                socket.send(packet)
+                            for ((kind, payload) in probes) {
+                                runCatching {
+                                    val packet = DatagramPacket(payload, payload.size, addr, kind.discoveryPort)
+                                    socket.send(packet)
+                                }
                             }
                         }
                         if (round == 0) {
-                            runCatching { Thread.sleep(120) }
+                            delay(120)
                         }
                     }
 
-                    val deadline = System.currentTimeMillis() + 1400L
+                    val start = System.nanoTime()
                     val buffer = ByteArray(4096)
-                    while (System.currentTimeMillis() < deadline && udpOriginUrls.size < 12) {
+                    while (System.nanoTime() - start < 1_400_000_000L && udpOrigins.values.any { it.size < 12 }) {
+                        coroutineContext.ensureActive()
                         val recv = DatagramPacket(buffer, buffer.size)
                         try {
                             socket.receive(recv)
@@ -74,17 +78,15 @@ class LanDiscoveryClient(
                             val sender = recv.address as? Inet4Address ?: continue
                             val parsed = runCatching {
                                 json.decodeFromString<UdpDiscoverResponseDto>(text)
-                            }.getOrNull()
+                            }.getOrNull() ?: continue
 
-                            if (parsed == null || parsed.service != MobileProtocol.SERVICE ||
-                                parsed.protocolVersion != MobileProtocol.VERSION || parsed.port !in 1..65535 ||
-                                recv.port != MobileProtocol.DISCOVER_PORT || !isOnLocalSubnet(sender)
-                            ) continue
+                            val kind = MobileProtocol.recognizeDiscovery(parsed, recv.port) ?: continue
+                            val origins = udpOrigins.getValue(kind)
+                            if (origins.size >= 12 || !isOnLocalSubnet(sender)) continue
                             // 回复里的 URL 由发包者提供。只探测本子网上实际发出回复的地址。
                             val direct = UrlResolver.normalizeBaseUrl("http://${sender.hostAddress}:${parsed.port}")
                             if (direct.isNotEmpty()) {
-                                candidateUrls.add(direct)
-                                udpOriginUrls.add(direct)
+                                origins.add(direct)
                             }
                         } catch (_: SocketTimeoutException) {
                             // 等待下一轮直到总窗口结束
@@ -93,6 +95,8 @@ class LanDiscoveryClient(
                         }
                     }
                 }
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
                 // 即使当前网络禁用了 UDP 广播，也不阻断手动候选测速
             } finally {
@@ -101,20 +105,23 @@ class LanDiscoveryClient(
                 }
             }
 
-            if (candidateUrls.isEmpty()) return@withContext emptyList()
+            val candidates = (manualUrls + udpOrigins.values.flatten())
 
             coroutineScope {
-                candidateUrls.map { url ->
+                candidates.map { url ->
                     async {
-                        val latency = apiClient.ping(url)
+                        val probe = apiClient.probe(url)
+                        val fromUdp = probe?.kind?.let { url in udpOrigins.getValue(it) } == true
+                        if (url !in manualUrls && !fromUdp) return@async null
                         DiscoveredServer(
                             baseUrl = url,
-                            latencyMs = latency,
-                            reachable = latency != null,
-                            fromUdp = url in udpOriginUrls
+                            latencyMs = probe?.latencyMs,
+                            reachable = probe != null,
+                            fromUdp = fromUdp,
+                            kind = probe?.kind
                         )
                     }
-                }.awaitAll()
+                }.awaitAll().filterNotNull()
             }.sortedWith(
                 compareByDescending<DiscoveredServer> { it.reachable }
                     .thenBy { it.latencyMs ?: Long.MAX_VALUE }

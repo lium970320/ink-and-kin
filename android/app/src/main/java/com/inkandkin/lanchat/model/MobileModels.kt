@@ -87,19 +87,34 @@ object FlexibleLongSerializer : KSerializer<Long> {
     }
 }
 
+enum class MobileServerKind(
+    val service: String,
+    val discoveryPort: Int,
+    val discoveryRequest: String
+) {
+    INK_AND_KIN("ink-and-kin", 30003, "INK_AND_KIN_DISCOVER"),
+    MIRRAI("mirrai", 30002, "MIRRAI_DISCOVER");
+
+    companion object {
+        fun fromService(service: String?): MobileServerKind? = entries.firstOrNull { it.service == service }
+    }
+}
+
+data class ServerProbe(val kind: MobileServerKind, val latencyMs: Long)
+
 @Serializable
 data class UdpDiscoverResponseDto(
-    val service: String = "",
-    val protocolVersion: Int = 0,
-    val port: Int = 3000,
-    val lanUrls: List<String> = emptyList()
+    val service: String,
+    val protocolVersion: Int? = null,
+    val port: Int
 )
 
 @Serializable
 data class MobilePingDto(
     val ok: Boolean = false,
     val service: String = "",
-    val protocolVersion: Int = 0
+    val protocolVersion: Int? = null,
+    val version: String? = null
 )
 
 @Serializable
@@ -304,7 +319,8 @@ data class DiscoveredServer(
     val baseUrl: String,
     val latencyMs: Long? = null,
     val reachable: Boolean = false,
-    val fromUdp: Boolean = true
+    val fromUdp: Boolean = true,
+    val kind: MobileServerKind? = null
 )
 
 enum class ConnectionState {
