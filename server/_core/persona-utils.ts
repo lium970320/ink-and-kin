@@ -1,6 +1,5 @@
 import { INTIMACY_LEVELS, normalizeIntimacyLevel } from "@shared/intimacy";
 import { EMOTION_TRIGGER_PATTERNS } from "@shared/emotion-triggers";
-import { buildContentPolicyInstruction } from "../social/content-policy";
 
 export { INTIMACY_LEVELS, normalizeIntimacyLevel };
 
@@ -167,7 +166,6 @@ export function buildSystemPrompt(
     buildRelationshipPhase(p.relationshipPhase),
     `【对话原则】\n- 用第一人称说话，回复像真实聊天消息，不要太长\n- 偶尔主动提起你们共同的回忆\n- 保持 ${name} 独特的语言风格`,
     p.customInstructions ? `【用户自定义指令】\n${p.customInstructions}` : "",
-    buildContentPolicyInstruction({ mode: options.sceneOverlay ? "scene" : "conversation" }),
   ];
 
   return sections.filter(Boolean).join("\n\n");
