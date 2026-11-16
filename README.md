@@ -4,7 +4,7 @@
 
 书中人是一款可以自行托管的 AI 角色对话和故事共创应用。你可以为喜欢的作品创建角色，录入角色设定、上传作品原文，再用自己配置的模型和角色聊日常、演一段情节，或让多个角色在同一个频道里接续故事。
 
-[English](README.en.md) · [界面预览](#界面预览) · [源码运行](#源码运行) · [版本标签](https://github.com/lium970320/ink-and-kin/tags)
+[English](README.en.md) · [界面预览](#界面预览) · [源码运行](#源码运行) · [版本与快照](docs/versions.md)
 
 ## 能做什么
 
@@ -29,7 +29,7 @@ corepack pnpm preview:ui
 
 ## 源码运行
 
-1. 将源码克隆或解压到本机目录，使用 Node.js 22.12 或更新版本和 Corepack 执行 `corepack pnpm install --frozen-lockfile`。 [源码快照](https://github.com/lium970320/ink-and-kin/tags)
+1. 将源码克隆或解压到本机目录，使用 Node.js 22.12 或更新版本和 Corepack 执行 `corepack pnpm install --frozen-lockfile`。 [源码快照](docs/versions.md#2026-11-16-公开源码快照)
 2. 创建一个独立的 PostgreSQL 数据库，将 `.env.example` 另存为 `.env`。填好 `DATABASE_URL` 和随机生成的 `JWT_SECRET`，并设置 `NODE_ENV=production`。生成密钥可运行 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`。 [配置示例](.env.example)
 3. 在项目目录建表、迁移并启动。升级已有数据库前请先备份。
 
@@ -50,7 +50,7 @@ corepack pnpm preview:ui
 | 功能 | 从哪里配置 |
 | --- | --- |
 | QQ 私聊 | 在「用户中心 → QQ」填写已登录的 OneBot HTTP 服务地址、机器人 QQ 号和事件签名密钥。将保存后生成的事件上报地址填到 OneBot，随后绑定目标私聊与角色。 |
-| 场景配图和录音转写 | 在 AI 设置中分别配置所需服务。场景配图由用户手动触发。 [场景配图配置](BATCH8B.md#配置) |
+| 场景配图和录音转写 | 在 AI 设置中分别配置所需服务。场景配图由用户手动触发。 [场景配图配置](docs/history/BATCH8B.md#配置) |
 | 定时问候和回访 | 在角色编辑页的「行为」中启用主动消息，并设置问候或回访的时间和内容。 |
 | 原文库向量检索与重排 | 在 `.env` 中配置可选服务，用于用户主动搜索原文。 [配置项](.env.example) |
 
@@ -69,10 +69,10 @@ corepack pnpm check
 corepack pnpm test
 ```
 
-最新源码发布在 `main`，源码快照用 Git 标签固定。 [功能与版本记录](FORK_CHANGES.md) · [公开快照标签](https://github.com/lium970320/ink-and-kin/tags) · [问题反馈](https://github.com/lium970320/ink-and-kin/issues)
+最新源码发布在 `main`，源码快照用 Git 标签固定。 [项目文档](docs/README.md) · [版本与快照](docs/versions.md) · [问题反馈](https://github.com/lium970320/ink-and-kin/issues)
 
 ## 来源与许可证
 
 书中人基于 Ch1rpy 的 Mirrai 开发，由 lium970320 继续维护。书中人的 Git 历史从上游提交 `162019895b70509f495b406b86e1cd61c08147a5` 的源码快照建立。 [Mirrai](https://github.com/Ch1rpys/Mirrai) · [上游基线提交](https://github.com/Ch1rpys/Mirrai/commit/162019895b70509f495b406b86e1cd61c08147a5)
 
-项目采用 MIT 许可证，保留原作者版权声明，并标记后续修改与新增部分。上游版本和安装包信息保留在上游说明中。 [MIT 许可证](LICENSE) · [上游中文说明](README.upstream.md) · [上游英文说明](README.en.upstream.md)
+项目源码采用 MIT 许可。根许可证保留上游署名与书中人新增、修改部分的署名。第三方素材和代码适用各自的许可。 [版权与第三方许可](docs/attribution.md) · [MIT 许可证](LICENSE)

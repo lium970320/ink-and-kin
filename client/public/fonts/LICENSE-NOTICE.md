@@ -8,21 +8,17 @@ MiSans 字体授权说明
 ----
 
 - 官方站点：https://hyperos.mi.com/font/details/sc
-- 本机源文件：path/to/MiSansVF.ttf
+- 源文件：MiSansVF.ttf
 - 版权信息（字体内置 name 表）：Copyright © 2020-2025 Beijing Xiaomi Mobile
   Software Co.,Ltd. All Rights Reserved.
 
-授权
-----
+许可范围
+--------
 
-按小米官方说明，MiSans 面向全社会免费商用，允许用于印刷、网页、App 开发、
-短视频等全平台创作，允许嵌入到软件或设备中。
-
-限制
-----
-
-- 不得单独售卖字体文件本身
-- 不得反向工程、拆解或修改字形后重新发布
+MiSans 适用小米的独立许可。小米关于嵌入字体的说明要求在使用的软件中标明
+MiSans。官方协议第 2 条限制改编和单独分发，并要求副本保留版权声明和协议。
+当前公开源码包包含这一历史字体子集，其公开分发的额外授权尚待核实。
+[小米官方许可协议](https://hyperos.mi.com/font-download/MiSans%E5%AD%97%E4%BD%93%E7%9F%A5%E8%AF%86%E4%BA%A7%E6%9D%83%E8%AE%B8%E5%8F%AF%E5%8D%8F%E8%AE%AE.pdf) · [小米字体常见问题](https://hyperos.mi.com/font/faq)
 
 本仓库的子集化处理
 ------------------
@@ -37,4 +33,4 @@ MiSans 字体授权说明
   替换进去的额外码位（分数、上下标、Latin-1 等），因此开启任一 feature 都不会
   出现缺字
 
-如果需要完整字库，可从官方渠道获取原始字体后按同样流程重新生成子集。
+完整字库可从小米官方渠道获取，处理与分发字体文件时以对应许可为准。

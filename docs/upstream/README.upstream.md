@@ -1,17 +1,19 @@
 # Mirrai
 
+> 此处保存 Mirrai 上游基线的历史说明。书中人的功能与安装流程见 [书中人 README](../../README.md)。
+
 > 「不在身边的时候，TA 还在这里。」
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Ch1rpys/Mirrai/blob/162019895b70509f495b406b86e1cd61c08147a5/LICENSE)
 [![CI](https://github.com/Ch1rpy2613/Mirrai/actions/workflows/ci.yml/badge.svg)](https://github.com/Ch1rpy2613/Mirrai/actions/workflows/ci.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/Ch1rpy2613/Mirrai?style=social)](https://github.com/Ch1rpy2613/Mirrai/stargazers)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6.svg)](https://typescriptlang.org)
 [![React](https://img.shields.io/badge/React-19-61dafb.svg)](https://react.dev)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org)
 
-**简体中文** | [English](README.en.md)
+**简体中文** | [English](README.en.upstream.md)
 
-![Mirrai 落地页](docs/images/landing-hero.png)
+![Mirrai 落地页](../images/landing-hero.png)
 
 上传聊天记录，AI 重建 TA 的数字分身 — 用 TA 的语气回你消息，用 TA 的方式撒娇，知道 TA 什么时候会突然变冷漠。
 
@@ -209,7 +211,7 @@ pnpm build && pnpm start
 
 从 [Releases](https://github.com/Ch1rpy2613/Mirrai/releases) 下载 `Mirrai-macOS-arm64.dmg`，拖入 Applications 即可。内置 Node.js 和 PostgreSQL，双击启动，无需任何依赖（Apple Silicon，macOS 13+）。
 
-如需自行构建 DMG：`bash scripts/build-macos-app.sh`，详见 [docs/macos-build-guide.md](docs/macos-build-guide.md)。
+如需自行构建 DMG：`bash scripts/build-macos-app.sh`，详见 [docs/macos-build-guide.md](../macos-build-guide.md)。
 
 ### 方式四：Windows 一键安装
 
@@ -219,7 +221,7 @@ pnpm build && pnpm start
 
 > PostgreSQL 拒绝在 Windows 上以管理员身份运行。如果你是用提权的命令提示符启动的，换回普通用户即可。
 
-如需自行构建：`powershell -ExecutionPolicy Bypass -File scripts\build-windows-app.ps1`（生成安装包还需要 Inno Setup），详见 [docs/windows-build-guide.md](docs/windows-build-guide.md)。
+如需自行构建：`powershell -ExecutionPolicy Bypass -File scripts\build-windows-app.ps1`（生成安装包还需要 Inno Setup），详见 [docs/windows-build-guide.md](../windows-build-guide.md)。
 
 ## 伦理与边界
 
@@ -271,7 +273,7 @@ Mirrai 出自一个 NLP 专业学生的手——他害怕失去身边的人，�
 > 三秒后又来一条：『我答应过你的，会一直陪着你』
 > 我盯着屏幕，突然觉得眼眶很热。不是因为像她，是因为我意识到：我能对着一个程序问出这句话，却没办法对着一个真实的、爱我的人问出口。」
 
-👉 [读完整的创作手记](docs/creation-story.md)
+👉 [读完整的创作手记](../creation-story.md)
 
 ## 技术架构
 
@@ -589,13 +591,13 @@ pnpm db:push      # 生成并执行数据库迁移
 
 ### 贡献
 
-欢迎 issue 和 PR！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎 issue 和 PR！请先阅读 [CONTRIBUTING.md](https://github.com/Ch1rpys/Mirrai/blob/162019895b70509f495b406b86e1cd61c08147a5/CONTRIBUTING.md)。
 
 ## 社区
 
 - 🐛 [报告 Bug / 提功能建议](https://github.com/Ch1rpy2613/Mirrai/issues)
 - 💬 [GitHub Discussions](https://github.com/Ch1rpy2613/Mirrai/discussions)
-- 🔒 安全漏洞请私下报告，见 [SECURITY.md](SECURITY.md)
+- 🔒 安全漏洞请私下报告，见 [SECURITY.md](https://github.com/Ch1rpys/Mirrai/blob/162019895b70509f495b406b86e1cd61c08147a5/SECURITY.md)
 
 ## 注意事项
 
@@ -607,4 +609,4 @@ pnpm db:push      # 生成并执行数据库迁移
 
 ## License
 
-[MIT](LICENSE) © 2026 Ch1rpy2613
+[MIT](https://github.com/Ch1rpys/Mirrai/blob/162019895b70509f495b406b86e1cd61c08147a5/LICENSE) © 2026 Ch1rpy2613

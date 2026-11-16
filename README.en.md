@@ -6,6 +6,6 @@ Ink & Kin is a self-hosted app for chatting with AI characters and writing stori
 
 The read-only UI preview runs on sample data. The full app uses Node.js 22.12 or newer, pnpm 10.33.3 via Corepack, and PostgreSQL. It listens on loopback with registration closed by default. A configured cloud service receives the context needed for its requests.
 
-[中文说明](README.md) · [UI preview](README.md#界面预览) · [Run from source](README.md#源码运行) · [Snapshot tags](https://github.com/lium970320/ink-and-kin/tags) · [Security and privacy](SECURITY.md)
+[中文说明](README.md) · [UI preview](README.md#界面预览) · [Run from source](README.md#源码运行) · [Versions and snapshots](docs/versions.md) · [Security and privacy](SECURITY.md)
 
-Ink & Kin is based on Ch1rpy's Mirrai and licensed under MIT. [Upstream project](https://github.com/Ch1rpys/Mirrai) · [License](LICENSE)
+Ink & Kin is based on Ch1rpy's Mirrai. The project's source is licensed under MIT. Third-party components and assets have their own terms. [Upstream project](https://github.com/Ch1rpys/Mirrai) · [License](LICENSE) · [Attribution](docs/attribution.md)
