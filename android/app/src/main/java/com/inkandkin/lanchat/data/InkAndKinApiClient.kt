@@ -457,6 +457,18 @@ class InkAndKinApiClient(private val sessionStore: SessionStore) {
         }
     }
 
+    internal suspend fun revokeSession(session: MobileSession): Boolean = withContext(Dispatchers.IO) {
+        val origin = session.baseUrl.toHttpUrlOrNull() ?: return@withContext false
+        val endpoint = origin.newBuilder().encodedPath("/api/mobile/auth/logout").query(null).fragment(null).build()
+        val request = Request.Builder().url(endpoint)
+            .header("Authorization", "Bearer ${session.token}")
+            .post("{}".toRequestBody(JSON_MEDIA))
+            .build()
+        val call = okHttpClient.newCall(request)
+        call.timeout().timeout(5, TimeUnit.SECONDS)
+        call.execute().use { response -> response.isSuccessful || response.code == 401 }
+    }
+
     fun cancelPendingRequests() {
         okHttpClient.dispatcher.cancelAll()
     }

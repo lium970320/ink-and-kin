@@ -394,8 +394,19 @@ class InkAndKinViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun logoutAndUnpair() {
+        val session = sessionStore.snapshot()
         endSession(sessionStore.baseUrl)
         scanLanServers()
+        if (session != null) viewModelScope.launch {
+            val revoked = try {
+                apiClient.revokeSession(session)
+            } catch (_: IOException) {
+                false
+            }
+            if (!revoked && !sessionStore.isAuthenticated) {
+                emitToast("本机已退出。服务器撤销未确认，可在网页设置中撤销该设备。")
+            }
+        }
     }
 
     private fun handleAuthExpired(reason: String) {
