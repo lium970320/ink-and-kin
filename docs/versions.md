@@ -1,6 +1,12 @@
 # 版本与快照
 
-`main` 是书中人的开发主线。快照用 Git 附注标签固定在对应提交，下面的表记录已公开的标签及其用途。 [GitHub 标签列表](https://github.com/lium970320/ink-and-kin/tags)
+`main` 是书中人的开发主线。快照用 Git 附注标签固定在对应提交，下文记录已公开的标签及其用途。 [GitHub 标签列表](https://github.com/lium970320/ink-and-kin/tags)
+
+## 2026-11-16 灯下书房设计快照
+
+`snapshot/ui-design-20261116` 收录「灯下书房」界面方案和交互原型。下载 ZIP 并解压后，用浏览器打开 `docs/ui-redesign/preview.html`，可体验两套色板、明暗切换和聊天排版。设计处于提案阶段，原型使用虚构示例。 [浏览快照](https://github.com/lium970320/ink-and-kin/tree/snapshot/ui-design-20261116) · [下载 ZIP](https://github.com/lium970320/ink-and-kin/archive/refs/tags/snapshot/ui-design-20261116.zip) · [设计方案](ui-redesign/UI重构方案.md)
+
+本地 Chrome 验证覆盖明暗与色板切换、聊天排版和模拟回复。360 px 宽的视口中，书页插画存在横向溢出。
 
 ## 2026-11-16 公开源码快照
 

@@ -6,6 +6,10 @@
 - [安全与隐私](../SECURITY.md)说明存储、数据流向和漏洞报告渠道。
 - [贡献指南](../CONTRIBUTING.md)提供日常开发和提交流程。
 
+## 界面设计
+
+「灯下书房」展示拟议的书封角色卡、聊天排版、两套色板和浅色／深色模式。把预览页下载到本机后可直接用浏览器打开。 [设计方案](ui-redesign/UI重构方案.md) · [静态预览文件](ui-redesign/preview.html)
+
 ## 历史文档
 
 阶段记录保留了各版本当时的内容和验收结果。 [功能与版本记录](history/FORK_CHANGES.md) · [早期只读预览](history/UI-SNAPSHOT.md) · [11 月界面迁移](history/UI-REFRESH.md) · [场景配图配置](history/BATCH8B.md#配置)
