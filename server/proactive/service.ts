@@ -1,4 +1,5 @@
 import { isQuiet, localClock } from "./policy";
+import type { ProactiveRoute } from "../mobile/proactive";
 import type { ProactiveClaim, ProactiveEnqueue, ProactiveJob, ProactivePolicy, ProactiveRepository, ProactiveDispatchSnapshot } from "./types";
 
 const MINUTE = 60_000;
@@ -12,6 +13,11 @@ interface SchedulerDependencies {
   generate: (claim: ProactiveClaim, signal: AbortSignal) => Promise<string>;
   /** Owns the dispatch guard and all outcome recording from the moment it is called. */
   deliverQq: (claim: ProactiveClaim, signal: AbortSignal, snapshot?: ProactiveDispatchSnapshot) => Promise<void>;
+  mobile?: {
+    resolve: (claim: ProactiveClaim) => Promise<ProactiveRoute>;
+    deliver: ProactiveRepository["deliverMobile"];
+    notify: (claim: ProactiveClaim, content: string) => Promise<void>;
+  };
   now?: () => Date;
 }
 
@@ -49,7 +55,7 @@ function scheduledJobs(policy: ProactivePolicy, now: Date): ProactiveEnqueue[] {
   return jobs;
 }
 
-export function createProactiveService({ repo, beforeGenerate, generate, deliverQq, now = () => new Date() }: SchedulerDependencies) {
+export function createProactiveService({ repo, beforeGenerate, generate, deliverQq, mobile, now = () => new Date() }: SchedulerDependencies) {
   const controller = new AbortController();
   const { signal } = controller;
   let running: Promise<void> | null = null;
@@ -93,21 +99,31 @@ export function createProactiveService({ repo, beforeGenerate, generate, deliver
     }
     if (!saved) return fail("text_rejected");
     if (interrupted()) return fail("generation_expired");
-    if (claim.policy.delivery === "qq") {
+    const route = mobile
+      ? await mobile.resolve(claim).catch(() => null)
+      : { destination: claim.policy.delivery, notifyMobile: false };
+    if (!route || interrupted()) return fail("generation_expired");
+    const notify = () => route.notifyMobile && mobile
+      ? mobile.notify(claim, message).catch(() => undefined) : undefined;
+    if (route.destination === "qq") {
       // An I/O failure can be ambiguous. Only the transport knows whether it began dispatch.
       await deliverQq({ ...claim, job: { ...claim.job, status: "ready", text: message } }, signal, dispatchSnapshot || undefined);
+      await notify();
       return;
     }
 
     let delivered: boolean;
     try {
-      delivered = await repo.deliverWeb(claim, now(), signal);
+      delivered = route.destination === "mobile" && mobile
+        ? await mobile.deliver(claim, now(), signal)
+        : await repo.deliverWeb(claim, now(), signal);
     } catch (error) {
       await fail("web_delivery_rejected");
       if (!signal.aborted) throw error;
       return;
     }
     if (!delivered) await fail("web_delivery_rejected");
+    else await notify();
   }
 
   async function runSweep() {

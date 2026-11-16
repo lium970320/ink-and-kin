@@ -9,6 +9,7 @@ import { createProactiveRepository } from "./repository";
 import { createProactiveService } from "./service";
 import { createPersonaRuntimeService } from "./runtime";
 import { localClock } from "./policy";
+import { notifyMobileProactive, resolveProactiveRoute } from "../mobile/proactive";
 import type { ProactiveClaim } from "./types";
 
 export const proactiveRepository = createProactiveRepository({ now: () => new Date() });
@@ -50,6 +51,7 @@ export async function generateProactiveText(claim: ProactiveClaim, signal: Abort
 }
 function makeService() {
   return createProactiveService({ repo: proactiveRepository, generate: generateProactiveText,
+    mobile: { resolve: resolveProactiveRoute, deliver: proactiveRepository.deliverMobile, notify: notifyMobileProactive },
     beforeGenerate: (claim, signal) => transport.beforeGenerate(claim, signal),
     deliverQq: (claim, signal, snapshot) => transport.deliver(claim, signal, snapshot) });
 }

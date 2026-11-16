@@ -45,6 +45,7 @@ export interface ProactiveRepository {
   /** Existing transaction must use the common QQ -> persona -> policy -> job lock order. Marks attempt unknown before I/O. */
   guardDispatch(tx: DbTransaction, claim: ProactiveClaim, now: Date, signal?: AbortSignal): Promise<void>;
   deliverWeb(claim: ProactiveClaim, now: Date, signal?: AbortSignal): Promise<boolean>;
+  deliverMobile(claim: ProactiveClaim, now: Date, signal?: AbortSignal): Promise<boolean>;
   finish(claim: ProactiveClaim, result: {status: "confirmed" | "failed" | "unknown"; remoteMessageId: string | null; reason: string}): Promise<void>;
   failBeforeDispatch(claim: ProactiveClaim, reason: string): Promise<void>;
   list(userId: number, personaId: number): Promise<ProactiveJob[]>;

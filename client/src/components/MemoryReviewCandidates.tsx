@@ -205,7 +205,12 @@ export default function MemoryReviewCandidates({ personaId }: { personaId: numbe
   const candidates = trpc.memoryReview.list.useQuery({ personaId, status: "pending" });
   const scenes = trpc.scene.list.useQuery();
   const refresh = async () => {
-    await Promise.all([candidates.refetch(), utils.memory.list.invalidate({ personaId })]);
+    await Promise.all([
+      candidates.refetch(),
+      utils.memory.list.invalidate({ personaId }),
+      utils.memoryReview.list.invalidate({ personaId, status: "accepted" }),
+      utils.memoryReview.reviewedFacts.invalidate({ personaId, kind: "story_event" }),
+    ]);
   };
   return (
     <section className="space-y-3 rounded-3xl border border-primary/20 bg-primary/5 p-4">

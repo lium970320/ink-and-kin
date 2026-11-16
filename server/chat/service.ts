@@ -73,11 +73,14 @@ export interface ConversationOptions {
   /** Explicit provider override (from `persona.llmProvider`). */
   providerName?: string;
   /** Channel the message arrived on. */
-  channel?: "web" | "wechat" | "feishu" | "qq";
+  channel?: "web" | "wechat" | "feishu" | "qq" | "mobile";
+  clientMessageId?: string;
+  replyToMessageId?: number;
+  quote?: string;
   /** Whether the user message has already been stored. */
   alreadyPersisted?: boolean;
   /** Media attached to the message. */
-  media?: { url: string; type: "image" | "voice"; mimeType?: string; duration?: number };
+  media?: { url: string; type: "image" | "voice"; mimeType?: string; duration?: number; inlineImage?: string };
   /** Locale for prompt language and trigger words. */
   locale?: "zh" | "en";
   /** Cancels the model call when the client goes away. */
@@ -209,6 +212,8 @@ type ComposeMessagesParams = {
   signal?: AbortSignal;
   /** 本轮用户消息 id：场景模式下，导演指令只追加在这一条用户消息上。 */
   userMessageId?: number;
+  inlineImage?: string;
+  quote?: string;
   generation?: Awaited<ReturnType<typeof db.getSceneGenerationSnapshot>>;
   allowCompanionTools?: boolean;
 };
@@ -290,7 +295,11 @@ async function prepareChatPrompt(params: ComposeMessagesParams) {
     : "";
 
   const recent = history.slice(-(contextLimit - 1)).map((m) => {
-    const message = toLLMMessage(m);
+    const current = m.id === params.userMessageId;
+    const privateMobileImage = m.channel === "mobile" && m.mediaUrl?.startsWith("/uploads/");
+    const mediaUrl = current && params.inlineImage ? params.inlineImage : privateMobileImage ? null : m.mediaUrl;
+    const content = current && params.quote ? params.quote + m.content : m.content;
+    const message = toLLMMessage({ ...m, content, mediaUrl });
     if (sceneDirectionInstruction && m.id === params.userMessageId && typeof message.content === "string") {
       return { ...message, content: message.content + "\n\n" + sceneDirectionInstruction };
     }
@@ -449,6 +458,8 @@ export async function* runConversation(
       channel: options.channel ?? "web",
       messageType: options.media?.type ?? "text",
       mediaUrl: options.media?.url ?? null,
+      clientMessageId: options.clientMessageId,
+      replyToMessageId: options.replyToMessageId,
       mediaDuration: options.media?.duration == null ? null : Math.max(1, Math.round(options.media.duration)),
       sceneId: activeSceneId,
     }, tx); }, { sceneId: activeSceneId });
@@ -506,6 +517,8 @@ export async function* runConversation(
     extraConfig,
     signal: options.signal,
     userMessageId: userMessageId ?? undefined,
+    inlineImage: options.media?.inlineImage,
+    quote: options.quote,
     generation,
     allowCompanionTools: !options.media,
   });

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, index, unique, uniqueIndex, varchar, jsonb } from "drizzle-orm/pg-core";
+import { boolean, integer, pgEnum, pgTable, serial, text, timestamp, index, unique, uniqueIndex, varchar, jsonb, uuid } from "drizzle-orm/pg-core";
 
 export const roleEnum = pgEnum("role", ["user", "admin"]);
 export const analysisStatusEnum = pgEnum("analysis_status", ["pending", "analyzing", "ready", "error"]);
@@ -7,7 +7,7 @@ export const emotionalStateEnum = pgEnum("emotional_state", ["warm", "playful", 
 export const fileTypeEnum = pgEnum("file_type", ["chat_txt", "chat_csv", "image", "video", "collected"]);
 export const processStatusEnum = pgEnum("process_status", ["uploaded", "processing", "done", "failed"]);
 export const messageRoleEnum = pgEnum("message_role", ["user", "assistant"]);
-export const channelEnum = pgEnum("channel", ["web", "wechat", "feishu", "qq"]);
+export const channelEnum = pgEnum("channel", ["web", "wechat", "feishu", "qq", "mobile"]);
 export const characterFamilyEnum = pgEnum("character_family", ["colleague", "relationship", "celebrity"]);
 export const pipelineStageEnum = pgEnum("pipeline_stage", [
   "intake", "collecting", "analyzing_persona", "analyzing_work",
@@ -117,6 +117,8 @@ export const messages = pgTable("messages", {
   mediaDuration: integer("mediaDuration"),
   emotionalState: varchar("emotionalState", { length: 50 }),
   channel: channelEnum().default("web").notNull(),
+  clientMessageId: uuid("clientMessageId"),
+  replyToMessageId: integer("replyToMessageId"),
   /** null=跟随会话边界，true=强制加入模型上下文，false=强制排除。 */
   contextOverride: boolean("contextOverride"),
   /** 场景消息归属；历史消息为 null，用于按场景精确回放与续写上下文。 */
@@ -125,6 +127,8 @@ export const messages = pgTable("messages", {
   mode: varchar("mode", { length: 16 }).default("daily").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, table => ({
+  clientMessage: uniqueIndex("messages_client_message_idx").on(table.userId, table.personaId, table.clientMessageId)
+    .where(sql`${table.clientMessageId} IS NOT NULL`),
   dailyRecall: index("messages_daily_recall_idx").on(table.userId, table.personaId, table.mode, table.createdAt, table.id),
 }));
 
@@ -806,6 +810,7 @@ export type GraduationAssessment = typeof graduationAssessments.$inferSelect;
 export type InsertGraduationAssessment = typeof graduationAssessments.$inferInsert;
 
 export * from "./source-library-schema";
+export * from "./mobile-schema";
 export * from './memory-review-schema';
 export * from './chat-context-schema';
 export * from "./qq-channel-schema";

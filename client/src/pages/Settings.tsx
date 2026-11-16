@@ -1,4 +1,5 @@
 import VoiceSettingsCard from "@/components/VoiceSettingsCard";
+import MobileLanSettings from "@/components/MobileLanSettings";
 import { useState, useEffect, useMemo, useCallback, useRef, useId, type ChangeEvent, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
@@ -19,7 +20,7 @@ import {
   User, Shield, Database, Download, Trash2, KeyRound, Mail, Calendar,
   MessageCircle, FileText, HardDrive, Users, Clock, Pencil, AlertTriangle,
   Leaf, Eye, EyeOff, Activity, Server, Cpu, Volume2, ImageIcon, Radio,
-  RefreshCw, Terminal, Copy, ExternalLink, Plus, Sparkles,
+  RefreshCw, Terminal, Copy, ExternalLink, Plus, Sparkles, Smartphone,
 } from "lucide-react";
 import { SPRING_SNAPPY } from "@/components/ui/motion";
 import { toast } from "sonner";
@@ -30,6 +31,7 @@ const TABS = [
   { key: "profile", label: "个人资料", icon: User },
   { key: "ai", label: "AI 设置", icon: Settings2 },
   { key: "qq", label: "QQ", icon: MessageCircle },
+  { key: "mobile", label: "手机直连", icon: Smartphone },
   { key: "diagnostics", label: "运维诊断", icon: Activity },
   { key: "data", label: "数据管理", icon: Database },
 ] as const;
@@ -4169,6 +4171,7 @@ export default function SettingsPage() {
             {activeTab === "profile" && <ProfileTab />}
             {activeTab === "ai" && <AISettingsTab />}
             {activeTab === "qq" && <QqTab />}
+            {activeTab === "mobile" && <MobileLanSettings />}
             {activeTab === "diagnostics" && <OperationsDiagnosticsTab />}
             {activeTab === "data" && <DataManagementTab />}
           </div>

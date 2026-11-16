@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">书中人直连</string>
+    <string name="notif_channel_messages_name">角色主动问候与消息</string>
+    <string name="notif_channel_messages_desc">当收到角色的主动问候或后台新消息时提醒</string>
+    <string name="notif_channel_service_name">局域网实时连接守护</string>
+    <string name="notif_channel_service_desc">保持与电脑上的书中人 的局域网低功耗实时连接</string>
+</resources>

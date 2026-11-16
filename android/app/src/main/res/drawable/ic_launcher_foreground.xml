@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 后景柔和暖白回响气泡 -->
+    <path
+        android:fillColor="#55FAF8F5"
+        android:pathData="M42,32h30c5.5,0 10,4.5 10,10v14c0,5.5 -4.5,10 -10,10h-4l-7,7v-7h-19c-5.5,0 -10,-4.5 -10,-10v-14c0,-5.5 4.5,-10 10,-10z" />
+    <!-- 前景温润羊皮纸主对话气泡 -->
+    <path
+        android:fillColor="#FAF8F5"
+        android:pathData="M34,40h30c5.5,0 10,4.5 10,10v14c0,5.5 -4.5,10 -10,10h-16l-9,8v-8h-5c-5.5,0 -10,-4.5 -10,-10v-14c0,-5.5 4.5,-10 10,-10z" />
+    <!-- 中心四角星芒（镜面共鸣意象） -->
+    <path
+        android:fillColor="#8C6A52"
+        android:pathData="M49,48 L51.6,54.4 L58,57 L51.6,59.6 L49,66 L46.4,59.6 L40,57 L46.4,54.4 Z" />
+</vector>

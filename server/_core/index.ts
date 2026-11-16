@@ -15,6 +15,10 @@ import { registerChatStreamRoute } from "../chat/stream-route";
 import { bootstrapAdminAccount } from "../bootstrap/bootstrap";
 import { migrateLegacyTTSFiles } from "./tts";
 import { registerQqRoutes } from "../channels/qq";
+import { registerMobileRoutes } from "../mobile/routes";
+import { attachMobileWsHub } from "../mobile/ws-hub";
+import { setMobileHttpPort, startMobileDiscoveryServer } from "../mobile/network";
+import { stopMobileTurn } from "../mobile/chat";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -49,6 +53,10 @@ async function startServer() {
   app.use("/api", csrfGuard);
 
   registerAuthRoutes(app);
+  registerMobileRoutes(app);
+  if (ENV.mobileEnabled) {
+    attachMobileWsHub(server, (userId, deviceId, personaId) => stopMobileTurn(userId, personaId, deviceId));
+  }
 
   app.use(
     "/api/trpc",
@@ -80,7 +88,10 @@ async function startServer() {
     console.error("[Bootstrap] First-run setup failed:", error),
   );
 
+  setMobileHttpPort(port);
   server.listen(port, ENV.listenHost, () => {
+    const discovery = startMobileDiscoveryServer();
+    if (discovery) server.once("close", () => discovery.close());
     const host = ENV.listenHost.includes(":") ? `[${ENV.listenHost}]` : ENV.listenHost;
     console.log(`Server running on http://${host}:${port}/`);
   });

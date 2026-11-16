@@ -1,0 +1,46 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build debug APK
+        run: |
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          gradle_zip="$RUNNER_TEMP/gradle-8.10.2-bin.zip"
+          curl --fail --location --retry 3 --output "$gradle_zip" https://downloads.gradle.org/distributions/gradle-8.10.2-bin.zip
+          echo "31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26  $gradle_zip" | sha256sum --check --status
+          unzip -q "$gradle_zip" -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/gradle-8.10.2/bin/gradle" --no-daemon -p android :app:assembleDebug
+      - name: Verify APK package and signature
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | grep -F "package: name='com.inkandkin.lanchat'"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ink-and-kin-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

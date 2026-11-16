@@ -853,7 +853,7 @@ function MessageBubble({
               <span className="text-[9.5px] px-1.5 py-0.2 bg-sky-500/10 text-sky-700 dark:text-sky-300 border border-sky-500/20 rounded-md font-semibold">QQ</span>
             )}
             {msg.channel === "mobile" && (
-              <span className="text-[9.5px] px-1.5 py-0.2 bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 rounded-md font-semibold">手机</span>
+              <span title="手机直连消息" className="text-[9.5px] px-1.5 py-0.2 bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 rounded-md font-semibold">手机</span>
             )}
             {!isUser && msg.messageType === "text" && <TTSButton text={msg.content} enabled={ttsEnabled} />}
           </div>
@@ -2396,7 +2396,7 @@ function PersonaChat({ personaId }: { personaId: number }) {
         </div>
       </MotionModal>
 
-      <MemoryTimeline open={showTimeline} personaId={personaId} onClose={() => setShowTimeline(false)} />
+      <MemoryTimeline open={showTimeline} personaId={personaId} activeSceneId={activeSceneId} onClose={() => setShowTimeline(false)} />
       <SourceLibraryPanel open={showSourceLibrary} personaId={personaId} onClose={() => setShowSourceLibrary(false)} />
       {showDiagnostics && <PersonaStatePanel personaId={personaId} onClose={() => setShowDiagnostics(false)} />}
       <EmotionReport open={showEmotionReport} personaId={personaId} personaName={persona?.name || "?"} onClose={() => setShowEmotionReport(false)} />
@@ -2876,11 +2876,61 @@ function memoryPayload(form: MemoryFormState) {
   };
 }
 
-function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId: number; onClose: () => void }) {
+type MemoryScope = "daily" | "all" | `scene:${number}`;
+
+function MemoryTimeline({ open, personaId, activeSceneId, onClose }: {
+  open: boolean;
+  personaId: number;
+  activeSceneId: number | null;
+  onClose: () => void;
+}) {
   const utils = trpc.useUtils();
   const extractOperation = useRef<{ personaId: number; id: string } | null>(null);
   const extractInFlight = useRef(false);
-  const { data: memories, refetch, isFetching: memoriesFetching } = trpc.memory.list.useQuery({ personaId }, { enabled: open && personaId > 0 });
+  const enabled = open && personaId > 0;
+  const { data: memories, refetch, isFetching: memoriesFetching } = trpc.memory.list.useQuery({ personaId }, { enabled });
+  const scenes = trpc.scene.list.useQuery(undefined, { enabled });
+  const reviewed = trpc.memoryReview.list.useQuery({ personaId, status: "accepted" }, { enabled });
+
+  const activeScope: MemoryScope = activeSceneId === null ? "daily" : `scene:${activeSceneId}`;
+  const [selectedScope, setSelectedScope] = useState<MemoryScope>(activeScope);
+  useEffect(() => {
+    if (open) setSelectedScope(activeScope);
+  }, [open, personaId, activeScope]);
+
+  const sceneNames = new Map(scenes.data?.map(scene => [scene.id, scene.name] as const));
+  const storyEvents = (reviewed.data ?? []).flatMap(event =>
+    event.kind === "story_event" && event.application === "reviewed_only" &&
+    event.sceneId !== null && sceneNames.has(event.sceneId) ? [{ ...event, sceneId: event.sceneId }] : [],
+  );
+  const storySceneIds = new Set(storyEvents.map(event => event.sceneId));
+  if (activeSceneId !== null) storySceneIds.add(activeSceneId);
+  const sceneIds = Array.from(storySceneIds).sort((first, second) => {
+    if (first === second) return 0;
+    if (first === activeSceneId) return -1;
+    if (second === activeSceneId) return 1;
+    return (sceneNames.get(first) ?? "").localeCompare(sceneNames.get(second) ?? "", "zh-CN");
+  });
+  const scopes: { key: MemoryScope; label: string }[] = [
+    { key: "daily", label: "日常记忆" },
+    ...sceneIds.map(id => ({ key: `scene:${id}` as const, label: sceneNames.get(id) ?? "当前场景" })),
+    { key: "all", label: "全部档案" },
+  ];
+  const selectedSceneId = selectedScope.startsWith("scene:") ? Number(selectedScope.slice(6)) : null;
+  const scope = selectedSceneId === null || selectedSceneId === activeSceneId || sceneNames.has(selectedSceneId)
+    ? selectedScope : activeScope;
+  const sceneId = scope.startsWith("scene:") ? Number(scope.slice(6)) : null;
+  const sceneDetail = trpc.scene.detail.useQuery({ id: sceneId ?? 0, personaId }, { enabled: enabled && sceneId !== null });
+  const sceneEvents = trpc.memoryReview.reviewedFacts.useQuery({ personaId, kind: "story_event", sceneId: sceneId ?? undefined }, {
+    enabled: enabled && sceneId !== null,
+  });
+  const showDaily = scope === "daily" || scope === "all";
+  const showStories = scope !== "daily";
+  const canExtract = scope === activeScope || scope === "all";
+  const scopedStoryEvents = scope === "all" ? storyEvents : sceneEvents.data ?? [];
+  const storyEventsLoading = scope === "all" ? scenes.isLoading || reviewed.isLoading : sceneEvents.isLoading;
+  const storyEventsError = scope === "all" ? scenes.isError || reviewed.isError : sceneEvents.isError;
+  const sceneCache = sceneId === null ? undefined : sceneDetail.data?.memory.cache;
   const createMutation = trpc.memory.create.useMutation({
     onSuccess: () => {
       refetch();
@@ -3055,23 +3105,23 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="font-semibold text-base text-foreground tracking-tight">记忆时间轴 & 档案</h3>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-semibold border border-emerald-500/20 font-mono tabular-nums">
+              {showDaily && <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-semibold border border-emerald-500/20 font-mono tabular-nums">
                 {stats.active} 条有效
-              </span>
-              {stats.lowConfidence > 0 && (
+              </span>}
+              {showDaily && stats.lowConfidence > 0 && (
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 font-semibold border border-amber-500/20 font-mono tabular-nums">
                   {stats.lowConfidence} 条待核验
                 </span>
               )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
-              记录故事事实、角色偏好、事件约定与关键节点
+              浏览日常记忆和已审阅的场景事件
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
+          {canExtract && <Button
             type="button"
             variant="outline"
             size="sm"
@@ -3084,23 +3134,25 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
               extractMutation.mutate({ personaId, operationId: extractOperation.current.id });
             }}
             disabled={extractMutation.isPending}
+            title={activeSceneId === null ? "从当前日常对话提取候选" : "从当前剧场对话提取候选"}
             className="text-xs border-primary/25 bg-primary/8 text-primary hover:bg-primary/15"
           >
             <Sparkles className={`w-3.5 h-3.5 ${extractMutation.isPending ? "animate-spin" : ""}`} />
             {extractMutation.isPending ? "AI 提取中..." : "AI 提取候选"}
-          </Button>
-          <Button
+          </Button>}
+          {showDaily && <Button
             type="button"
             size="sm"
             onClick={startAdd}
             className="text-xs"
           >
             <Plus className="w-3.5 h-3.5" />
-            添加记忆
-          </Button>
+            添加日常记忆
+          </Button>}
           <button
             type="button"
             onClick={onClose}
+            aria-label="关闭记忆档案"
             className="w-8.5 h-8.5 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground bg-muted/40 hover:bg-muted/80 transition-colors ml-0.5"
           >
             <X className="w-4 h-4" />
@@ -3108,8 +3160,38 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
         </div>
       </div>
 
-      {/* Filter Toolbar */}
-      <div className="px-6 py-3 border-b border-border/55 bg-card/60 space-y-2.5 shrink-0 z-10">
+      <div className="flex flex-wrap gap-2 px-6 py-3 border-b border-border/55 shrink-0">
+        <div role="group" aria-label="记忆来源" className="flex min-w-0 max-w-full gap-2 overflow-x-auto">
+          {scopes.map(({ key, label }) => (
+            <Button
+              key={key}
+              type="button"
+              size="sm"
+              variant={scope === key ? "default" : "outline"}
+              aria-pressed={scope === key}
+              onClick={() => setSelectedScope(key)}
+              className="max-w-full text-xs"
+            >
+              <span className="truncate">{label}</span>
+            </Button>
+          ))}
+        </div>
+        {Boolean(scenes.data?.length) && (
+          <select
+            aria-label="按场景查看记忆"
+            className="h-8 max-w-full rounded-lg border border-border bg-background px-2 text-xs"
+            value={sceneId ?? ""}
+            onChange={event => {
+              if (event.target.value) setSelectedScope(`scene:${Number(event.target.value)}`);
+            }}
+          >
+            <option value="" disabled>按场景查看</option>
+            {scenes.data?.map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      {showDaily && <div className="px-6 py-3 border-b border-border/55 bg-card/60 space-y-2.5 shrink-0 z-10">
         {/* Status Tabs with Spring Pill */}
         <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar text-xs">
           {tabItems.map((tab) => {
@@ -3148,7 +3230,7 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索记忆标题、事实细节、关键词、情绪..."
+              placeholder="搜索日常记忆标题、关键词、情绪…"
               className="w-full h-9.5 pl-9.5 pr-8 bg-muted/35 border border-border/70 rounded-xl text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/15 transition-all shadow-2xs"
             />
             {query && (
@@ -3186,12 +3268,51 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
             </select>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Content Stream */}
       <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4 panel-scrollbar">
         {open && <MemoryReviewCandidates key={personaId} personaId={personaId} />}
-        <CollapseSection open={showingForm} innerClassName={showingForm ? "pb-2" : ""}>
+        {sceneCache && (sceneCache.summary || sceneCache.pinnedFacts.length > 0) && (
+          <section className="space-y-2 rounded-3xl border border-border/60 bg-card/90 p-4">
+            <h4 className="text-sm font-semibold">场景前情</h4>
+            {sceneCache.summary && <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{sceneCache.summary}</p>}
+            {sceneCache.pinnedFacts.length > 0 && (
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                {sceneCache.pinnedFacts.map(fact => <li key={fact.id}>📌 {fact.fact}</li>)}
+              </ul>
+            )}
+          </section>
+        )}
+        {showStories && (
+          <section aria-label="已审阅的场景事件" className="space-y-3 rounded-3xl border border-border/60 bg-card/90 p-4">
+            <h4 className="text-sm font-semibold">已审阅的场景事件</h4>
+            {!canExtract && <p className="text-xs text-muted-foreground">进入此场景后，可从该场景的当前对话提取候选。</p>}
+            {storyEventsError ? (
+              <p role="alert" className="text-xs text-destructive">场景事件加载失败，请稍后重试。</p>
+            ) : storyEventsLoading ? (
+              <p className="text-xs text-muted-foreground">正在加载场景事件…</p>
+            ) : scopedStoryEvents.length === 0 ? (
+              <p className="text-xs text-muted-foreground">此分区暂无已审阅的场景事件。</p>
+            ) : (
+              <ul className="space-y-2">
+                {scopedStoryEvents.map(event => (
+                  <li key={event.id} className="space-y-1 rounded-xl border border-border/60 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <h5 className="font-medium">{event.title}</h5>
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        {sceneNames.get(event.sceneId ?? 0) ?? "当前场景"}
+                      </span>
+                      {event.date && <span className="text-xs text-muted-foreground">{event.date}</span>}
+                    </div>
+                    <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{event.description}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+        <CollapseSection open={showDaily && showingForm} innerClassName={showDaily && showingForm ? "pb-2" : ""}>
           <div className="p-5 bg-card border border-primary/30 rounded-3xl space-y-4 shadow-md">
             <div className="flex items-center justify-between pb-2 border-b border-border/45">
               <div className="flex items-center gap-2">
@@ -3371,19 +3492,19 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
           </div>
         </CollapseSection>
 
-        {(!memories || memories.length === 0) && !showingForm && (
+        {showDaily && (!memories || memories.length === 0) && !showingForm && (
           <div className="text-center py-20 text-muted-foreground space-y-3">
             <div className="w-14 h-14 mx-auto rounded-3xl bg-muted/40 flex items-center justify-center text-muted-foreground border border-border/45">
               <Clock className="w-7 h-7 opacity-40" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-foreground">暂无记忆档案</p>
-              <p className="text-xs text-muted-foreground mt-1">开始与 TA 聊天，或点击上方 “AI 提取记忆” 沉淀重要时刻</p>
+              <p className="text-sm font-semibold text-foreground">暂无日常记忆</p>
+              <p className="text-xs text-muted-foreground mt-1">可手动添加，或在日常对话中提取候选供审阅。</p>
             </div>
           </div>
         )}
 
-        {filteredMemories.length === 0 && memories && memories.length > 0 && !showingForm && (
+        {showDaily && filteredMemories.length === 0 && memories && memories.length > 0 && !showingForm && (
           <div className="text-center py-16 text-muted-foreground space-y-2">
             <div className="w-12 h-12 mx-auto rounded-2xl bg-muted/40 flex items-center justify-center text-muted-foreground border border-border/45">
               <Filter className="w-5 h-5 opacity-40" />
@@ -3393,7 +3514,7 @@ function MemoryTimeline({ open, personaId, onClose }: { open: boolean; personaId
         )}
 
         <div className="space-y-3.5">
-          {filteredMemories.map((m: any) => {
+          {showDaily && filteredMemories.map((m: any) => {
             const cat = m.category === "anchor"
               ? { ...CATEGORY_LABELS.memory, label: "事实锚点", emoji: "📌" }
               : CATEGORY_LABELS[m.category] || CATEGORY_LABELS.memory;

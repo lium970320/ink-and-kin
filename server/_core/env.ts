@@ -56,12 +56,19 @@ function resolveSkillEngineDir(): string {
   return fromCwd;
 }
 
+const mobileApkVersionCode = Number(process.env.APP_MOBILE_APK_VERSION_CODE);
+
 export const ENV = {
   cookieSecret: resolveJwtSecret(),
   databaseUrl: process.env.DATABASE_URL ?? "",
   isProduction: process.env.NODE_ENV === "production",
   listenHost: process.env.APP_HOST?.trim() || "127.0.0.1",
   registrationEnabled: process.env.ALLOW_REGISTRATION === "true",
+  mobileEnabled: process.env.APP_MOBILE_ENABLED === "true",
+  mobileApkPath: process.env.APP_MOBILE_APK_PATH?.trim(),
+  mobileApkVersion: process.env.APP_MOBILE_APK_VERSION?.trim(),
+  mobileApkVersionCode: Number.isSafeInteger(mobileApkVersionCode) && mobileApkVersionCode > 0
+    ? mobileApkVersionCode : null,
 
   defaultLlmProvider: process.env.DEFAULT_LLM_PROVIDER ?? "openai",
   llmAllowedOrigins: parseOriginList(process.env.LLM_ALLOWED_ORIGINS),

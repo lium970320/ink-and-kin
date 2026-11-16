@@ -2,6 +2,10 @@
 
 `main` 是书中人的开发主线。快照用 Git 附注标签固定在对应提交，下文记录已公开的标签及其用途。 [GitHub 标签列表](https://github.com/lium970320/ink-and-kin/tags)
 
+## 2026-11-16 Mirrai 界面与手机直连快照
+
+`snapshot/mirrai-lan-20261116` 同步台式机 Mirrai 的「手机直连」设置、聊天档案分区和 Android 客户端。新增局域网发现、配对、设备撤销与实时消息。聊天档案按日常和场景浏览，并沿用书中人的记忆审核流程。 [浏览快照](https://github.com/lium970320/ink-and-kin/tree/snapshot/mirrai-lan-20261116) · [下载 ZIP](https://github.com/lium970320/ink-and-kin/archive/refs/tags/snapshot/mirrai-lan-20261116.zip) · [安装与配对](mobile-lan.md)
+
 ## 2026-11-16 灯下书房设计快照
 
 `snapshot/ui-design-20261116` 收录「灯下书房」界面方案和交互原型。下载 ZIP 并解压后，用浏览器打开 `docs/ui-redesign/preview.html`，可体验两套色板、明暗切换和聊天排版。设计处于提案阶段，原型使用虚构示例。 [浏览快照](https://github.com/lium970320/ink-and-kin/tree/snapshot/ui-design-20261116) · [下载 ZIP](https://github.com/lium970320/ink-and-kin/archive/refs/tags/snapshot/ui-design-20261116.zip) · [设计方案](ui-redesign/UI重构方案.md)

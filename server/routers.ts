@@ -8,6 +8,7 @@ import { decodeVoiceBase64, transcribeForUser, voiceFailure } from "./voice/serv
 import { getVoiceConfig, isVoiceConfigCurrent } from "./voice/config";
 import { getSceneGenerationSnapshot } from "./db";
 import { proactiveRouter } from "./proactive/router";
+import { mobileRouter } from "./mobile/router";
 import { runtimeService } from "./proactive";
 import { memoryRouter } from "./memory-review/memory-router";
 import { memoryReviewRouter } from "./memory-review/router";
@@ -320,6 +321,7 @@ function cancelledRoleplayTurn(channelId: number, personaId?: number): RunRolepl
 }
 
 export const appRouter = router({
+  mobile: mobileRouter,
   voiceConfig: voiceConfigRouter,
   proactive: proactiveRouter,
   sourceLibrary: sourceLibraryRouter,

@@ -211,6 +211,22 @@ async function preparedDispatch(
 
 export function createProactiveRepository(options: { now?: () => Date } = {}): ProactiveRepository {
   const clock = (fallback = new Date()) => options.now?.() ?? fallback;
+  async function deliverInbox(claim: ProactiveClaim, now: Date, destination: "web" | "mobile", signal?: AbortSignal) {
+    const db = await database();
+    return db.transaction(async tx => {
+      const ready = await preparedDispatch(tx, claim, () => clock(now),
+        destination === "mobile" ? claim.policy.delivery : "web", signal);
+      if (!ready) return false;
+      const { job, day, at } = ready;
+      signal?.throwIfAborted();
+      const changed = await writeJob(tx, job, {
+        status: "confirmed", attemptedAt: at, localDay: day, settledAt: at, updatedAt: at,
+        reason: destination === "mobile" ? "mobile_inbox" : "web_inbox", remoteMessageId: null,
+      });
+      signal?.throwIfAborted();
+      return Boolean(changed);
+    });
+  }
   return {
     async getPolicy(userId, personaId) {
       const db = await database();
@@ -392,21 +408,8 @@ export function createProactiveRepository(options: { now?: () => Date } = {}): P
       if (!changed) throw STALE();
     },
 
-    async deliverWeb(claim, now, signal) {
-      const db = await database();
-      return db.transaction(async tx => {
-        const ready = await preparedDispatch(tx, claim, () => clock(now), "web", signal);
-        if (!ready) return false;
-        const { job, day, at } = ready;
-        signal?.throwIfAborted();
-        const changed = await writeJob(tx, job, {
-          status: "confirmed", attemptedAt: at, localDay: day, settledAt: at, updatedAt: at,
-          reason: "web_inbox", remoteMessageId: null,
-        });
-        signal?.throwIfAborted();
-        return Boolean(changed);
-      });
-    },
+    deliverWeb: (claim, now, signal) => deliverInbox(claim, now, "web", signal),
+    deliverMobile: (claim, now, signal) => deliverInbox(claim, now, "mobile", signal),
 
     async finish(claim, result) {
       const db = await database();

@@ -8,4 +8,6 @@ The read-only UI preview runs on sample data. The full app uses Node.js 22.12 or
 
 [中文说明](README.md) · [UI preview](README.md#界面预览) · [Run from source](README.md#源码运行) · [Versions and snapshots](docs/versions.md) · [Security and privacy](SECURITY.md)
 
+The optional Android companion app connects over your local network after device pairing. [Android setup](docs/mobile-lan.md)
+
 Ink & Kin is based on Ch1rpy's Mirrai. The project's source is licensed under MIT. Third-party components and assets have their own terms. [Upstream project](https://github.com/Ch1rpys/Mirrai) · [License](LICENSE) · [Attribution](docs/attribution.md)

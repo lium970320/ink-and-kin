@@ -13,6 +13,7 @@
  */
 import type { Request, Response, NextFunction } from "express";
 import { authenticateRequest } from "./auth";
+import { readMobileSession } from "../mobile/settings-store";
 
 /** Prefixes whose second path segment is the owning user's id. */
 const USER_SCOPED = new Set(["personas", "chat", "tts", "scene-image-config", "scene-image-assets", "scene-images", "scene-image-tests"]);
@@ -59,8 +60,16 @@ export function uploadsAuthGuard(
     return;
   }
 
-  authenticateRequest(req)
+  const authorization = req.headers?.authorization;
+  const authenticate = authorization && /^Bearer ikm_/i.test(authorization)
+    ? readMobileSession(authorization).then(session => session?.user)
+    : authenticateRequest(req);
+  authenticate
     .then((user) => {
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
       if (!isOwnedByUser(relKey, user.id)) {
         // 404 rather than 403: a stranger should not learn that the file
         // exists.
