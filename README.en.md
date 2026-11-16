@@ -8,4 +8,4 @@ The read-only UI preview runs on sample data. The full app uses Node.js 22.12 or
 
 [中文说明](README.md) · [UI preview](README.md#界面预览) · [Run from source](README.md#源码运行) · [Snapshot tags](https://github.com/lium970320/ink-and-kin/tags) · [Security and privacy](SECURITY.md)
 
-Ink & Kin is based on Ch1rpy's Mirrai and licensed under MIT. [Upstream project](https://github.com/Ch1rpy2613/Mirrai) · [License](LICENSE)
+Ink & Kin is based on Ch1rpy's Mirrai and licensed under MIT. [Upstream project](https://github.com/Ch1rpys/Mirrai) · [License](LICENSE)

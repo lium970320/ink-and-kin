@@ -73,6 +73,6 @@ corepack pnpm test
 
 ## 来源与许可证
 
-书中人基于 Ch1rpy（GitHub 用户名 Ch1rpy2613）的 Mirrai 开发，由 lium970320 继续维护。书中人的 Git 历史从上游提交 `162019895b70509f495b406b86e1cd61c08147a5` 的源码快照建立。 [Mirrai](https://github.com/Ch1rpy2613/Mirrai) · [上游基线提交](https://github.com/Ch1rpy2613/Mirrai/commit/162019895b70509f495b406b86e1cd61c08147a5)
+书中人基于 Ch1rpy 的 Mirrai 开发，由 lium970320 继续维护。书中人的 Git 历史从上游提交 `162019895b70509f495b406b86e1cd61c08147a5` 的源码快照建立。 [Mirrai](https://github.com/Ch1rpys/Mirrai) · [上游基线提交](https://github.com/Ch1rpys/Mirrai/commit/162019895b70509f495b406b86e1cd61c08147a5)
 
 项目采用 MIT 许可证，保留原作者版权声明，并标记后续修改与新增部分。上游版本和安装包信息保留在上游说明中。 [MIT 许可证](LICENSE) · [上游中文说明](README.upstream.md) · [上游英文说明](README.en.upstream.md)
