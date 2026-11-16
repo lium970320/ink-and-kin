@@ -66,15 +66,20 @@ jobs:
         run: pnpm exec drizzle-kit push --force
 
       - name: Verify the schema is in sync
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
-          output="$(pnpm exec drizzle-kit push 2>&1)"
-          echo "$output"
-          if echo "$output" | grep -qiE "no changes|up to date|already in sync|nothing to migrate"; then
-            echo "schema.ts matches the database"
-          else
-            echo "::error::drizzle/schema.ts does not match the database state"
-            exit 1
-          fi
+          # Drizzle can recreate equivalent constraints or indexes when it
+          # compares its definitions with PostgreSQL's normalized definitions.
+          dump_schema() {
+            docker exec "$POSTGRES_CONTAINER" pg_dump --schema-only --no-owner \
+              --no-privileges --restrict-key=InkAndKinSchemaCheck \
+              --username=postgres --dbname=mirrai
+          }
+          dump_schema > "$RUNNER_TEMP/schema-before.sql"
+          pnpm exec drizzle-kit push --verbose
+          dump_schema > "$RUNNER_TEMP/schema-after.sql"
+          diff -u "$RUNNER_TEMP/schema-before.sql" "$RUNNER_TEMP/schema-after.sql"
 
       # The hand-written migrations must be idempotent — re-running them
       # against an already-migrated database has to be a no-op.
